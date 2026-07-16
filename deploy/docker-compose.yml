@@ -21,8 +21,10 @@ services:
     image: caddy:2.8-alpine@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17
     restart: unless-stopped
     depends_on:
-      - api
-      - web
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"
@@ -57,6 +59,10 @@ services:
       LOOKUPKB_API_PORT: "8080"
       LOOKUPKB_LOG_LEVEL: ${LOOKUPKB_LOG_LEVEL:-info}
       LOOKUPKB_LOG_FORMAT: ${LOOKUPKB_LOG_FORMAT:-json}
+      # OTLP export target (the collector runs in the core stack). The SDK
+      # export itself is wired by a later instrumentation ticket; this only
+      # documents the endpoint the API will use.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -65,6 +71,19 @@ services:
     networks:
       - edge
       - data
+    # Gate the API on its datastores so /readyz (health-endpoints ticket) has a
+    # live Postgres/Meili/Garage to reach and startup is deterministic (AC-11.1).
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      meilisearch:
+        condition: service_healthy
+      garage:
+        condition: service_healthy
+      kroki:
+        condition: service_started
     healthcheck:
       test: ["CMD", "/api", "healthcheck"]
       interval: 15s
@@ -161,6 +180,14 @@ services:
       - data
     security_opt:
       - no-new-privileges:true
+    # Meilisearch ships curl; probe over 127.0.0.1 (it binds IPv4 only, and
+    # `localhost` resolves to ::1 in the container → connection refused).
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:7700/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
     deploy:
       resources:
         limits:
@@ -180,6 +207,14 @@ services:
       - no-new-privileges:true
     depends_on:
       - kroki-mermaid
+    # Probe Kroki's liveness endpoint so the API can gate on a render backend
+    # that answers. Use 127.0.0.1 to avoid IPv6-loopback surprises.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     deploy:
       resources:
         limits:
@@ -206,6 +241,10 @@ services:
     restart: unless-stopped
     environment:
       GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:?GARAGE_RPC_SECRET is required}
+      # Bearer tokens for the admin (:3903) and metrics endpoints. Garage reads
+      # these from the environment; never bake them into garage.toml.
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN:?GARAGE_ADMIN_TOKEN is required}
+      GARAGE_METRICS_TOKEN: ${GARAGE_METRICS_TOKEN:?GARAGE_METRICS_TOKEN is required}
     volumes:
       - ./garage/garage.toml:/etc/garage.toml:ro
       - garage_meta:/var/lib/garage/meta
@@ -214,6 +253,14 @@ services:
       - data
     security_opt:
       - no-new-privileges:true
+    # The scratch image has only the garage binary; `garage status` connects
+    # over RPC and returns healthy once the daemon is up (even pre-layout).
+    healthcheck:
+      test: ["CMD", "/garage", "status"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     deploy:
       resources:
         limits:
@@ -233,6 +280,11 @@ services:
       AUTHENTIK_POSTGRESQL__USER: ${AUTHENTIK_DB_USER:-authentik}
       AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD:?AUTHENTIK_DB_PASSWORD is required}
       AUTHENTIK_REDIS__HOST: valkey
+      # First-boot admin bootstrap so there is a usable akadmin account without
+      # manual setup. OIDC application/provider config is a later ticket.
+      AUTHENTIK_BOOTSTRAP_EMAIL: ${AUTHENTIK_BOOTSTRAP_EMAIL:-admin@localhost}
+      AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:-}
+      AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN:-}
     volumes:
       - authentik_media:/media
       - authentik_templates:/templates
@@ -246,6 +298,13 @@ services:
         condition: service_healthy
     security_opt:
       - no-new-privileges:true
+    # Authentik ships an `ak healthcheck` command for exactly this purpose.
+    healthcheck:
+      test: ["CMD", "ak", "healthcheck"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 60s
     deploy:
       resources:
         limits:
@@ -276,11 +335,14 @@ services:
           cpus: "2.0"
           memory: 1024M
 
-  # ---- Observability (OTLP wiring is a later ticket) ------------------------
+  # ---- Observability --------------------------------------------------------
+  # The collector is a core service (01-architecture.md §5.1): the API exports
+  # OTLP to it and /readyz probes it. Its base config only logs to `debug`; the
+  # opt-in docker-compose.observability.yml overlay swaps in a config that fans
+  # out to Prometheus/Tempo/Loki and starts those backends.
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.116.1@sha256:d0ebf65280da2e1b1491d1b93648281afd353d4b9ea19160090303cec9a233bd
     restart: unless-stopped
-    profiles: ["observability"]
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
       - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro

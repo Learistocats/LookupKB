@@ -1,0 +1,14 @@
+# Grafana route overlay — mounted into /etc/caddy/conf.d/ by
+# docker-compose.observability.yml and imported inside the site block of the
+# base Caddyfile. Keeps the "only Caddy publishes host ports" rule intact:
+# Grafana is reached at /grafana instead of a published port.
+#
+# Grafana is configured (GF_SERVER_SERVE_FROM_SUB_PATH=true, root_url=.../grafana)
+# to expect the /grafana prefix, so it is passed through unstripped.
+# Match both the bare /grafana and everything under it so the path works with
+# or without a trailing slash (Grafana redirects /grafana → /grafana/login).
+# `handle` takes one matcher, so use a named path matcher listing both patterns.
+@grafana path /grafana /grafana/*
+handle @grafana {
+	reverse_proxy grafana:3000
+}
