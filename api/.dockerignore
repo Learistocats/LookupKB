@@ -1,0 +1,11 @@
+# Keep the build context minimal and secret-free.
+.git
+.gitignore
+*.md
+Dockerfile
+.dockerignore
+bin/
+*.test
+*.out
+.env
+.env.*

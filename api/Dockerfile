@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1
+
+# ---- build stage -------------------------------------------------------------
+# Pin the toolchain image by digest (see docs/planning/01-architecture.md §5.2,
+# 06-security.md §8). Update digests via Renovate.
+FROM golang:1.23-bookworm@sha256:167053a2bb901972bf2c1611f8f52c44d5fe7e762e5cab213708d82c421614db AS build
+
+WORKDIR /src
+
+# Cache modules first for faster incremental builds.
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download && go mod verify
+
+COPY . .
+
+ARG VERSION=dev
+# CGO disabled + static build so the binary runs on a scratch/distroless base.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build \
+    -trimpath \
+    -ldflags="-s -w -X main.version=${VERSION}" \
+    -o /out/api ./cmd/api
+
+# ---- runtime stage -----------------------------------------------------------
+# distroless/static: no shell, no package manager, minimal attack surface.
+# nonroot variant runs as uid 65532. Pinned by digest.
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:aef9602f8710ec12bde19d593fed1f76c708531bb7aba205110f1029786ead7b
+
+# OCI labels for provenance.
+LABEL org.opencontainers.image.title="lookupkb-api" \
+      org.opencontainers.image.source="https://github.com/Learistocats/LookupKB" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
+COPY --from=build /out/api /api
+
+USER 65532:65532
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=5s --retries=3 \
+    CMD ["/api", "healthcheck"]
+
+ENTRYPOINT ["/api"]

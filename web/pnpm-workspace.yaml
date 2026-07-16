@@ -1,0 +1,5 @@
+# pnpm reads build-script approvals here (not from package.json's "pnpm" field).
+# esbuild ships its native binary via a postinstall, so it must be allowed to
+# run build scripts.
+allowBuilds:
+  esbuild: true

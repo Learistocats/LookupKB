@@ -1,0 +1,313 @@
+# LookupKB single-host Docker Compose stack (see docs/planning/01-architecture.md §5).
+#
+# Network segmentation: only `caddy` is published to the host. Everything else
+# talks over internal networks. `edge` carries browser-facing traffic (Caddy →
+# web/api/authentik); `data` carries backend traffic (api/authentik → datastores).
+# Datastores sit ONLY on `data`, so they are unreachable from the edge.
+#
+# Heavy, not-yet-wired services live behind Compose profiles so a default
+# `docker compose up` brings a clean core skeleton:
+#   (default)        caddy, api, web, postgres, valkey, meilisearch, kroki(+mermaid), garage
+#   --profile auth   authentik-server, authentik-worker  (OIDC wiring: later ticket)
+#   --profile observability  otel-collector             (telemetry wiring: later ticket)
+#
+# All third-party images are pinned by digest (updated via Renovate).
+
+name: lookupkb
+
+services:
+  # ---- Edge -----------------------------------------------------------------
+  caddy:
+    image: caddy:2.8-alpine@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17
+    restart: unless-stopped
+    depends_on:
+      - api
+      - web
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-http://localhost}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 128M
+
+  # ---- Application ----------------------------------------------------------
+  api:
+    build:
+      context: ../api
+      args:
+        VERSION: ${LOOKUPKB_VERSION:-dev}
+    image: lookupkb-api:${LOOKUPKB_VERSION:-dev}
+    restart: unless-stopped
+    environment:
+      LOOKUPKB_ENV: ${LOOKUPKB_ENV:-development}
+      LOOKUPKB_API_PORT: "8080"
+      LOOKUPKB_LOG_LEVEL: ${LOOKUPKB_LOG_LEVEL:-info}
+      LOOKUPKB_LOG_FORMAT: ${LOOKUPKB_LOG_FORMAT:-json}
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - edge
+      - data
+    healthcheck:
+      test: ["CMD", "/api", "healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 256M
+
+  web:
+    build:
+      context: ../web
+    image: lookupkb-web:${LOOKUPKB_VERSION:-dev}
+    restart: unless-stopped
+    networks:
+      - edge
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 64M
+
+  # ---- Data stores ----------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-lookupkb}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-lookupkb}
+      # Consumed by the init script to provision the Authentik database/role.
+      AUTHENTIK_DB: ${AUTHENTIK_DB:-authentik}
+      AUTHENTIK_DB_USER: ${AUTHENTIK_DB_USER:-authentik}
+      AUTHENTIK_DB_PASSWORD: ${AUTHENTIK_DB_PASSWORD:?AUTHENTIK_DB_PASSWORD is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - data
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lookupkb} -d ${POSTGRES_DB:-lookupkb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 512M
+
+  valkey:
+    image: valkey/valkey:8-alpine@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
+    restart: unless-stopped
+    command: ["valkey-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes:
+      - valkey_data:/data
+    networks:
+      - data
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.12@sha256:c9fac23131cca4db95173d41cc50fd5639121ee381795528fdd7522d7978a7b8
+    restart: unless-stopped
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?MEILI_MASTER_KEY is required}
+      MEILI_ENV: ${MEILI_ENV:-development}
+      MEILI_NO_ANALYTICS: "true"
+    volumes:
+      - meili_data:/meili_data
+    networks:
+      - data
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1024M
+
+  kroki:
+    image: yuzutech/kroki:0.28.0@sha256:710a5e8d57344769846695431ceefc02aaf908e9958c9d459171d2255ee2f7f5
+    restart: unless-stopped
+    environment:
+      KROKI_MERMAID_HOST: kroki-mermaid
+      # Least privilege: only enable the diagram engines we use.
+      KROKI_SAFE_MODE: secure
+    networks:
+      - data
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      - kroki-mermaid
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  kroki-mermaid:
+    image: yuzutech/kroki-mermaid:0.28.0@sha256:e301872d57b397e1020768cfbafd3ac5d3f2c47a2615d65b9af217c832a226f4
+    restart: unless-stopped
+    expose:
+      - "8002"
+    networks:
+      - data
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  garage:
+    image: dxflrs/garage:v1.0.1@sha256:a5706cf1f3d7b349ac5133ec59ad8181b709270b75e5f2fa7b3e1a5c07d67137
+    restart: unless-stopped
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:?GARAGE_RPC_SECRET is required}
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      - garage_meta:/var/lib/garage/meta
+      - garage_data:/var/lib/garage/data
+    networks:
+      - data
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  # ---- Identity (OIDC wiring is a later ticket) -----------------------------
+  authentik-server:
+    image: ghcr.io/goauthentik/server:2024.10.5@sha256:c4aa2113d0c2379faa9e8a28f4ab13816b4e6f2847b272e37d68e518fdf76880
+    restart: unless-stopped
+    profiles: ["auth"]
+    command: server
+    environment: &authentik-env
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?AUTHENTIK_SECRET_KEY is required}
+      AUTHENTIK_POSTGRESQL__HOST: postgres
+      AUTHENTIK_POSTGRESQL__NAME: ${AUTHENTIK_DB:-authentik}
+      AUTHENTIK_POSTGRESQL__USER: ${AUTHENTIK_DB_USER:-authentik}
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD:?AUTHENTIK_DB_PASSWORD is required}
+      AUTHENTIK_REDIS__HOST: valkey
+    volumes:
+      - authentik_media:/media
+      - authentik_templates:/templates
+    networks:
+      - edge
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1024M
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:2024.10.5@sha256:c4aa2113d0c2379faa9e8a28f4ab13816b4e6f2847b272e37d68e518fdf76880
+    restart: unless-stopped
+    profiles: ["auth"]
+    command: worker
+    environment: *authentik-env
+    volumes:
+      - authentik_media:/media
+      - authentik_templates:/templates
+    networks:
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1024M
+
+  # ---- Observability (OTLP wiring is a later ticket) ------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.116.1@sha256:d0ebf65280da2e1b1491d1b93648281afd353d4b9ea19160090303cec9a233bd
+    restart: unless-stopped
+    profiles: ["observability"]
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    networks:
+      - data
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+
+networks:
+  edge:
+    driver: bridge
+  data:
+    driver: bridge
+    internal: true
+
+volumes:
+  caddy_data:
+  caddy_config:
+  postgres_data:
+  valkey_data:
+  meili_data:
+  garage_meta:
+  garage_data:
+  authentik_media:
+  authentik_templates:

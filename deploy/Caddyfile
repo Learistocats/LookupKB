@@ -1,0 +1,51 @@
+# LookupKB edge reverse proxy.
+#
+# SITE_ADDRESS controls the served site:
+#   - "http://localhost"  → plaintext on :80 for local dev (default)
+#   - "example.com"       → automatic HTTPS via Let's Encrypt (set ACME_EMAIL)
+#
+# Only Caddy is published to the host; upstreams are resolved on the internal
+# `edge` network by service name.
+
+{
+	admin off
+	# For production auto-TLS, set a contact email for Let's Encrypt by
+	# uncommenting the next line (ACME_EMAIL must be non-empty):
+	# email {$ACME_EMAIL}
+}
+
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	# Baseline security headers (see docs/planning/06-security.md).
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# Liveness/readiness passthrough to the API.
+	handle /healthz {
+		reverse_proxy api:8080
+	}
+	handle /readyz {
+		reverse_proxy api:8080
+	}
+
+	# Public + app API.
+	handle /api/* {
+		reverse_proxy api:8080
+	}
+
+	# Identity (Authentik) — only reachable when the `auth` profile is up.
+	handle /auth/* {
+		reverse_proxy authentik-server:9000
+	}
+
+	# Everything else → the SvelteKit SPA.
+	handle {
+		reverse_proxy web:8080
+	}
+}
