@@ -33,11 +33,38 @@ type Config struct {
 
 	// ShutdownTimeout bounds graceful shutdown.
 	ShutdownTimeout time.Duration `env:"LOOKUPKB_SHUTDOWN_TIMEOUT" envDefault:"10s"`
+
+	// DatabaseURL is the pgx connection string the runtime uses, connecting as
+	// the least-privilege application role (DML only). Empty disables the pool
+	// so the skeleton/tests boot without a database.
+	DatabaseURL string `env:"LOOKUPKB_DATABASE_URL"`
+
+	// MigrateDatabaseURL is the connection string used by `api migrate`,
+	// connecting as the migration role that owns DDL. Empty falls back to
+	// DatabaseURL (dev convenience).
+	MigrateDatabaseURL string `env:"LOOKUPKB_MIGRATE_DATABASE_URL"`
+
+	// Connection-pool tuning (pgxpool). Defaults are sane for a single-host
+	// deployment; override via env under load.
+	DBMaxConns        int32         `env:"LOOKUPKB_DB_MAX_CONNS" envDefault:"10"`
+	DBMinConns        int32         `env:"LOOKUPKB_DB_MIN_CONNS" envDefault:"0"`
+	DBMaxConnLifetime time.Duration `env:"LOOKUPKB_DB_MAX_CONN_LIFETIME" envDefault:"1h"`
+	DBMaxConnIdleTime time.Duration `env:"LOOKUPKB_DB_MAX_CONN_IDLE_TIME" envDefault:"30m"`
+	DBConnectTimeout  time.Duration `env:"LOOKUPKB_DB_CONNECT_TIMEOUT" envDefault:"5s"`
 }
 
 // Addr returns the host:port listen address.
 func (c Config) Addr() string {
 	return fmt.Sprintf("%s:%d", c.Host, c.Port)
+}
+
+// MigrateDSN returns the connection string for running migrations, falling back
+// to DatabaseURL when no dedicated migration DSN is configured (dev convenience).
+func (c Config) MigrateDSN() string {
+	if c.MigrateDatabaseURL != "" {
+		return c.MigrateDatabaseURL
+	}
+	return c.DatabaseURL
 }
 
 // IsProduction reports whether the API runs in a production-like environment.

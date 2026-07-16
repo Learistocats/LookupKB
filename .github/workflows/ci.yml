@@ -35,8 +35,20 @@ jobs:
           version: v2.12.2
           working-directory: api
 
+      - name: sqlc generate is up to date
+        run: |
+          go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.28.0
+          sqlc generate
+          git diff --exit-code || {
+            echo "::error::sqlc output is stale — run 'make sqlc' and commit the result";
+            exit 1;
+          }
+
       - name: Test
         run: go test -race ./...
+
+      - name: Migrations apply up and down (testcontainers)
+        run: go test -tags integration -race ./internal/db/...
 
       - name: Build
         run: go build ./...

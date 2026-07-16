@@ -59,6 +59,9 @@ services:
       LOOKUPKB_API_PORT: "8080"
       LOOKUPKB_LOG_LEVEL: ${LOOKUPKB_LOG_LEVEL:-info}
       LOOKUPKB_LOG_FORMAT: ${LOOKUPKB_LOG_FORMAT:-json}
+      # Runtime DB connection as the least-privilege app role (DML only). Built
+      # from the fixed role name + password so the URL never lands in .env.
+      LOOKUPKB_DATABASE_URL: postgres://lookupkb_app:${LOOKUPKB_APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-lookupkb}?sslmode=disable
       # OTLP export target (the collector runs in the core stack). The SDK
       # export itself is wired by a later instrumentation ticket; this only
       # documents the endpoint the API will use.
@@ -73,7 +76,11 @@ services:
       - data
     # Gate the API on its datastores so /readyz (health-endpoints ticket) has a
     # live Postgres/Meili/Garage to reach and startup is deterministic (AC-11.1).
+    # The `migrate` one-shot must complete first so the schema exists before the
+    # app (which connects as the DML-only role) starts serving.
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       valkey:
@@ -95,6 +102,37 @@ services:
         limits:
           cpus: "2.0"
           memory: 256M
+
+  # One-shot schema migration. Reuses the API image (`api migrate up` runs the
+  # embedded goose migrations) and connects as the migration role that owns DDL.
+  # `api` waits for this to exit successfully (see its depends_on).
+  migrate:
+    image: lookupkb-api:${LOOKUPKB_VERSION:-dev}
+    build:
+      context: ../api
+      args:
+        VERSION: ${LOOKUPKB_VERSION:-dev}
+    command: ["migrate", "up"]
+    restart: "no"
+    environment:
+      LOOKUPKB_ENV: ${LOOKUPKB_ENV:-development}
+      LOOKUPKB_LOG_FORMAT: ${LOOKUPKB_LOG_FORMAT:-json}
+      LOOKUPKB_MIGRATE_DATABASE_URL: postgres://lookupkb_migrator:${LOOKUPKB_MIGRATOR_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-lookupkb}?sslmode=disable
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 128M
 
   web:
     build:
@@ -124,6 +162,10 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-lookupkb}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: ${POSTGRES_DB:-lookupkb}
+      # Consumed by 20-lookupkb-roles.sh to provision the least-privilege app +
+      # migration roles the API and `api migrate` connect as (06-security.md §8).
+      LOOKUPKB_APP_DB_PASSWORD: ${LOOKUPKB_APP_DB_PASSWORD:?LOOKUPKB_APP_DB_PASSWORD is required}
+      LOOKUPKB_MIGRATOR_DB_PASSWORD: ${LOOKUPKB_MIGRATOR_DB_PASSWORD:?LOOKUPKB_MIGRATOR_DB_PASSWORD is required}
       # Consumed by the init script to provision the Authentik database/role.
       AUTHENTIK_DB: ${AUTHENTIK_DB:-authentik}
       AUTHENTIK_DB_USER: ${AUTHENTIK_DB_USER:-authentik}

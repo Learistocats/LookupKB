@@ -83,6 +83,32 @@ build-api: ## Build the API binary into api/bin/
 build-web: ## Build the web static assets
 	cd $(WEB_DIR) && pnpm install --frozen-lockfile && pnpm run build
 
+## ── Database ─────────────────────────────────────────────────────────────────
+
+# Migrations connect as the DDL-owning migration role. Override to target a
+# specific database; the default matches a locally-exposed dev Postgres.
+MIGRATE_DATABASE_URL ?= postgres://lookupkb_migrator:change-me-lookupkb-migrator@localhost:5432/$(or $(POSTGRES_DB),lookupkb)?sslmode=disable
+
+.PHONY: migrate
+migrate: ## Apply DB migrations (override MIGRATE_DATABASE_URL to target a DB)
+	cd $(API_DIR) && LOOKUPKB_MIGRATE_DATABASE_URL="$(MIGRATE_DATABASE_URL)" go run ./cmd/api migrate up
+
+.PHONY: migrate-down
+migrate-down: ## Reverse the most recent migration
+	cd $(API_DIR) && LOOKUPKB_MIGRATE_DATABASE_URL="$(MIGRATE_DATABASE_URL)" go run ./cmd/api migrate down
+
+.PHONY: migrate-status
+migrate-status: ## Show migration status
+	cd $(API_DIR) && LOOKUPKB_MIGRATE_DATABASE_URL="$(MIGRATE_DATABASE_URL)" go run ./cmd/api migrate status
+
+.PHONY: sqlc
+sqlc: ## Regenerate type-safe SQL bindings (needs sqlc on PATH)
+	cd $(API_DIR) && sqlc generate
+
+.PHONY: db-reset
+db-reset: ## Prove migrations apply up+down on a fresh throwaway Postgres (testcontainers)
+	cd $(API_DIR) && go test -tags integration -run TestMigrations ./internal/db/...
+
 ## ── Test ─────────────────────────────────────────────────────────────────────
 
 .PHONY: test
