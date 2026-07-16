@@ -1,0 +1,40 @@
+# OpenTelemetry Collector — skeleton pipeline (see docs/planning/01-architecture.md §6).
+# The API's OTLP export is wired in a later observability ticket; this config
+# accepts OTLP and, by default, just logs a debug summary. Point the exporters
+# at your backend (Prometheus/Tempo/Loki or a vendor) in production.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+exporters:
+  debug:
+    verbosity: normal
+
+service:
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]

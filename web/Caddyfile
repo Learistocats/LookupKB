@@ -1,0 +1,9 @@
+# Internal file server for the LookupKB SPA. The edge Caddy (deploy/Caddyfile)
+# terminates TLS and reverse-proxies to this container; this instance only
+# serves the pre-built static assets with SPA fallback.
+:8080 {
+	root * /srv
+	encode zstd gzip
+	try_files {path} /index.html
+	file_server
+}

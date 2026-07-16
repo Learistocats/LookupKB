@@ -1,0 +1,32 @@
+# golangci-lint v2 configuration for the Go API (see docs/planning/02-tech-stack.md §5).
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # Default set (errcheck, govet, ineffassign, staticcheck, unused) plus:
+  enable:
+    - gosec
+    - revive
+    - misspell
+    - bodyclose
+  settings:
+    gosec:
+      excludes:
+        # G114 (http.Serve without timeouts) — Fiber/fasthttp manages timeouts.
+        - G114
+    revive:
+      rules:
+        - name: exported
+  exclusions:
+    rules:
+      # Test files may use less strict error handling.
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
