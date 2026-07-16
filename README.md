@@ -38,6 +38,7 @@ Prerequisites: **Docker** + **Docker Compose v2**.
 ```bash
 cp .env.example .env      # then edit secrets (or `make env`)
 make up                   # build + start the core stack (detached)
+make garage-init          # one-time: assign the Garage cluster layout
 ```
 
 Then:
@@ -48,14 +49,17 @@ Then:
 
 Stop it with `make down` (add `make clean` to also drop volumes).
 
-The default `make up` starts the **core skeleton** (Caddy, API, web, Postgres,
-Valkey, Meilisearch, Kroki, Garage). Heavier services are behind Compose
-profiles until their wiring tickets land:
+The default `make up` starts the **core stack** (Caddy, API, web, Postgres,
+Valkey, Meilisearch, Kroki, Garage, OTel Collector) with healthchecks gating an
+ordered start. Identity and the bundled telemetry backend are opt-in:
 
 ```bash
-docker compose -f deploy/docker-compose.yml --env-file .env --profile auth up -d           # Authentik
-docker compose -f deploy/docker-compose.yml --env-file .env --profile observability up -d   # OTel Collector
+make auth-up      # + Authentik (--profile auth)
+make obs-up       # + Prometheus/Tempo/Loki/Grafana (Grafana at /grafana)
 ```
+
+See [`docs/deploy.md`](docs/deploy.md) for the full bring-up, health, network
+boundary, and configuration reference.
 
 ## Local development (without containers)
 

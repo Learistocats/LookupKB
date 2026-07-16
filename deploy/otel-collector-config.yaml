@@ -2,6 +2,14 @@
 # The API's OTLP export is wired in a later observability ticket; this config
 # accepts OTLP and, by default, just logs a debug summary. Point the exporters
 # at your backend (Prometheus/Tempo/Loki or a vendor) in production.
+# The health_check extension exposes :13133 so /readyz (health-endpoints ticket)
+# and Docker/orchestrators can probe collector readiness. The contrib image has
+# no shell/curl, so there is no container-level HEALTHCHECK — this endpoint is
+# the readiness signal instead.
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
 receivers:
   otlp:
     protocols:
@@ -22,6 +30,7 @@ exporters:
     verbosity: normal
 
 service:
+  extensions: [health_check]
   telemetry:
     logs:
       level: info

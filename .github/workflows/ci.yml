@@ -85,7 +85,9 @@ jobs:
         run: |
           cp .env.example .env
           docker compose -f deploy/docker-compose.yml --env-file .env config -q
-          echo "compose config OK"
+          echo "core compose config OK"
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.observability.yml --env-file .env config -q
+          echo "observability overlay config OK"
 
   images:
     name: Build images
