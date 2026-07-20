@@ -10,9 +10,6 @@ import (
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
 
 	appdb "github.com/Learistocats/LookupKB/api/internal/db"
 )
@@ -24,17 +21,7 @@ import (
 func TestUpsertUser(t *testing.T) {
 	ctx := context.Background()
 
-	pgc, err := postgres.Run(ctx,
-		"postgres:16-alpine",
-		postgres.WithDatabase("lookupkb"),
-		postgres.WithUsername("postgres"),
-		postgres.WithPassword("postgres"),
-		testcontainers.WithWaitStrategy(
-			wait.ForListeningPort("5432/tcp").WithStartupTimeout(60*time.Second),
-		),
-	)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = pgc.Terminate(ctx) })
+	pgc := startTestPostgres(t, ctx)
 
 	dsn, err := pgc.ConnectionString(ctx, "sslmode=disable")
 	require.NoError(t, err)
