@@ -28,13 +28,18 @@ type ReadinessCheck func() error
 
 // Server holds the Fiber app and its dependencies.
 type Server struct {
-	app             *fiber.App
-	log             *slog.Logger
-	cfg             config.Config
-	version         string
+	app     *fiber.App
+	log     *slog.Logger
+	cfg     config.Config
+	version string
+	// readinessChecks gate /readyz: any failure makes the API "not ready" (503).
 	readinessChecks map[string]ReadinessCheck
-	auth            *auth.Middleware
-	metrics         *metrics.Metrics
+	// informationalChecks are reported by /readyz but never gate it — used for
+	// best-effort dependencies like the OTel collector (AC-11.1 gates only on
+	// Postgres/Meili/Kroki/Garage; a down collector must not block local dev).
+	informationalChecks map[string]ReadinessCheck
+	auth                *auth.Middleware
+	metrics             *metrics.Metrics
 }
 
 // Option configures a Server at construction. Later tickets add their own.
@@ -64,11 +69,12 @@ func New(cfg config.Config, log *slog.Logger, version string, opts ...Option) *S
 	})
 
 	s := &Server{
-		app:             app,
-		log:             log,
-		cfg:             cfg,
-		version:         version,
-		readinessChecks: map[string]ReadinessCheck{},
+		app:                 app,
+		log:                 log,
+		cfg:                 cfg,
+		version:             version,
+		readinessChecks:     map[string]ReadinessCheck{},
+		informationalChecks: map[string]ReadinessCheck{},
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -110,9 +116,17 @@ func (s *Server) App() *fiber.App {
 	return s.app
 }
 
-// RegisterReadinessCheck adds a named dependency check consulted by /readyz.
+// RegisterReadinessCheck adds a named dependency check that gates /readyz: if it
+// fails, /readyz reports 503 (AC-11.1). Used for Postgres/Meili/Kroki/Garage.
 func (s *Server) RegisterReadinessCheck(name string, check ReadinessCheck) {
 	s.readinessChecks[name] = check
+}
+
+// RegisterInformationalCheck adds a named check reported by /readyz but which
+// never changes the ready/not-ready verdict — for best-effort dependencies like
+// the OTel collector that must not gate readiness (AC-11.1).
+func (s *Server) RegisterInformationalCheck(name string, check ReadinessCheck) {
+	s.informationalChecks[name] = check
 }
 
 // Listen starts serving on the configured address.
@@ -165,15 +179,34 @@ func (s *Server) handleHealthz(c *fiber.Ctx) error {
 	})
 }
 
-// handleReadyz is the readiness probe: every registered dependency check must
-// pass. With no checks registered (M0 skeleton) it reports ready.
+// handleReadyz is the readiness probe. Every gating dependency check must pass
+// for a 200; any failure returns 503 (AC-11.1). Informational checks (e.g. the
+// OTel collector) are reported but never change the verdict. With no checks
+// registered (M0 skeleton) it reports ready.
+//
+// The response body reports each dependency as "ok"/"unavailable" only — the raw
+// probe error (which can contain internal hostnames/URLs) is logged server-side
+// but never returned, so /readyz cannot leak connection details (06-security.md).
 func (s *Server) handleReadyz(c *fiber.Ctx) error {
-	checks := make(map[string]string, len(s.readinessChecks))
+	ctx := c.UserContext()
+	checks := make(map[string]string, len(s.readinessChecks)+len(s.informationalChecks))
 	ready := true
+
 	for name, check := range s.readinessChecks {
 		if err := check(); err != nil {
 			ready = false
-			checks[name] = err.Error()
+			checks[name] = "unavailable"
+			s.log.WarnContext(ctx, "readiness check failed", "check", name, "error", err)
+			continue
+		}
+		checks[name] = "ok"
+	}
+
+	// Best-effort checks are reported for visibility but do not gate readiness.
+	for name, check := range s.informationalChecks {
+		if err := check(); err != nil {
+			checks[name] = "unavailable"
+			s.log.WarnContext(ctx, "informational check failed", "check", name, "error", err)
 			continue
 		}
 		checks[name] = "ok"

@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,6 +15,7 @@ import (
 	"github.com/Learistocats/LookupKB/api/internal/config"
 	"github.com/Learistocats/LookupKB/api/internal/db"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
+	"github.com/Learistocats/LookupKB/api/internal/health"
 	"github.com/Learistocats/LookupKB/api/internal/logging"
 	"github.com/Learistocats/LookupKB/api/internal/metrics"
 	"github.com/Learistocats/LookupKB/api/internal/server"
@@ -32,10 +34,15 @@ func main() {
 		panic(err)
 	}
 
-	// `api healthcheck` is a self-probe used as the container HEALTHCHECK: the
-	// distroless image has no shell or curl, so the binary probes itself.
+	// `api healthcheck` / `api readycheck` are self-probes used as the container
+	// HEALTHCHECK: the distroless image has no shell or curl, so the binary probes
+	// itself. healthcheck hits /healthz (liveness, restart semantics); readycheck
+	// hits /readyz so a compose healthcheck can reflect real dependency readiness.
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		os.Exit(healthcheck(cfg))
+		os.Exit(selfProbe(cfg, "/healthz"))
+	}
+	if len(os.Args) > 1 && os.Args[1] == "readycheck" {
+		os.Exit(selfProbe(cfg, "/readyz"))
 	}
 
 	// `api migrate up|down|status` runs embedded goose migrations from the same
@@ -53,11 +60,12 @@ func main() {
 	}
 }
 
-// healthcheck performs an in-container GET /healthz and returns a process exit
-// code (0 healthy, 1 unhealthy) for Docker's HEALTHCHECK.
-func healthcheck(cfg config.Config) int {
+// selfProbe performs an in-container GET against the given local path and returns
+// a process exit code (0 healthy, 1 unhealthy) for Docker's HEALTHCHECK. Used by
+// both the `healthcheck` (/healthz) and `readycheck` (/readyz) subcommands.
+func selfProbe(cfg config.Config, path string) int {
 	client := &http.Client{Timeout: 3 * time.Second}
-	url := fmt.Sprintf("http://127.0.0.1:%d/healthz", cfg.Port)
+	url := fmt.Sprintf("http://127.0.0.1:%d%s", cfg.Port, path)
 	resp, err := client.Get(url)
 	if err != nil {
 		return 1
@@ -170,6 +178,7 @@ func run(cfg config.Config, version string) error {
 	if pool != nil {
 		srv.RegisterReadinessCheck("postgres", db.ReadinessCheck(pool))
 	}
+	registerDependencyChecks(cfg, srv, log)
 
 	// Run the listener in a goroutine so we can wait for shutdown signals.
 	errCh := make(chan error, 1)
@@ -187,5 +196,33 @@ func run(cfg config.Config, version string) error {
 	case <-ctx.Done():
 		log.Info("shutdown signal received, draining connections")
 		return srv.Shutdown()
+	}
+}
+
+// registerDependencyChecks wires the /readyz probes for the downstream services
+// (AC-11.1). Each is registered only when its URL is configured, so the skeleton
+// stays ready without the dependency (mirroring the empty-DATABASE_URL pattern).
+// Meili/Kroki/Garage gate readiness; the OTel collector is best-effort so local
+// dev without observability is never "not ready". Each probe is bounded by
+// cfg.ReadinessTimeout and cached for cfg.ReadinessCacheTTL.
+func registerDependencyChecks(cfg config.Config, srv *server.Server, log *slog.Logger) {
+	cache := cfg.ReadinessCacheTTL
+	timeout := cfg.ReadinessTimeout
+
+	gating := []struct{ name, url string }{
+		{"meilisearch", cfg.MeiliHealthURL()},
+		{"kroki", cfg.KrokiHealthURL()},
+		{"garage", cfg.GarageHealthURL()},
+	}
+	for _, dep := range gating {
+		if dep.url == "" {
+			log.Warn("readiness check disabled (no URL configured)", "check", dep.name)
+			continue
+		}
+		srv.RegisterReadinessCheck(dep.name, health.Cached(cache, health.HTTPCheck(dep.name, dep.url, timeout)))
+	}
+
+	if url := cfg.CollectorHealthURL(); url != "" {
+		srv.RegisterInformationalCheck("otel_collector", health.Cached(cache, health.HTTPCheck("otel_collector", url, timeout)))
 	}
 }

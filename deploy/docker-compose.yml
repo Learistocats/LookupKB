@@ -81,6 +81,14 @@ services:
       # SDK exports traces/metrics/logs here; empty disables telemetry export so
       # the stack boots without a collector (like an empty DATABASE_URL).
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      # /readyz dependency probes (AC-11.1). Internal service URLs assembled here
+      # (never in .env). Meili/Kroki/Garage gate readiness; the collector's
+      # health_check extension (:13133, distinct from the OTLP :4317 endpoint) is
+      # probed best-effort and never blocks readiness.
+      LOOKUPKB_MEILI_URL: http://meilisearch:7700
+      LOOKUPKB_KROKI_URL: http://kroki:8000
+      LOOKUPKB_GARAGE_ADMIN_URL: http://garage:3903
+      LOOKUPKB_OTEL_COLLECTOR_HEALTH_URL: http://otel-collector:13133
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -106,12 +114,16 @@ services:
         condition: service_healthy
       kroki:
         condition: service_started
+    # Probe /readyz (not /healthz) so `caddy depends_on api: service_healthy`
+    # reflects real readiness — the API is "healthy" only once its gating
+    # dependencies (Postgres/Meili/Kroki/Garage) are reachable (AC-11.1). The
+    # start_period covers the dependency probes warming up.
     healthcheck:
-      test: ["CMD", "/api", "healthcheck"]
+      test: ["CMD", "/api", "readycheck"]
       interval: 15s
       timeout: 5s
       retries: 3
-      start_period: 5s
+      start_period: 10s
     deploy:
       resources:
         limits:

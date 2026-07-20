@@ -1,5 +1,7 @@
 # LookupKB
 
+[![CI](https://github.com/Learistocats/LookupKB/actions/workflows/ci.yml/badge.svg)](https://github.com/Learistocats/LookupKB/actions/workflows/ci.yml)
+
 A **fast, minimal knowledge base**. Authors write Markdown in an Obsidian-like
 editor; documents are published into a flat, fully-indexed corpus that anyone
 (subject to access rules) can find in milliseconds. **No folders, no file tree** —
@@ -15,7 +17,7 @@ tech stack, data model, security, roadmap).
 
 | Layer | Tech |
 |---|---|
-| Backend | Go 1.23 · [Fiber v2](https://gofiber.io) · `slog` · `caarlos0/env` |
+| Backend | Go 1.25 · [Fiber v2](https://gofiber.io) · `slog` · `caarlos0/env` |
 | Frontend | SvelteKit · TypeScript · Vite |
 | Edge | Caddy (auto-TLS, security headers) |
 | Data | PostgreSQL · Meilisearch · Garage (S3) · Kroki (diagrams) |
@@ -85,6 +87,30 @@ make lint     # golangci-lint + go vet  +  eslint + svelte-check
 make fmt      # format Go + web sources
 make config   # validate the compose file
 ```
+
+## Continuous integration
+
+Every push to `main` and every pull request runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
+as parallel jobs:
+
+| Job | What it checks |
+|---|---|
+| `api` | `go vet`, `golangci-lint` (govet/staticcheck/**gosec**), sqlc freshness, `go test -race`, testcontainers integration tests, build |
+| `vuln` | `govulncheck` — Go dependency/stdlib vulnerabilities |
+| `web` | Prettier, ESLint, `svelte-check`, Vitest, build |
+| `compose` | `docker compose config` validation (core + observability overlay) |
+| `trivy-config` | Trivy IaC/misconfiguration scan of Dockerfiles + compose |
+| `images` | Build the API & web images, then Trivy image scans |
+
+Trivy and `govulncheck` **fail the build** on HIGH/CRITICAL findings (not just warn);
+accepted exceptions are documented in [`.trivyignore`](.trivyignore).
+
+> **Branch protection (repo-settings — action required by a repo admin).** Enabling
+> these jobs as *required status checks* on `main` (so a red pipeline blocks merge)
+> is a GitHub repository setting that CI itself cannot configure. A repo admin
+> should, under **Settings → Branches → Branch protection rules** for `main`,
+> require the checks `api`, `vuln`, `web`, `compose`, `trivy-config`, and `images`,
+> and require branches to be up to date before merging.
 
 ## Security & operations notes
 

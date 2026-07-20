@@ -20,7 +20,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: "1.25"
           cache-dependency-path: api/go.sum
 
       - name: Verify modules
@@ -52,6 +52,26 @@ jobs:
 
       - name: Build
         run: go build ./...
+
+  vuln:
+    name: Govulncheck (Go)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: api/go.sum
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+
+      - name: Run govulncheck
+        run: govulncheck ./...
 
   web:
     name: Web (SvelteKit)
@@ -101,6 +121,23 @@ jobs:
           docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.observability.yml --env-file .env config -q
           echo "observability overlay config OK"
 
+  trivy-config:
+    name: Trivy (IaC/config)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Scans Dockerfiles + docker-compose for misconfigurations. Fails the build
+      # on HIGH/CRITICAL; accepted findings go in .trivyignore (documented there).
+      - name: Trivy config scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          trivyignores: .trivyignore
+
   images:
     name: Build images
     runs-on: ubuntu-latest
@@ -112,3 +149,24 @@ jobs:
 
       - name: Build web image
         run: docker build -t lookupkb-web:ci ./web
+
+      # Scan the images we just built (no rebuild). ignore-unfixed keeps CI
+      # green-able against base-image CVEs with no upstream fix yet; HIGH/CRITICAL
+      # fixable findings fail the build.
+      - name: Trivy scan API image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: lookupkb-api:ci
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+
+      - name: Trivy scan web image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: lookupkb-web:ci
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          trivyignores: .trivyignore

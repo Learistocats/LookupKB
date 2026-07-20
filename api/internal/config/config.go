@@ -5,6 +5,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/caarlos0/env/v11"
@@ -78,6 +79,53 @@ type Config struct {
 	// pattern as an empty DatabaseURL or OIDCIssuer. An `http://` scheme selects
 	// the insecure (plaintext) gRPC transport automatically.
 	OTelExporterEndpoint string `env:"OTEL_EXPORTER_OTLP_ENDPOINT"`
+
+	// Downstream dependency base URLs used only by the /readyz probes
+	// (01-architecture.md §6, AC-11.1). Each is the service's base URL; the
+	// health path is appended by the *HealthURL helpers below. Following the
+	// "empty disables it" convention, an unset URL skips that check so the
+	// skeleton/tests stay ready without the dependency running.
+	MeiliURL       string `env:"LOOKUPKB_MEILI_URL"`
+	KrokiURL       string `env:"LOOKUPKB_KROKI_URL"`
+	GarageAdminURL string `env:"LOOKUPKB_GARAGE_ADMIN_URL"`
+
+	// OTelCollectorHealthURL is the collector's health_check extension base URL
+	// (e.g. http://otel-collector:13133), distinct from OTelExporterEndpoint
+	// (the OTLP :4317 target). Probed *best-effort* by /readyz: a down collector
+	// is reported but never makes the API "not ready" (AC-11.1 gates only on
+	// Postgres/Meili/Kroki/Garage — local dev without observability must stay
+	// ready). Empty skips the check.
+	OTelCollectorHealthURL string `env:"LOOKUPKB_OTEL_COLLECTOR_HEALTH_URL"`
+
+	// ReadinessTimeout bounds each /readyz dependency probe so an unreachable
+	// dependency can never hang the readiness endpoint (AC-11.1).
+	ReadinessTimeout time.Duration `env:"LOOKUPKB_READINESS_TIMEOUT" envDefault:"2s"`
+
+	// ReadinessCacheTTL memoizes each probe's result for this window so frequent
+	// orchestrator polling doesn't hammer the dependencies. 0 disables caching.
+	ReadinessCacheTTL time.Duration `env:"LOOKUPKB_READINESS_CACHE_TTL" envDefault:"1s"`
+}
+
+// MeiliHealthURL returns the Meilisearch health endpoint, or "" when unconfigured.
+func (c Config) MeiliHealthURL() string { return healthURL(c.MeiliURL, "/health") }
+
+// KrokiHealthURL returns the Kroki health endpoint, or "" when unconfigured.
+func (c Config) KrokiHealthURL() string { return healthURL(c.KrokiURL, "/health") }
+
+// GarageHealthURL returns the Garage admin health endpoint, or "" when unconfigured.
+func (c Config) GarageHealthURL() string { return healthURL(c.GarageAdminURL, "/health") }
+
+// CollectorHealthURL returns the OTel collector health_check endpoint (served at
+// the extension root), or "" when unconfigured.
+func (c Config) CollectorHealthURL() string { return healthURL(c.OTelCollectorHealthURL, "/") }
+
+// healthURL joins a configured base with its health path, preserving the
+// "empty base disables the check" convention.
+func healthURL(base, path string) string {
+	if base == "" {
+		return ""
+	}
+	return strings.TrimRight(base, "/") + path
 }
 
 // Addr returns the host:port listen address.
