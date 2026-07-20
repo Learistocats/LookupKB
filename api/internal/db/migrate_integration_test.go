@@ -22,23 +22,37 @@ const (
 	migratorPassword = "migrator-secret"
 )
 
-// TestMigrations proves the schema applies cleanly up and down against a fresh
-// Postgres, and that the least-privilege app role cannot run DDL — the ticket's
-// two hard acceptance criteria (clean up/down; app role cannot DROP/ALTER).
-func TestMigrations(t *testing.T) {
-	ctx := context.Background()
-
+// startTestPostgres boots a throwaway Postgres for the integration tests and
+// registers its teardown. It waits for the "ready to accept connections" log to
+// appear TWICE, not just for the port to open: the postgres entrypoint starts a
+// temporary server to run init, then restarts. A port-only (or first-log) wait
+// returns during that init window, so a connect can race the restart and get
+// "connection reset by peer" — the flake this strategy removes.
+func startTestPostgres(t *testing.T, ctx context.Context) *postgres.PostgresContainer {
+	t.Helper()
 	pgc, err := postgres.Run(ctx,
 		"postgres:16-alpine",
 		postgres.WithDatabase("lookupkb"),
 		postgres.WithUsername("postgres"),
 		postgres.WithPassword("postgres"),
 		testcontainers.WithWaitStrategy(
-			wait.ForListeningPort("5432/tcp").WithStartupTimeout(60*time.Second),
+			wait.ForLog("database system is ready to accept connections").
+				WithOccurrence(2).
+				WithStartupTimeout(60*time.Second),
 		),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pgc.Terminate(ctx) })
+	return pgc
+}
+
+// TestMigrations proves the schema applies cleanly up and down against a fresh
+// Postgres, and that the least-privilege app role cannot run DDL — the ticket's
+// two hard acceptance criteria (clean up/down; app role cannot DROP/ALTER).
+func TestMigrations(t *testing.T) {
+	ctx := context.Background()
+
+	pgc := startTestPostgres(t, ctx)
 
 	superDSN, err := pgc.ConnectionString(ctx, "sslmode=disable")
 	require.NoError(t, err)
