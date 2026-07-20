@@ -69,6 +69,15 @@ type Config struct {
 	// Validated explicitly alongside issuer/signature/expiry — a JWKS-only check
 	// would let tokens minted for other Authentik apps be replayed here.
 	OIDCAudience string `env:"LOOKUPKB_OIDC_AUDIENCE"`
+
+	// OTelExporterEndpoint is the OTLP endpoint the OpenTelemetry SDK exports
+	// traces/metrics/logs to (the otel-collector, e.g.
+	// http://otel-collector:4317). It follows the OTel spec's standard variable
+	// so `OTEL_EXPORTER_OTLP_*` overrides work unchanged. Empty disables the SDK
+	// (no-op providers) so the skeleton/tests boot without a collector — the same
+	// pattern as an empty DatabaseURL or OIDCIssuer. An `http://` scheme selects
+	// the insecure (plaintext) gRPC transport automatically.
+	OTelExporterEndpoint string `env:"OTEL_EXPORTER_OTLP_ENDPOINT"`
 }
 
 // Addr returns the host:port listen address.
@@ -95,6 +104,14 @@ func (c Config) IsProduction() bool {
 // pattern as an empty DatabaseURL disabling the pool.
 func (c Config) AuthEnabled() bool {
 	return c.OIDCIssuer != ""
+}
+
+// OTelEnabled reports whether OpenTelemetry export is configured. When the OTLP
+// endpoint is empty the SDK is not initialised (no-op providers) so the API
+// boots without a collector — the same pattern as an empty DatabaseURL disabling
+// the pool.
+func (c Config) OTelEnabled() bool {
+	return c.OTelExporterEndpoint != ""
 }
 
 // OIDCDiscoveryURL returns the URL used for OIDC discovery / JWKS fetch,

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Learistocats/LookupKB/api/internal/config"
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -26,6 +27,11 @@ func NewPool(ctx context.Context, cfg config.Config) (*pgxpool.Pool, error) {
 	poolCfg.MaxConnLifetime = cfg.DBMaxConnLifetime
 	poolCfg.MaxConnIdleTime = cfg.DBMaxConnIdleTime
 	poolCfg.ConnConfig.ConnectTimeout = cfg.DBConnectTimeout
+
+	// Trace every query as a child span of the request's span (via the global
+	// TracerProvider set up by internal/telemetry), so DB calls are attributable
+	// per request. A no-op tracer when telemetry is disabled — zero overhead.
+	poolCfg.ConnConfig.Tracer = otelpgx.NewTracer()
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
