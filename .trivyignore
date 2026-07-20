@@ -1,0 +1,12 @@
+# Trivy ignore file — documented escape hatch for the CI security scans
+# (see .github/workflows/ci.yml: trivy-config and images jobs).
+#
+# Findings are gated on HIGH/CRITICAL. Suppress an accepted finding by adding its
+# ID on its own line, ALWAYS with a comment giving the reason and, where relevant,
+# an expiry so suppressions are revisited rather than left forever. Examples:
+#
+#   CVE-2024-XXXXX  # accepted: no fix upstream, not reachable in our usage — review 2026-01
+#   AVD-DS-0002     # accepted: distroless nonroot already enforced via compose user
+#
+# Keep this list short and justified. Prefer fixing (bump dependency / base image)
+# over ignoring. An empty file means "no exceptions".

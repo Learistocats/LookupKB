@@ -33,6 +33,13 @@ ENV NODE_ENV=production \
     PORT=8080 \
     HOST=0.0.0.0
 
+# The runtime runs `node build` directly and never invokes npm/corepack. Remove
+# the base image's bundled npm so its transitive dependencies aren't shipped as
+# runtime attack surface (they otherwise trip the Trivy CVE gate for packages
+# the server never loads). Runs as root before dropping to the node user.
+RUN rm -rf /usr/local/lib/node_modules/npm \
+    /usr/local/bin/npm /usr/local/bin/npx /opt/yarn* /usr/local/bin/yarn* /usr/local/bin/corepack
+
 # Copy only what the server needs: the built output and production deps.
 COPY --from=build /app/build ./build
 COPY --from=build /app/node_modules ./node_modules
