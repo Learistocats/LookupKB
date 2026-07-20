@@ -1,0 +1,86 @@
+# LookupKB OIDC provider + application, applied automatically by the Authentik
+# worker on boot (it watches /blueprints). Targets Authentik 2024.10.x.
+#
+# This reproduces the manual steps in docs/auth-setup.md so a fresh stack comes
+# up with working SSO. Secrets come from the environment (never hardcoded):
+#   LOOKUPKB_OIDC_CLIENT_ID, LOOKUPKB_OIDC_CLIENT_SECRET, LOOKUPKB_OIDC_REDIRECT_URI
+# are passed into the worker in deploy/docker-compose.yml.
+#
+# After changing this file, restart the worker (or `ak apply_blueprint`).
+version: 1
+metadata:
+  name: LookupKB OIDC
+entries:
+  # Custom scope mapping: exposes the user's Authentik group names as a `groups`
+  # claim so the API (and later ACL logic in M3) can read them from the token.
+  - model: authentik_providers_oauth2.scopemapping
+    id: lookupkb-scope-groups
+    identifiers:
+      scope_name: groups
+      name: "LookupKB groups scope"
+    attrs:
+      description: "LookupKB: user's group names for ACLs"
+      expression: |
+        return [group.name for group in request.user.ak_groups.all()]
+
+  # Confidential OAuth2/OIDC provider for LookupKB.
+  - model: authentik_providers_oauth2.oauth2provider
+    id: lookupkb-provider
+    identifiers:
+      name: LookupKB
+    attrs:
+      client_type: confidential
+      client_id: !Env [LOOKUPKB_OIDC_CLIENT_ID, lookupkb]
+      client_secret: !Env [LOOKUPKB_OIDC_CLIENT_SECRET, ""]
+      # Authorization Code + PKCE with an explicit consent flow. PKCE is enforced
+      # by the client (SvelteKit) sending code_challenge; Authentik accepts it.
+      authorization_flow:
+        !Find [
+          authentik_flows.flow,
+          [slug, default-provider-authorization-explicit-consent]
+        ]
+      invalidation_flow:
+        !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      # SvelteKit BFF callback. Strict matching — no wildcard redirect targets.
+      redirect_uris:
+        - matching_mode: strict
+          url: !Env [LOOKUPKB_OIDC_REDIRECT_URI, "http://localhost/auth/callback"]
+      # Standard OIDC scopes + the custom groups scope above.
+      property_mappings:
+        - !Find [
+            authentik_providers_oauth2.scopemapping,
+            [managed, goauthentik.io/providers/oauth2/scope-openid],
+          ]
+        - !Find [
+            authentik_providers_oauth2.scopemapping,
+            [managed, goauthentik.io/providers/oauth2/scope-email],
+          ]
+        - !Find [
+            authentik_providers_oauth2.scopemapping,
+            [managed, goauthentik.io/providers/oauth2/scope-profile],
+          ]
+        - !KeyOf lookupkb-scope-groups
+      # Sign tokens (access + id) as RS256 JWTs so the API can verify via JWKS.
+      signing_key:
+        !Find [
+          authentik_crypto.certificatekeypair,
+          [name, "authentik Self-signed Certificate"],
+        ]
+      # Stable, non-reversible subject; put claims in the id_token too so the BFF
+      # can read groups without a userinfo round-trip.
+      sub_mode: hashed_user_id
+      include_claims_in_id_token: true
+      # Short access tokens + refresh (06-security.md §5). Tune per deployment.
+      access_token_validity: minutes=10
+      refresh_token_validity: days=30
+
+  # The application users see, bound to the provider above.
+  - model: authentik_core.application
+    id: lookupkb-app
+    identifiers:
+      slug: lookupkb
+    attrs:
+      name: LookupKB
+      provider: !KeyOf lookupkb-provider
+      meta_description: "LookupKB knowledge base"
+      meta_publisher: "LookupKB"

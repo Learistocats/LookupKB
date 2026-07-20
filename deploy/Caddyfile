@@ -6,7 +6,6 @@
 #
 # Only Caddy is published to the host; upstreams are resolved on the internal
 # `edge` network by service name.
-
 {
 	admin off
 	# For production auto-TLS, set a contact email for Let's Encrypt by
@@ -46,16 +45,29 @@
 		reverse_proxy api:8080
 	}
 
-	# Identity (Authentik) — only reachable when the `auth` profile is up.
-	handle /auth/* {
-		reverse_proxy authentik-server:9000
-	}
-
-	# App shell + everything else → the SvelteKit SPA.
+	# App shell + everything else → the SvelteKit BFF (Node). This includes the
+	# OIDC handshake routes (/auth/login, /auth/callback, /auth/logout), which the
+	# BFF owns; Authentik itself lives on its own hostname below.
 	handle /app/* {
 		reverse_proxy web:8080
 	}
 	handle {
 		reverse_proxy web:8080
 	}
+}
+
+# Identity (Authentik) on its own hostname so the OIDC issuer is stable and does
+# not collide with the app's /auth/* BFF routes (see docs/auth-setup.md). Only
+# serves traffic when the `auth` profile is up; the api/web containers reach this
+# same URL via the caddy network alias so the token issuer matches end-to-end.
+{$AUTH_SITE_ADDRESS} {
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	reverse_proxy authentik-server:9000
 }

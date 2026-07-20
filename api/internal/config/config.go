@@ -51,6 +51,24 @@ type Config struct {
 	DBMaxConnLifetime time.Duration `env:"LOOKUPKB_DB_MAX_CONN_LIFETIME" envDefault:"1h"`
 	DBMaxConnIdleTime time.Duration `env:"LOOKUPKB_DB_MAX_CONN_IDLE_TIME" envDefault:"30m"`
 	DBConnectTimeout  time.Duration `env:"LOOKUPKB_DB_CONNECT_TIMEOUT" envDefault:"5s"`
+
+	// OIDCIssuer is the external issuer URL that must match the `iss` claim in
+	// tokens (e.g. https://kb.example.com/application/o/lookupkb/). Empty
+	// disables token verification so the skeleton/tests boot without Authentik
+	// (mirrors the empty-DatabaseURL behaviour). See 06-security.md §5.
+	OIDCIssuer string `env:"LOOKUPKB_OIDC_ISSUER"`
+
+	// OIDCIssuerInternal is the URL the API reaches for OIDC discovery and JWKS
+	// (e.g. http://authentik-server:9000/application/o/lookupkb/). Behind a
+	// reverse proxy this differs from the external issuer: JWKS is fetched here
+	// but the `iss` claim is still validated against OIDCIssuer. Empty falls
+	// back to OIDCIssuer (no split-horizon).
+	OIDCIssuerInternal string `env:"LOOKUPKB_OIDC_ISSUER_INTERNAL"`
+
+	// OIDCAudience is the expected `aud` claim (the LookupKB OAuth2 client id).
+	// Validated explicitly alongside issuer/signature/expiry — a JWKS-only check
+	// would let tokens minted for other Authentik apps be replayed here.
+	OIDCAudience string `env:"LOOKUPKB_OIDC_AUDIENCE"`
 }
 
 // Addr returns the host:port listen address.
@@ -70,6 +88,23 @@ func (c Config) MigrateDSN() string {
 // IsProduction reports whether the API runs in a production-like environment.
 func (c Config) IsProduction() bool {
 	return c.Env == "production"
+}
+
+// AuthEnabled reports whether OIDC token verification is configured. When the
+// issuer is empty the API boots without protected routes (dev/tests), the same
+// pattern as an empty DatabaseURL disabling the pool.
+func (c Config) AuthEnabled() bool {
+	return c.OIDCIssuer != ""
+}
+
+// OIDCDiscoveryURL returns the URL used for OIDC discovery / JWKS fetch,
+// preferring the internal URL when set (reverse-proxy split-horizon) and
+// otherwise the external issuer.
+func (c Config) OIDCDiscoveryURL() string {
+	if c.OIDCIssuerInternal != "" {
+		return c.OIDCIssuerInternal
+	}
+	return c.OIDCIssuer
 }
 
 // Load parses configuration from the process environment.

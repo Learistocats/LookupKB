@@ -11,8 +11,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Learistocats/LookupKB/api/internal/auth"
 	"github.com/Learistocats/LookupKB/api/internal/config"
 	"github.com/Learistocats/LookupKB/api/internal/db"
+	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/Learistocats/LookupKB/api/internal/logging"
 	"github.com/Learistocats/LookupKB/api/internal/server"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -102,7 +104,30 @@ func run(cfg config.Config, log *slog.Logger) error {
 		log.Warn("LOOKUPKB_DATABASE_URL is empty; starting without a database")
 	}
 
-	srv := server.New(cfg, log, version)
+	// Configure OIDC token verification when an issuer is set. Empty issuer
+	// keeps the API open (no protected routes) so the core stack boots without
+	// Authentik (--profile auth), mirroring the empty-DATABASE_URL behaviour.
+	var opts []server.Option
+	if cfg.AuthEnabled() {
+		discoverCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		verifier, err := auth.New(discoverCtx, cfg)
+		if err != nil {
+			return err
+		}
+		var users auth.UserUpserter
+		if pool != nil {
+			users = dbgen.New(pool)
+		} else {
+			log.Warn("auth enabled without a database; user projection upsert is disabled")
+		}
+		opts = append(opts, server.WithAuth(auth.NewMiddleware(verifier, users, log)))
+		log.Info("oidc verification enabled", "issuer", cfg.OIDCIssuer, "audience", cfg.OIDCAudience)
+	} else {
+		log.Warn("LOOKUPKB_OIDC_ISSUER is empty; protected routes are disabled")
+	}
+
+	srv := server.New(cfg, log, version, opts...)
 	if pool != nil {
 		srv.RegisterReadinessCheck("postgres", db.ReadinessCheck(pool))
 	}
