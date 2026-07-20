@@ -130,7 +130,7 @@ jobs:
       # Scans Dockerfiles + docker-compose for misconfigurations. Fails the build
       # on HIGH/CRITICAL; accepted findings go in .trivyignore (documented there).
       - name: Trivy config scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: config
           scan-ref: .
@@ -154,7 +154,7 @@ jobs:
       # green-able against base-image CVEs with no upstream fix yet; HIGH/CRITICAL
       # fixable findings fail the build.
       - name: Trivy scan API image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: lookupkb-api:ci
           severity: HIGH,CRITICAL
@@ -163,7 +163,7 @@ jobs:
           trivyignores: .trivyignore
 
       - name: Trivy scan web image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: lookupkb-web:ci
           severity: HIGH,CRITICAL
