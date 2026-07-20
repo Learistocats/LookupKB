@@ -1,0 +1,26 @@
+# Garage S3-compatible object store — single-node skeleton config.
+# Bucket/key layout provisioning (attachments) is done by a later uploads
+# ticket via `garage layout` + bucket creation; this only boots the daemon.
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "sqlite"
+
+replication_factor = 1
+
+# RPC secret is injected from the environment (GARAGE_RPC_SECRET) — never
+# commit a real secret. Generate with: openssl rand -hex 32
+rpc_bind_addr = "[::]:3901"
+rpc_public_addr = "127.0.0.1:3901"
+
+[s3_api]
+s3_region = "garage"
+api_bind_addr = "[::]:3900"
+root_domain = ".s3.garage.localhost"
+
+[s3_web]
+bind_addr = "[::]:3902"
+root_domain = ".web.garage.localhost"
+index = "index.html"
+
+[admin]
+api_bind_addr = "[::]:3903"

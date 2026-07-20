@@ -1,1 +1,23 @@
+# Secrets / local env
 .env
+.env.*
+!.env.example
+.linear
+
+# Go
+/api/bin/
+*.test
+*.out
+coverage.*
+
+# Node / SvelteKit (web has its own .gitignore too)
+node_modules/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Build artifacts
+/dist/
