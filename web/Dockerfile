@@ -19,11 +19,28 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
 COPY . .
 RUN pnpm run build
 
-# ---- runtime stage -----------------------------------------------------------
-# Static assets served by Caddy's file_server. Pinned by digest.
-FROM caddy:2.8-alpine@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17
+# Prune to production dependencies for the runtime image.
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm prune --prod
 
-COPY --from=build /app/build /srv
-COPY Caddyfile /etc/caddy/Caddyfile
+# ---- runtime stage -----------------------------------------------------------
+# The SvelteKit BFF runs as a small Node server (adapter-node): it owns the OIDC
+# flow and the session cookie. Caddy reverse-proxies to it on :8080.
+FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
+
+WORKDIR /app
+ENV NODE_ENV=production \
+    PORT=8080 \
+    HOST=0.0.0.0
+
+# Copy only what the server needs: the built output and production deps.
+COPY --from=build /app/build ./build
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/package.json ./package.json
+
+# Run unprivileged (the node image ships a `node` user).
+USER node
 
 EXPOSE 8080
+
+CMD ["node", "build"]

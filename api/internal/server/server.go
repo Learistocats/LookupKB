@@ -9,6 +9,7 @@ package server
 import (
 	"log/slog"
 
+	"github.com/Learistocats/LookupKB/api/internal/auth"
 	"github.com/Learistocats/LookupKB/api/internal/config"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/recover"
@@ -27,10 +28,21 @@ type Server struct {
 	cfg             config.Config
 	version         string
 	readinessChecks map[string]ReadinessCheck
+	auth            *auth.Middleware
+}
+
+// Option configures a Server at construction. Later tickets add their own.
+type Option func(*Server)
+
+// WithAuth enables the authenticated route group (/api/v1) guarded by the OIDC
+// verification middleware. Omitted when auth is not configured (dev/tests), in
+// which case no protected routes are registered.
+func WithAuth(mw *auth.Middleware) Option {
+	return func(s *Server) { s.auth = mw }
 }
 
 // New constructs a Server with base middleware and health routes registered.
-func New(cfg config.Config, log *slog.Logger, version string) *Server {
+func New(cfg config.Config, log *slog.Logger, version string, opts ...Option) *Server {
 	app := fiber.New(fiber.Config{
 		AppName:               "lookupkb-api",
 		DisableStartupMessage: true,
@@ -44,6 +56,9 @@ func New(cfg config.Config, log *slog.Logger, version string) *Server {
 		cfg:             cfg,
 		version:         version,
 		readinessChecks: map[string]ReadinessCheck{},
+	}
+	for _, opt := range opts {
+		opt(s)
 	}
 
 	app.Use(requestid.New())
@@ -76,6 +91,31 @@ func (s *Server) Shutdown() error {
 func (s *Server) registerRoutes() {
 	s.app.Get("/healthz", s.handleHealthz)
 	s.app.Get("/readyz", s.handleReadyz)
+
+	// Protected API. Every route under /api/v1 requires a verified token; the
+	// walking-skeleton ticket hangs draft routes here. Only registered when auth
+	// is configured (deny-by-default: no middleware ⇒ no protected surface).
+	if s.auth != nil {
+		v1 := s.app.Group("/api/v1", s.auth.Handle)
+		v1.Get("/me", s.handleMe)
+	}
+}
+
+// handleMe returns the verified caller's identity. It proves end-to-end token
+// verification (AC-1.2) and that the groups claim reaches handlers (AC-1.4); it
+// is the canonical protected endpoint later tickets build on.
+func (s *Server) handleMe(c *fiber.Ctx) error {
+	id, ok := auth.IdentityFromCtx(c)
+	if !ok {
+		// The middleware guarantees this, but never assume auth state.
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+	}
+	return c.JSON(fiber.Map{
+		"id":     id.UserID,
+		"sub":    id.Sub,
+		"email":  id.Email,
+		"groups": id.Groups,
+	})
 }
 
 // handleHealthz is the liveness probe: the process is up. It never touches

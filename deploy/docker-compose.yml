@@ -31,13 +31,22 @@ services:
       - "443:443/udp"
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:-http://localhost}
+      # Authentik gets its own hostname so the OIDC issuer is stable end-to-end
+      # (see docs/auth-setup.md). In dev *.localhost resolves to 127.0.0.1 in the
+      # browser; the network alias below lets the api/web containers reach the
+      # same URL via Caddy so the token issuer matches.
+      AUTH_SITE_ADDRESS: ${AUTH_SITE_ADDRESS:-http://authentik.localhost}
       ACME_EMAIL: ${ACME_EMAIL:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:
-      - edge
+      edge:
+        aliases:
+          # Dev default AUTH_SITE_ADDRESS host. Override in production with real
+          # DNS (then this alias is unused and harmless).
+          - authentik.localhost
     security_opt:
       - no-new-privileges:true
     deploy:
@@ -62,6 +71,12 @@ services:
       # Runtime DB connection as the least-privilege app role (DML only). Built
       # from the fixed role name + password so the URL never lands in .env.
       LOOKUPKB_DATABASE_URL: postgres://lookupkb_app:${LOOKUPKB_APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-lookupkb}?sslmode=disable
+      # OIDC token verification (LOO-8). Empty issuer disables protected routes so
+      # the core stack boots without Authentik (--profile auth). Audience is the
+      # provider client id. ISSUER_INTERNAL is optional split-horizon discovery.
+      LOOKUPKB_OIDC_ISSUER: ${LOOKUPKB_OIDC_ISSUER:-}
+      LOOKUPKB_OIDC_ISSUER_INTERNAL: ${LOOKUPKB_OIDC_ISSUER_INTERNAL:-}
+      LOOKUPKB_OIDC_AUDIENCE: ${LOOKUPKB_OIDC_AUDIENCE:-}
       # OTLP export target (the collector runs in the core stack). The SDK
       # export itself is wired by a later instrumentation ticket; this only
       # documents the endpoint the API will use.
@@ -139,12 +154,43 @@ services:
       context: ../web
     image: lookupkb-web:${LOOKUPKB_VERSION:-dev}
     restart: unless-stopped
+    environment:
+      # OIDC BFF (LOO-8). Empty OIDC_ISSUER disables auth so the core stack boots
+      # without Authentik. Client id/secret/redirect are shared with the Authentik
+      # blueprint via the LOOKUPKB_OIDC_* vars (single source of truth).
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${LOOKUPKB_OIDC_CLIENT_ID:-lookupkb}
+      OIDC_CLIENT_SECRET: ${LOOKUPKB_OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URI: ${LOOKUPKB_OIDC_REDIRECT_URI:-http://localhost/auth/callback}
+      OIDC_POST_LOGOUT_REDIRECT_URI: ${OIDC_POST_LOGOUT_REDIRECT_URI:-http://localhost/}
+      OIDC_SCOPES: ${OIDC_SCOPES:-openid profile email groups}
+      # Dev serves plain HTTP, so cookies must not be Secure-only. Never true in prod.
+      OIDC_ALLOW_INSECURE: ${OIDC_ALLOW_INSECURE:-true}
+      SESSION_COOKIE_SECRET: ${SESSION_COOKIE_SECRET:-}
+      # Server-side API base for bearer-proxied calls (internal service address).
+      API_INTERNAL_BASE: http://api:8080
+      # adapter-node: trust Caddy's forwarded proto/host and fix the origin for
+      # CSRF/redirect correctness behind the reverse proxy.
+      ORIGIN: ${SITE_ADDRESS:-http://localhost}
+      PROTOCOL_HEADER: x-forwarded-proto
+      HOST_HEADER: x-forwarded-host
     networks:
       - edge
     security_opt:
       - no-new-privileges:true
+    depends_on:
+      api:
+        condition: service_started
+    # node:slim has no wget/curl; probe with Node's global fetch against the
+    # unauthenticated /healthz route.
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -152,7 +198,7 @@ services:
       resources:
         limits:
           cpus: "0.5"
-          memory: 64M
+          memory: 128M
 
   # ---- Data stores ----------------------------------------------------------
   postgres:
@@ -327,6 +373,11 @@ services:
       AUTHENTIK_BOOTSTRAP_EMAIL: ${AUTHENTIK_BOOTSTRAP_EMAIL:-admin@localhost}
       AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:-}
       AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN:-}
+      # Consumed by the LookupKB blueprint (deploy/authentik/blueprints/lookupkb.yaml)
+      # to provision the OAuth2 provider without hardcoding secrets.
+      LOOKUPKB_OIDC_CLIENT_ID: ${LOOKUPKB_OIDC_CLIENT_ID:-lookupkb}
+      LOOKUPKB_OIDC_CLIENT_SECRET: ${LOOKUPKB_OIDC_CLIENT_SECRET:-}
+      LOOKUPKB_OIDC_REDIRECT_URI: ${LOOKUPKB_OIDC_REDIRECT_URI:-http://localhost/auth/callback}
     volumes:
       - authentik_media:/media
       - authentik_templates:/templates
@@ -362,6 +413,8 @@ services:
     volumes:
       - authentik_media:/media
       - authentik_templates:/templates
+      # File-based blueprint, auto-discovered and applied on boot.
+      - ./authentik/blueprints:/blueprints/lookupkb:ro
     networks:
       - data
     depends_on:

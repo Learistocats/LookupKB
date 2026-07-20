@@ -1,4 +1,5 @@
-// LookupKB web is a client-rendered SPA (see docs/planning/01-architecture.md).
-// Disable SSR and prerender the fallback shell; all data comes from the API.
-export const ssr = false;
-export const prerender = true;
+// LookupKB web is server-rendered by the Node adapter so hooks.server.ts can run
+// the OIDC flow and gate routes. Prerendering is disabled: every page depends on
+// the authenticated session resolved per request.
+export const ssr = true;
+export const prerender = false;

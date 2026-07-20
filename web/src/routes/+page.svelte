@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { getHealth, type Health } from '$lib/api';
+	import type { PageData } from './$types';
+
+	let { data }: { data: PageData } = $props();
 
 	type State =
 		{ kind: 'loading' } | { kind: 'ok'; health: Health } | { kind: 'error'; message: string };
@@ -27,6 +30,26 @@
 <main>
 	<h1>LookupKB</h1>
 	<p class="tagline">A fast, minimal knowledge base. Search-first, no folders.</p>
+
+	{#if data.user}
+		<section class="status">
+			<h2>Signed in</h2>
+			<dl>
+				<dt>email</dt>
+				<dd>{data.user.email || '—'}</dd>
+				<dt>subject</dt>
+				<dd>{data.user.sub}</dd>
+				<dt>groups</dt>
+				<dd>{data.user.groups.length ? data.user.groups.join(', ') : '(none)'}</dd>
+			</dl>
+			{#if data.me}
+				<p class="badge ok">API verified token (/api/v1/me)</p>
+			{:else if data.meError}
+				<p class="badge error">API /me: {data.meError}</p>
+			{/if}
+			<a class="logout" href="/auth/logout">Log out</a>
+		</section>
+	{/if}
 
 	<section class="status" aria-live="polite">
 		<h2>API health</h2>
@@ -154,5 +177,11 @@
 
 	button:hover {
 		background: #23272e;
+	}
+
+	.logout {
+		display: inline-block;
+		margin-top: 1.25rem;
+		color: #93c5fd;
 	}
 </style>
