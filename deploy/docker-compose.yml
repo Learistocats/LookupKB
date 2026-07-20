@@ -77,9 +77,9 @@ services:
       LOOKUPKB_OIDC_ISSUER: ${LOOKUPKB_OIDC_ISSUER:-}
       LOOKUPKB_OIDC_ISSUER_INTERNAL: ${LOOKUPKB_OIDC_ISSUER_INTERNAL:-}
       LOOKUPKB_OIDC_AUDIENCE: ${LOOKUPKB_OIDC_AUDIENCE:-}
-      # OTLP export target (the collector runs in the core stack). The SDK
-      # export itself is wired by a later instrumentation ticket; this only
-      # documents the endpoint the API will use.
+      # OTLP export target (the collector runs in the core stack). The API's OTel
+      # SDK exports traces/metrics/logs here; empty disables telemetry export so
+      # the stack boots without a collector (like an empty DATABASE_URL).
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
     read_only: true
     security_opt:

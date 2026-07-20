@@ -6,9 +6,12 @@ import (
 	"strings"
 
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
+	"github.com/Learistocats/LookupKB/api/internal/logging"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // identityLocalsKey keys the verified Identity on the Fiber context. Unexported
@@ -80,6 +83,16 @@ func (m *Middleware) Handle(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 		}
 		id.UserID = uuidString(user.ID)
+	}
+
+	// Attribute the request to the caller for the rest of the pipeline. Use the
+	// internal user id, never the email — actor_id is redacted/pseudonymized PII
+	// (06-security.md §7). Set once here and picked up by every downstream span
+	// and log line without re-plumbing.
+	if id.UserID != "" {
+		ctx := logging.WithActorID(c.UserContext(), id.UserID)
+		c.SetUserContext(ctx)
+		trace.SpanFromContext(ctx).SetAttributes(attribute.String("actor_id", id.UserID))
 	}
 
 	c.Locals(identityLocalsKey, id)
