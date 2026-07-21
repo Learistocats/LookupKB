@@ -4,7 +4,7 @@
 // error (AC-1.3 spirit: never surface protocol errors).
 import { redirect, error, type RequestHandler } from '@sveltejs/kit';
 import { getConfig, completeLogin } from '$lib/server/oidc';
-import { SESSION_COOKIE, TX_COOKIE, openTransaction, sealSession } from '$lib/server/session';
+import { setSessionCookie, TX_COOKIE, openTransaction, sealSession } from '$lib/server/session';
 
 export const GET: RequestHandler = async ({ url, cookies }) => {
 	const cfg = getConfig();
@@ -26,7 +26,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 			codeVerifier: tx.codeVerifier
 		});
 
-		cookies.set(SESSION_COOKIE, await sealSession(session, cfg.sessionSecret, cfg.sessionTtl), {
+		setSessionCookie(cookies, await sealSession(session, cfg.sessionSecret, cfg.sessionTtl), {
 			path: '/',
 			httpOnly: true,
 			secure: !cfg.allowInsecure,

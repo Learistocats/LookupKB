@@ -73,9 +73,17 @@ services:
       LOOKUPKB_DATABASE_URL: postgres://lookupkb_app:${LOOKUPKB_APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-lookupkb}?sslmode=disable
       # OIDC token verification (LOO-8). Empty issuer disables protected routes so
       # the core stack boots without Authentik (--profile auth). Audience is the
-      # provider client id. ISSUER_INTERNAL is optional split-horizon discovery.
+      # provider client id.
       LOOKUPKB_OIDC_ISSUER: ${LOOKUPKB_OIDC_ISSUER:-}
-      LOOKUPKB_OIDC_ISSUER_INTERNAL: ${LOOKUPKB_OIDC_ISSUER_INTERNAL:-}
+      # Split-horizon discovery: the API fetches discovery/JWKS from Authentik's
+      # internal service address while still validating the EXTERNAL issuer above
+      # on browser-minted tokens. This default is required for the compose stack:
+      # the external `authentik.localhost` is a network alias on the `caddy`
+      # container, and `caddy` waits for the api to be healthy (depends_on) — so at
+      # boot the api cannot resolve it (chicken-and-egg). Reaching authentik-server
+      # directly breaks that cycle. Override for a non-compose Authentik, or if the
+      # provider app slug is not `lookupkb`. Ignored when the issuer above is empty.
+      LOOKUPKB_OIDC_ISSUER_INTERNAL: ${LOOKUPKB_OIDC_ISSUER_INTERNAL:-http://authentik-server:9000/application/o/lookupkb/}
       LOOKUPKB_OIDC_AUDIENCE: ${LOOKUPKB_OIDC_AUDIENCE:-}
       # OTLP export target (the collector runs in the core stack). The API's OTel
       # SDK exports traces/metrics/logs here; empty disables telemetry export so
@@ -117,13 +125,16 @@ services:
     # Probe /readyz (not /healthz) so `caddy depends_on api: service_healthy`
     # reflects real readiness — the API is "healthy" only once its gating
     # dependencies (Postgres/Meili/Kroki/Garage) are reachable (AC-11.1). The
-    # start_period covers the dependency probes warming up.
+    # start_period covers the dependency probes warming up AND, when auth is
+    # enabled, the API waiting for Authentik's OIDC discovery to come up (it is
+    # not listening yet during that retry) — Authentik's own start_period is 60s,
+    # so give the API enough runway not to be flagged unhealthy while it waits.
     healthcheck:
       test: ["CMD", "/api", "readycheck"]
       interval: 15s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 120s
     deploy:
       resources:
         limits:

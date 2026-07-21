@@ -40,6 +40,7 @@ type Server struct {
 	informationalChecks map[string]ReadinessCheck
 	auth                *auth.Middleware
 	metrics             *metrics.Metrics
+	documents           DocumentStore
 }
 
 // Option configures a Server at construction. Later tickets add their own.
@@ -59,6 +60,14 @@ func WithMetrics(m *metrics.Metrics) Option {
 	return func(s *Server) { s.metrics = m }
 }
 
+// WithDocuments enables the walking-skeleton draft routes (create/save/read).
+// The store is the subset of the generated queries those handlers need; omitted
+// when no database is configured, in which case the draft routes are not
+// registered (mirrors WithAuth's deny-by-default).
+func WithDocuments(store DocumentStore) Option {
+	return func(s *Server) { s.documents = store }
+}
+
 // New constructs a Server with base middleware and health routes registered.
 func New(cfg config.Config, log *slog.Logger, version string, opts ...Option) *Server {
 	app := fiber.New(fiber.Config{
@@ -66,6 +75,13 @@ func New(cfg config.Config, log *slog.Logger, version string, opts ...Option) *S
 		DisableStartupMessage: true,
 		// Behind Caddy: trust proxy headers only from the reverse proxy.
 		ProxyHeader: fiber.HeaderXForwardedFor,
+		// fasthttp's default read buffer is 4 KiB, which the whole request head
+		// (request line + headers) must fit within — otherwise it returns 431.
+		// Browsers on the app origin attach the session cookie, which is chunked
+		// across several cookies for real Authentik tokens (see the web BFF), so a
+		// same-origin request (e.g. the health widget's /healthz) can carry a
+		// multi-KiB Cookie header. Give the head generous room so those never 431.
+		ReadBufferSize: 32 * 1024,
 	})
 
 	s := &Server{
@@ -149,6 +165,14 @@ func (s *Server) registerRoutes() {
 	if s.auth != nil {
 		v1 := s.app.Group("/api/v1", s.auth.Handle)
 		v1.Get("/me", s.handleMe)
+
+		// Walking-skeleton draft path (LOO-11). Only wired when a documents store
+		// is present (needs Postgres); create/save/read are all owner-scoped.
+		if s.documents != nil {
+			v1.Post("/documents", s.handleCreateDraft)
+			v1.Get("/drafts/:id", s.handleGetDraft)
+			v1.Put("/drafts/:id", s.handleSaveDraft)
+		}
 	}
 }
 

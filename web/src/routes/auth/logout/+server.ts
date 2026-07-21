@@ -4,14 +4,14 @@
 // (convenience for a plain link).
 import { redirect, type RequestHandler } from '@sveltejs/kit';
 import { getConfig, buildLogoutUrl } from '$lib/server/oidc';
-import { SESSION_COOKIE, openSession } from '$lib/server/session';
+import { getSessionCookie, clearSessionCookie, openSession } from '$lib/server/session';
 
 async function logout(cookies: Parameters<RequestHandler>[0]['cookies']): Promise<never> {
 	const cfg = getConfig();
-	const raw = cfg ? cookies.get(SESSION_COOKIE) : undefined;
+	const raw = cfg ? getSessionCookie(cookies) : null;
 	const session = raw && cfg ? await openSession(raw, cfg.sessionSecret) : null;
 
-	cookies.delete(SESSION_COOKIE, { path: '/' });
+	clearSessionCookie(cookies);
 
 	if (cfg) {
 		// Revoke at Authentik; id_token_hint lets it skip the confirmation prompt.
