@@ -47,6 +47,9 @@
 			{:else if data.meError}
 				<p class="badge error">API /me: {data.meError}</p>
 			{/if}
+			<form method="POST" action="?/createDraft">
+				<button type="submit">New draft</button>
+			</form>
 			<a class="logout" href="/auth/logout">Log out</a>
 		</section>
 	{/if}

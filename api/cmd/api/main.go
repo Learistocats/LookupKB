@@ -174,6 +174,12 @@ func run(cfg config.Config, version string) error {
 
 	opts = append(opts, server.WithMetrics(appMetrics))
 
+	// Wire the walking-skeleton draft routes when Postgres is configured. Without
+	// a pool the routes are omitted (the skeleton still boots for bare `go run`).
+	if pool != nil {
+		opts = append(opts, server.WithDocuments(dbgen.New(pool)))
+	}
+
 	srv := server.New(cfg, log, version, opts...)
 	if pool != nil {
 		srv.RegisterReadinessCheck("postgres", db.ReadinessCheck(pool))

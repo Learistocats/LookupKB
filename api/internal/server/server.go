@@ -40,6 +40,7 @@ type Server struct {
 	informationalChecks map[string]ReadinessCheck
 	auth                *auth.Middleware
 	metrics             *metrics.Metrics
+	documents           DocumentStore
 }
 
 // Option configures a Server at construction. Later tickets add their own.
@@ -57,6 +58,14 @@ func WithAuth(mw *auth.Middleware) Option {
 // them. No route records anything today.
 func WithMetrics(m *metrics.Metrics) Option {
 	return func(s *Server) { s.metrics = m }
+}
+
+// WithDocuments enables the walking-skeleton draft routes (create/save/read).
+// The store is the subset of the generated queries those handlers need; omitted
+// when no database is configured, in which case the draft routes are not
+// registered (mirrors WithAuth's deny-by-default).
+func WithDocuments(store DocumentStore) Option {
+	return func(s *Server) { s.documents = store }
 }
 
 // New constructs a Server with base middleware and health routes registered.
@@ -149,6 +158,14 @@ func (s *Server) registerRoutes() {
 	if s.auth != nil {
 		v1 := s.app.Group("/api/v1", s.auth.Handle)
 		v1.Get("/me", s.handleMe)
+
+		// Walking-skeleton draft path (LOO-11). Only wired when a documents store
+		// is present (needs Postgres); create/save/read are all owner-scoped.
+		if s.documents != nil {
+			v1.Post("/documents", s.handleCreateDraft)
+			v1.Get("/drafts/:id", s.handleGetDraft)
+			v1.Put("/drafts/:id", s.handleSaveDraft)
+		}
 	}
 }
 
