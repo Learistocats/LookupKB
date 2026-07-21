@@ -75,6 +75,13 @@ func New(cfg config.Config, log *slog.Logger, version string, opts ...Option) *S
 		DisableStartupMessage: true,
 		// Behind Caddy: trust proxy headers only from the reverse proxy.
 		ProxyHeader: fiber.HeaderXForwardedFor,
+		// fasthttp's default read buffer is 4 KiB, which the whole request head
+		// (request line + headers) must fit within — otherwise it returns 431.
+		// Browsers on the app origin attach the session cookie, which is chunked
+		// across several cookies for real Authentik tokens (see the web BFF), so a
+		// same-origin request (e.g. the health widget's /healthz) can carry a
+		// multi-KiB Cookie header. Give the head generous room so those never 431.
+		ReadBufferSize: 32 * 1024,
 	})
 
 	s := &Server{

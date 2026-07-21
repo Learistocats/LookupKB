@@ -31,12 +31,15 @@ dev: env ## Build and start the core stack in the foreground (logs attached)
 	$(COMPOSE) up --build
 
 .PHONY: down
-down: ## Stop the stack
-	$(COMPOSE) down
+down: ## Stop EVERYTHING (core + auth profile + observability overlay)
+	# `down` respects active profiles/files: without --profile auth and the obs
+	# overlay in scope, those containers survive and keep the networks alive. Pass
+	# both files + the profile so a single `make down` always fully cleans up.
+	$(COMPOSE_OBS) --profile auth down --remove-orphans
 
 .PHONY: clean
-clean: ## Stop the stack and remove volumes (DESTRUCTIVE)
-	$(COMPOSE) down -v
+clean: ## Stop EVERYTHING and remove volumes (DESTRUCTIVE)
+	$(COMPOSE_OBS) --profile auth down -v --remove-orphans
 
 .PHONY: logs
 logs: ## Tail stack logs
@@ -46,13 +49,21 @@ logs: ## Tail stack logs
 auth-up: env ## Start the core stack + Authentik (--profile auth)
 	$(COMPOSE) --profile auth up -d --build
 
+.PHONY: auth-down
+auth-down: ## Stop the core stack + Authentik (profile-aware; `down` also covers it)
+	$(COMPOSE) --profile auth down --remove-orphans
+
 .PHONY: obs-up
 obs-up: env ## Start the core stack + observability overlay (Grafana at /grafana)
 	$(COMPOSE_OBS) up -d --build
 
 .PHONY: obs-down
 obs-down: ## Stop the core stack + observability overlay
-	$(COMPOSE_OBS) down
+	$(COMPOSE_OBS) down --remove-orphans
+
+.PHONY: all-up
+all-up: env ## Start EVERYTHING: core + Authentik + observability overlay
+	$(COMPOSE_OBS) --profile auth up -d --build
 
 .PHONY: garage-init
 garage-init: ## Assign the initial Garage cluster layout (run once after `make up`)

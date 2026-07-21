@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/Learistocats/LookupKB/api/internal/config"
@@ -97,6 +98,23 @@ func TestReadyzInformationalCheckDoesNotGate(t *testing.T) {
 	require.Contains(t, string(body), `"status":"ready"`)
 	require.Contains(t, string(body), `"otel_collector":"unavailable"`)
 	require.Contains(t, string(body), `"postgres":"ok"`)
+}
+
+// A same-origin browser request carries the (chunked) session cookie, so the
+// request head can be several KiB. The server must accept it rather than 431 —
+// fasthttp's default 4 KiB read buffer would reject it (guards the raised
+// ReadBufferSize in New).
+func TestLargeCookieHeaderIsAccepted(t *testing.T) {
+	s := newTestServer(t)
+
+	req := httpGet("/healthz")
+	req.Header.Set("Cookie", "lkb_session.0="+strings.Repeat("a", 8000))
+
+	resp, err := s.App().Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func httpGet(target string) *http.Request {

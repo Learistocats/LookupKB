@@ -5,7 +5,9 @@
 import { redirect, type Handle } from '@sveltejs/kit';
 import { getConfig, refreshSession } from '$lib/server/oidc';
 import {
-	SESSION_COOKIE,
+	getSessionCookie,
+	setSessionCookie,
+	clearSessionCookie,
 	openSession,
 	sealSession,
 	isExpired,
@@ -31,7 +33,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 
 	const secure = !cfg.allowInsecure;
 	const isAuthRoute = event.url.pathname.startsWith('/auth/');
-	const raw = event.cookies.get(SESSION_COOKIE);
+	const raw = getSessionCookie(event.cookies);
 
 	let session: Session | null = raw ? await openSession(raw, cfg.sessionSecret) : null;
 
@@ -40,13 +42,13 @@ export const handle: Handle = async ({ event, resolve }) => {
 		// to the redirect below rather than surfacing a raw error.
 		try {
 			session = await refreshSession(cfg, session);
-			event.cookies.set(
-				SESSION_COOKIE,
+			setSessionCookie(
+				event.cookies,
 				await sealSession(session, cfg.sessionSecret, cfg.sessionTtl),
 				cookieOptions(secure, cfg.sessionTtl)
 			);
 		} catch {
-			event.cookies.delete(SESSION_COOKIE, { path: '/' });
+			clearSessionCookie(event.cookies);
 			session = null;
 		}
 	}

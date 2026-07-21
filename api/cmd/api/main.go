@@ -154,9 +154,7 @@ func run(cfg config.Config, version string) error {
 	// Authentik (--profile auth), mirroring the empty-DATABASE_URL behaviour.
 	var opts []server.Option
 	if cfg.AuthEnabled() {
-		discoverCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		verifier, err := auth.New(discoverCtx, cfg)
+		verifier, err := discoverOIDC(cfg, log)
 		if err != nil {
 			return err
 		}
@@ -202,6 +200,40 @@ func run(cfg config.Config, version string) error {
 	case <-ctx.Done():
 		log.Info("shutdown signal received, draining connections")
 		return srv.Shutdown()
+	}
+}
+
+// discoverOIDC resolves the OIDC verifier, tolerating an Authentik that is not
+// ready yet at startup. Authentik boots slower than the API (fresh DB migrations
+// + blueprint application), and its front proxy returns 502 "authentik starting"
+// until the backend is up. The API is in the core stack while Authentik is
+// profile-gated, so this ordering can't be a compose depends_on — instead we
+// retry discovery with a short backoff until Authentik answers or the deadline
+// elapses, rather than exiting and relying on a container crash-loop.
+func discoverOIDC(cfg config.Config, log *slog.Logger) (*auth.Verifier, error) {
+	const (
+		perAttempt = 10 * time.Second
+		interval   = 3 * time.Second
+		maxWait    = 90 * time.Second
+	)
+	deadline := time.Now().Add(maxWait)
+	var lastErr error
+	for attempt := 1; ; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), perAttempt)
+		verifier, err := auth.New(ctx, cfg)
+		cancel()
+		if err == nil {
+			if attempt > 1 {
+				log.Info("oidc discovery succeeded after retry", "attempts", attempt)
+			}
+			return verifier, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("oidc discovery failed after %s: %w", maxWait, lastErr)
+		}
+		log.Warn("oidc discovery not ready, retrying", "attempt", attempt, "error", err.Error())
+		time.Sleep(interval)
 	}
 }
 

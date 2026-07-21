@@ -5,6 +5,7 @@
 //
 // This module is pure (crypto + encoding) so it is unit-testable without a
 // running Authentik.
+import type { Cookies } from '@sveltejs/kit';
 import { EncryptJWT, jwtDecrypt, base64url } from 'jose';
 import { createHash } from 'node:crypto';
 
@@ -94,6 +95,64 @@ export function openTransaction(token: string, secret: string): Promise<OidcTran
 /** isExpired reports whether the access token is at/past its expiry (with a small skew). */
 export function isExpired(session: Session, skewSeconds = 30): boolean {
 	return Date.now() >= session.expiresAt - skewSeconds * 1000;
+}
+
+// ── Session cookie chunking ──────────────────────────────────────────────────
+// A sealed session packs the access + refresh + id tokens into one JWE, which for
+// real Authentik tokens exceeds the browser's ~4096-byte per-cookie limit — the
+// browser then silently drops it and the user loops through login forever. So the
+// sealed value is split across numbered cookies (`lkb_session.0`, `.1`, …), each
+// safely under the limit, and rejoined on read. Callers use these helpers instead
+// of touching SESSION_COOKIE directly.
+
+/** Max chars per cookie value; well under 4096 once the name + attributes are added. */
+const MAX_COOKIE_VALUE = 3800;
+/** Upper bound on chunks read/cleared — generous headroom over realistic token sizes. */
+const MAX_SESSION_CHUNKS = 8;
+
+type SessionCookieOptions = Parameters<Cookies['set']>[2];
+
+/** setSessionCookie writes the sealed session across as many chunk cookies as needed. */
+export function setSessionCookie(
+	cookies: Cookies,
+	sealed: string,
+	opts: SessionCookieOptions
+): void {
+	const parts: string[] = [];
+	for (let i = 0; i < sealed.length; i += MAX_COOKIE_VALUE) {
+		parts.push(sealed.slice(i, i + MAX_COOKIE_VALUE));
+	}
+	parts.forEach((part, i) => cookies.set(`${SESSION_COOKIE}.${i}`, part, opts));
+	// Drop leftover chunks (and any legacy single cookie) from a larger prior session.
+	clearStaleSessionCookies(cookies, parts.length, opts.path);
+}
+
+/** getSessionCookie rejoins the chunk cookies (falling back to a legacy single cookie). */
+export function getSessionCookie(cookies: Cookies): string | null {
+	if (cookies.get(`${SESSION_COOKIE}.0`) === undefined) {
+		return cookies.get(SESSION_COOKIE) ?? null;
+	}
+	let sealed = '';
+	for (let i = 0; i < MAX_SESSION_CHUNKS; i++) {
+		const part = cookies.get(`${SESSION_COOKIE}.${i}`);
+		if (part === undefined) break;
+		sealed += part;
+	}
+	return sealed;
+}
+
+/** clearSessionCookie removes every session chunk (and the legacy single cookie). */
+export function clearSessionCookie(cookies: Cookies, path = '/'): void {
+	clearStaleSessionCookies(cookies, 0, path);
+}
+
+function clearStaleSessionCookies(cookies: Cookies, keep: number, path = '/'): void {
+	if (cookies.get(SESSION_COOKIE) !== undefined) cookies.delete(SESSION_COOKIE, { path });
+	for (let i = keep; i < MAX_SESSION_CHUNKS; i++) {
+		if (cookies.get(`${SESSION_COOKIE}.${i}`) !== undefined) {
+			cookies.delete(`${SESSION_COOKIE}.${i}`, { path });
+		}
+	}
 }
 
 // Re-exported so callers importing this module don't also need jose directly.
