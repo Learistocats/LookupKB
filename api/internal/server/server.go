@@ -168,25 +168,37 @@ func (s *Server) registerRoutes() {
 	s.app.Get("/healthz", s.handleHealthz)
 	s.app.Get("/readyz", s.handleReadyz)
 
-	// Protected API. Every route under /api/v1 requires a verified token; the
-	// walking-skeleton ticket hangs draft routes here. Only registered when auth
-	// is configured (deny-by-default: no middleware ⇒ no protected surface).
+	// Protected API. Every route under /api requires a verified token. The auth
+	// middleware is attached once at the /api group so it runs a single time per
+	// request (it upserts the caller's user projection, so double-attaching would
+	// double that work). Only registered when auth is configured (deny-by-default:
+	// no middleware ⇒ no protected surface).
+	//
+	// Namespace split (01-architecture.md §3): the internal UI API is unversioned
+	// (/api/documents, /api/drafts/{id}); /api/v1 is reserved for the versioned
+	// public read-only API (F12), which must never expose drafts — so the draft
+	// routes deliberately live off /api/v1.
 	if s.auth != nil {
-		v1 := s.app.Group("/api/v1", s.auth.Handle)
-		v1.Get("/me", s.handleMe)
+		api := s.app.Group("/api", s.auth.Handle)
 
-		// Walking-skeleton draft path (LOO-11). Only wired when a documents store
-		// is present (needs Postgres); create/save/read are all owner-scoped.
-		if s.documents != nil {
-			v1.Post("/documents", s.handleCreateDraft)
-			v1.Get("/drafts/:id", s.handleGetDraft)
-			v1.Put("/drafts/:id", s.handleSaveDraft)
-		}
+		// Versioned public surface (me today; the read-only public API grows here).
+		v1 := api.Group("/v1")
+		v1.Get("/me", s.handleMe)
 
 		// Tag autocomplete (LOO-15). Only wired when a tag store is present (needs
 		// Postgres); the suggestion vocabulary is owner-agnostic.
 		if s.tags != nil {
 			v1.Get("/tags", s.handleListTags)
+		}
+
+		// Internal draft path (LOO-11/LOO-13). Only wired when a documents store is
+		// present (needs Postgres); create/save/read/list are all owner-scoped. The
+		// static /drafts list is registered before /drafts/:id so it is not shadowed.
+		if s.documents != nil {
+			api.Post("/documents", s.handleCreateDraft)
+			api.Get("/drafts", s.handleListDrafts)
+			api.Get("/drafts/:id", s.handleGetDraft)
+			api.Put("/drafts/:id", s.handleSaveDraft)
 		}
 	}
 }

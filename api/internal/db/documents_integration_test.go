@@ -90,6 +90,24 @@ func TestDraftRoundTrip(t *testing.T) {
 	var versions int
 	require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM document_versions").Scan(&versions))
 	require.Zero(t, versions, "draft saves must not create version snapshots")
+
+	// AC-2.4 / T-2.3: a draft save must NEVER enqueue a search-index write. Indexing
+	// is publish-only (05-search-and-indexing.md §4) — there is no draft-save outbox
+	// path at all, so after create + save the outbox is still empty.
+	var outbox int
+	require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM index_outbox").Scan(&outbox))
+	require.Zero(t, outbox, "drafts must never enqueue an index_outbox row")
+
+	// AC-2.5: the workspace list returns the author's own draft, and never another
+	// author's — the `other` user's list is empty even though a draft exists.
+	mine, err := q.ListDrafts(ctx, author.ID)
+	require.NoError(t, err)
+	require.Len(t, mine, 1)
+	require.Equal(t, created.ID, mine[0].ID)
+
+	theirs, err := q.ListDrafts(ctx, other.ID)
+	require.NoError(t, err)
+	require.Empty(t, theirs, "another author's workspace must not list this draft")
 }
 
 // TestSetRenderedHTMLCachesSanitized proves the LOO-16 producer guarantee end to

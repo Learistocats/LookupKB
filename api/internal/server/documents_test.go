@@ -45,14 +45,17 @@ type fakeDocStore struct {
 	createArg dbgen.CreateDraftParams
 	saveArg   dbgen.SaveDraftParams
 	getArg    dbgen.GetDraftParams
+	listArg   pgtype.UUID
 
 	createDoc dbgen.Document
 	saveDoc   dbgen.Document
 	getDoc    dbgen.Document
+	listRows  []dbgen.ListDraftsRow
 
 	createErr error
 	saveErr   error
 	getErr    error
+	listErr   error
 
 	setRenderedArg dbgen.SetRenderedHTMLParams
 	setRenderedErr error
@@ -71,6 +74,11 @@ func (f *fakeDocStore) SaveDraft(_ context.Context, arg dbgen.SaveDraftParams) (
 func (f *fakeDocStore) GetDraft(_ context.Context, arg dbgen.GetDraftParams) (dbgen.Document, error) {
 	f.getArg = arg
 	return f.getDoc, f.getErr
+}
+
+func (f *fakeDocStore) ListDrafts(_ context.Context, authorID pgtype.UUID) ([]dbgen.ListDraftsRow, error) {
+	f.listArg = authorID
+	return f.listRows, f.listErr
 }
 
 // SetRenderedHTML satisfies DocumentStore. No handler calls it yet (the publish
@@ -171,7 +179,7 @@ func TestCreateDraft_Returns201OwnedDraft(t *testing.T) {
 	store := &fakeDocStore{createDoc: draftDoc(id, "")}
 	s := newDraftServer(t, store)
 
-	resp := doReq(t, s, http.MethodPost, "/api/v1/documents", "")
+	resp := doReq(t, s, http.MethodPost, "/api/documents", "")
 	defer resp.Body.Close()
 
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
@@ -190,7 +198,7 @@ func TestSaveDraft_PersistsBodyScopedToCaller(t *testing.T) {
 	store := &fakeDocStore{saveDoc: draftDoc(id, "# hello")}
 	s := newDraftServer(t, store)
 
-	resp := doReq(t, s, http.MethodPut, "/api/v1/drafts/"+id.String(), `{"source_md":"# hello"}`)
+	resp := doReq(t, s, http.MethodPut, "/api/drafts/"+id.String(), `{"source_md":"# hello"}`)
 	defer resp.Body.Close()
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -206,7 +214,7 @@ func TestSaveDraft_EmptyBodySucceeds(t *testing.T) {
 	store := &fakeDocStore{saveDoc: draftDoc(id, "")}
 	s := newDraftServer(t, store)
 
-	resp := doReq(t, s, http.MethodPut, "/api/v1/drafts/"+id.String(), `{}`)
+	resp := doReq(t, s, http.MethodPut, "/api/drafts/"+id.String(), `{}`)
 	defer resp.Body.Close()
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -219,7 +227,7 @@ func TestGetDraft_ReturnsOwnDraft(t *testing.T) {
 	store := &fakeDocStore{getDoc: draftDoc(id, "# persisted")}
 	s := newDraftServer(t, store)
 
-	resp := doReq(t, s, http.MethodGet, "/api/v1/drafts/"+id.String(), "")
+	resp := doReq(t, s, http.MethodGet, "/api/drafts/"+id.String(), "")
 	defer resp.Body.Close()
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -231,13 +239,57 @@ func TestGetDraft_ReturnsOwnDraft(t *testing.T) {
 	require.Equal(t, "# persisted", *got.SourceMd)
 }
 
+// AC-2.5: the workspace list is owner-scoped — the handler must pass the caller's
+// internal id as the author filter, and it returns the store's rows projected to
+// the light list shape (title-or-null + updated time; never source_md).
+func TestListDrafts_ScopedToCaller(t *testing.T) {
+	id := uuid.New()
+	title := "My draft"
+	store := &fakeDocStore{listRows: []dbgen.ListDraftsRow{{
+		ID:        pgUUID(id),
+		Slug:      "draft-deadbeef",
+		Status:    dbgen.DocumentStatusDraft,
+		Title:     &title,
+		UpdatedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
+	}}}
+	s := newDraftServer(t, store)
+
+	resp := doReq(t, s, http.MethodGet, "/api/drafts", "")
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, pgUUID(callerUUID), store.listArg)
+
+	var got []draftListItem
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	require.Len(t, got, 1)
+	require.Equal(t, id.String(), got[0].ID)
+	require.NotNil(t, got[0].Title)
+	require.Equal(t, "My draft", *got[0].Title)
+}
+
+// An empty workspace returns a JSON array ([]), never null, so the client renders
+// uniformly (AC-2.5).
+func TestListDrafts_EmptyReturnsArray(t *testing.T) {
+	store := &fakeDocStore{listRows: nil}
+	s := newDraftServer(t, store)
+
+	resp := doReq(t, s, http.MethodGet, "/api/drafts", "")
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, "[]", strings.TrimSpace(string(body)))
+}
+
 // A draft not owned by the caller (or missing) yields no row → 404, identical
 // for "not yours" and "does not exist" so ownership is never leaked.
 func TestGetDraft_OtherUsersDraftIs404(t *testing.T) {
 	store := &fakeDocStore{getErr: pgx.ErrNoRows}
 	s := newDraftServer(t, store)
 
-	resp := doReq(t, s, http.MethodGet, "/api/v1/drafts/"+uuid.NewString(), "")
+	resp := doReq(t, s, http.MethodGet, "/api/drafts/"+uuid.NewString(), "")
 	defer resp.Body.Close()
 
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -247,7 +299,7 @@ func TestSaveDraft_OtherUsersDraftIs404(t *testing.T) {
 	store := &fakeDocStore{saveErr: pgx.ErrNoRows}
 	s := newDraftServer(t, store)
 
-	resp := doReq(t, s, http.MethodPut, "/api/v1/drafts/"+uuid.NewString(), `{"source_md":"x"}`)
+	resp := doReq(t, s, http.MethodPut, "/api/drafts/"+uuid.NewString(), `{"source_md":"x"}`)
 	defer resp.Body.Close()
 
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -257,7 +309,7 @@ func TestGetDraft_MalformedIDIs400(t *testing.T) {
 	store := &fakeDocStore{}
 	s := newDraftServer(t, store)
 
-	resp := doReq(t, s, http.MethodGet, "/api/v1/drafts/not-a-uuid", "")
+	resp := doReq(t, s, http.MethodGet, "/api/drafts/not-a-uuid", "")
 	defer resp.Body.Close()
 
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -268,7 +320,7 @@ func TestGetDraft_MalformedIDIs400(t *testing.T) {
 func TestDraftRoutesUnregisteredWithoutStore(t *testing.T) {
 	s := newDraftServer(t, nil)
 
-	resp := doReq(t, s, http.MethodPost, "/api/v1/documents", "")
+	resp := doReq(t, s, http.MethodPost, "/api/documents", "")
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
@@ -278,7 +330,7 @@ func TestDraftRoutesRequireAuth(t *testing.T) {
 	store := &fakeDocStore{}
 	s := newDraftServer(t, store)
 
-	req, _ := http.NewRequest(http.MethodPost, "/api/v1/documents", nil)
+	req, _ := http.NewRequest(http.MethodPost, "/api/documents", nil)
 	resp, err := s.App().Test(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()

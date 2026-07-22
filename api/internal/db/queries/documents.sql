@@ -42,3 +42,16 @@ FROM documents
 WHERE id = $1
   AND author_id = $2
   AND deleted_at IS NULL;
+
+-- name: ListDrafts :many
+-- List the author's own drafts for their private workspace (AC-2.5). Owner-scoped
+-- so no other user's drafts are ever returned (AC-2.3); status='draft' excludes
+-- published/unpublished docs and deleted_at IS NULL excludes soft-deleted rows.
+-- Ordered by recency (most recently edited first). Only the columns the workspace
+-- list needs are projected — never source_md/rendered_html.
+SELECT id, slug, status, title, updated_at
+FROM documents
+WHERE author_id = $1
+  AND status = 'draft'
+  AND deleted_at IS NULL
+ORDER BY updated_at DESC;

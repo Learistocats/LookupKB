@@ -1,7 +1,8 @@
-// Walking-skeleton end-to-end proof (LOO-11): log in → create draft → type
-// content → save → reload → content persists, through the REAL stack (Caddy →
-// API → Postgres, Authentik session). Plus an ownership spot-check: a second
-// user cannot read the first user's draft (AC-2.3).
+// End-to-end proof for F2 (LOO-11 + LOO-13): log in → create draft → type
+// content → it AUTOSAVES with no button press → reload → content persists → the
+// private workspace lists it, through the REAL stack (Caddy → API → Postgres,
+// Authentik session). Plus an ownership spot-check: a second user cannot read the
+// first user's draft (AC-2.3).
 //
 // Runs only when E2E_BASE_URL + credentials are set (see playwright.config.ts);
 // otherwise the whole suite is skipped so CI without a stack stays green.
@@ -16,7 +17,7 @@ const PASS2 = process.env.E2E_SECOND_PASSWORD;
 test.describe('draft round-trip', () => {
 	test.skip(!BASE || !USER || !PASS, 'set E2E_BASE_URL/E2E_USERNAME/E2E_PASSWORD to run');
 
-	test('create, save, reload persists', async ({ page }) => {
+	test('autosave persists, workspace lists it, others cannot read it', async ({ page }) => {
 		await login(page, USER!, PASS!);
 
 		// Create a fresh draft; the app redirects into its editor at /drafts/{id}.
@@ -24,20 +25,36 @@ test.describe('draft round-trip', () => {
 		await expect(page).toHaveURL(/\/drafts\/[0-9a-f-]{36}$/);
 		const draftUrl = page.url();
 
-		// The editor is now CodeMirror 6 (LOO-12): type into its contenteditable
-		// surface. The <textarea name="source_md"> still exists as the hidden form
-		// field / no-JS fallback, and its value tracks the editor — so persistence is
-		// asserted against it (a contenteditable has no toHaveValue).
+		// Give the draft a unique title so the workspace list can be asserted exactly.
+		const stamp = Date.now();
+		const titleMarker = `e2e-title-${stamp}`;
+		const bodyMarker = `e2e-body-${stamp}`;
+		await page.locator('input[name="title"]').fill(titleMarker);
+
+		// The editor is CodeMirror 6 (LOO-12): type into its contenteditable surface.
+		// The <textarea name="source_md"> still exists as the hidden form field / no-JS
+		// fallback, and its value tracks the editor — so persistence is asserted against
+		// it (a contenteditable has no toHaveValue).
 		const editor = page.locator('.cm-content');
-		const marker = `e2e-${Date.now()}`;
 		await editor.click();
-		await editor.pressSequentially(marker);
-		await page.getByRole('button', { name: /^save$/i }).click();
-		await expect(page.getByText(/saved/i)).toBeVisible();
+		await editor.pressSequentially(bodyMarker);
+
+		// AC-2.6: autosave persists after the debounce with NO explicit Save click, and
+		// the indicator visibly reaches a saved state.
+		await expect(page.getByText(/^saved/i)).toBeVisible();
 
 		// Reload: content must come back from Postgres, not in-memory state.
 		await page.reload();
-		await expect(page.locator('textarea[name="source_md"]')).toHaveValue(marker);
+		await expect(page.locator('textarea[name="source_md"]')).toHaveValue(bodyMarker);
+		await expect(page.locator('input[name="title"]')).toHaveValue(titleMarker);
+
+		// AC-2.5: the private workspace lists this draft by its title; opening it
+		// returns to the editor.
+		await page.goto('/drafts');
+		const entry = page.getByRole('link', { name: new RegExp(titleMarker) });
+		await expect(entry).toBeVisible();
+		await entry.click();
+		await expect(page).toHaveURL(draftUrl);
 
 		// Live preview (AC-3.1 / T-3.1): a Markdown heading on a non-active line
 		// renders as formatted text via a CodeMirror decoration, not raw "# ".
@@ -49,13 +66,16 @@ test.describe('draft round-trip', () => {
 		await editor.pressSequentially('body');
 		await expect(page.locator('.cm-preview-h1')).toBeVisible();
 
-		// Ownership: a second user must not be able to read the draft (AC-2.3).
+		// Ownership: a second user must not be able to read the draft, nor see it in
+		// their own workspace (AC-2.3).
 		if (USER2 && PASS2) {
 			const ctx = await page.context().browser()!.newContext({ ignoreHTTPSErrors: true });
 			const other = await ctx.newPage();
 			await login(other, USER2, PASS2);
 			await other.goto(draftUrl);
 			await expect(other.getByText(/not found/i)).toBeVisible();
+			await other.goto('/drafts');
+			await expect(other.getByText(titleMarker)).toHaveCount(0);
 			await ctx.close();
 		}
 	});
