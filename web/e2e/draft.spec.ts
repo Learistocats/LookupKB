@@ -24,15 +24,30 @@ test.describe('draft round-trip', () => {
 		await expect(page).toHaveURL(/\/drafts\/[0-9a-f-]{36}$/);
 		const draftUrl = page.url();
 
-		// Type unique content and save.
-		const marker = `# e2e ${Date.now()}\n\npersisted body`;
-		await page.getByLabel(/markdown source/i).fill(marker);
+		// The editor is now CodeMirror 6 (LOO-12): type into its contenteditable
+		// surface. The <textarea name="source_md"> still exists as the hidden form
+		// field / no-JS fallback, and its value tracks the editor — so persistence is
+		// asserted against it (a contenteditable has no toHaveValue).
+		const editor = page.locator('.cm-content');
+		const marker = `e2e-${Date.now()}`;
+		await editor.click();
+		await editor.pressSequentially(marker);
 		await page.getByRole('button', { name: /^save$/i }).click();
 		await expect(page.getByText(/saved/i)).toBeVisible();
 
 		// Reload: content must come back from Postgres, not in-memory state.
 		await page.reload();
-		await expect(page.getByLabel(/markdown source/i)).toHaveValue(marker);
+		await expect(page.locator('textarea[name="source_md"]')).toHaveValue(marker);
+
+		// Live preview (AC-3.1 / T-3.1): a Markdown heading on a non-active line
+		// renders as formatted text via a CodeMirror decoration, not raw "# ".
+		await editor.click();
+		await page.keyboard.press('ControlOrMeta+a');
+		await page.keyboard.press('Delete');
+		await editor.pressSequentially('# Heading');
+		await page.keyboard.press('Enter');
+		await editor.pressSequentially('body');
+		await expect(page.locator('.cm-preview-h1')).toBeVisible();
 
 		// Ownership: a second user must not be able to read the draft (AC-2.3).
 		if (USER2 && PASS2) {

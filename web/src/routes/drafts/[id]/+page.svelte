@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
 	import type { PageData, ActionData } from './$types';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -40,10 +41,7 @@
 			Title
 			<input name="title" bind:value={title} placeholder="Untitled draft" />
 		</label>
-		<label>
-			Markdown source
-			<textarea name="source_md" bind:value={source} rows="16" spellcheck="false"></textarea>
-		</label>
+		<MarkdownEditor bind:value={source} name="source_md" label="Markdown source" />
 		<div class="actions">
 			<button type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
 			{#if form?.saved}
@@ -106,8 +104,7 @@
 		letter-spacing: 0.06em;
 	}
 
-	input,
-	textarea {
+	input {
 		width: 100%;
 		box-sizing: border-box;
 		padding: 0.6rem 0.75rem;
@@ -116,13 +113,6 @@
 		background: #131519;
 		color: #e8eaed;
 		font: inherit;
-	}
-
-	textarea {
-		font-family: ui-monospace, 'SF Mono', Menlo, monospace;
-		font-size: 0.9rem;
-		line-height: 1.5;
-		resize: vertical;
 	}
 
 	.actions {
