@@ -148,3 +148,26 @@ func (q *Queries) SaveDraft(ctx context.Context, arg SaveDraftParams) (Document,
 	)
 	return i, err
 }
+
+const setRenderedHTML = `-- name: SetRenderedHTML :exec
+UPDATE documents
+SET rendered_html = $2,
+    updated_at    = now()
+WHERE id = $1
+`
+
+type SetRenderedHTMLParams struct {
+	ID           pgtype.UUID `json:"id"`
+	RenderedHtml *string     `json:"rendered_html"`
+}
+
+// Cache the publish-time sanitized HTML into the current-version cache column.
+// This is the ONLY write path to documents.rendered_html, and the value MUST be
+// render.RenderAndSanitize output — no unsanitized HTML ever reaches this column
+// (06-security.md §2; LOO-16). Status / published_at / version-snapshot
+// transitions are the publish gate's job (LOO-14/LOO-17); this primitive only
+// caches the HTML so those tickets compose it into their publish transaction.
+func (q *Queries) SetRenderedHTML(ctx context.Context, arg SetRenderedHTMLParams) error {
+	_, err := q.db.Exec(ctx, setRenderedHTML, arg.ID, arg.RenderedHtml)
+	return err
+}

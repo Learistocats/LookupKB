@@ -53,6 +53,9 @@ type fakeDocStore struct {
 	createErr error
 	saveErr   error
 	getErr    error
+
+	setRenderedArg dbgen.SetRenderedHTMLParams
+	setRenderedErr error
 }
 
 func (f *fakeDocStore) CreateDraft(_ context.Context, arg dbgen.CreateDraftParams) (dbgen.Document, error) {
@@ -68,6 +71,13 @@ func (f *fakeDocStore) SaveDraft(_ context.Context, arg dbgen.SaveDraftParams) (
 func (f *fakeDocStore) GetDraft(_ context.Context, arg dbgen.GetDraftParams) (dbgen.Document, error) {
 	f.getArg = arg
 	return f.getDoc, f.getErr
+}
+
+// SetRenderedHTML satisfies DocumentStore. No handler calls it yet (the publish
+// gate, LOO-14, wires it), so the fake only records the last args for future use.
+func (f *fakeDocStore) SetRenderedHTML(_ context.Context, arg dbgen.SetRenderedHTMLParams) error {
+	f.setRenderedArg = arg
+	return f.setRenderedErr
 }
 
 // callerUUID is the internal user id the fake upserter returns for the verified

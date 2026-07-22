@@ -104,6 +104,12 @@ type Config struct {
 	// ReadinessCacheTTL memoizes each probe's result for this window so frequent
 	// orchestrator polling doesn't hammer the dependencies. 0 disables caching.
 	ReadinessCacheTTL time.Duration `env:"LOOKUPKB_READINESS_CACHE_TTL" envDefault:"1s"`
+
+	// MarkdownMaxBytes caps the Markdown source size accepted at publish, bounding
+	// server-side render cost (06-security.md §6 DoS row). Source exceeding it is
+	// rejected before rendering (render.ErrSourceTooLarge), never truncated. The
+	// limit is admin-tunable; the default (1 MiB) is generous for prose documents.
+	MarkdownMaxBytes int `env:"LOOKUPKB_MARKDOWN_MAX_BYTES" envDefault:"1048576"`
 }
 
 // MeiliHealthURL returns the Meilisearch health endpoint, or "" when unconfigured.
