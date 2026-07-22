@@ -127,6 +127,27 @@ export function computePreviewDecorations(state: EditorState): PreviewDecoration
 					push({ kind: 'hide', from: ref.from, to: skipSpaces(state, ref.to) });
 					break;
 				}
+				case 'FencedCode': {
+					const marks = ref.node.getChildren('CodeMark');
+					const info = ref.node.getChildren('CodeInfo')[0];
+					// Hide the opening fence + language tag (```javascript) and the
+					// closing fence (```) — revealed on the active line like other markup.
+					if (marks.length) {
+						push({ kind: 'hide', from: ref.from, to: info ? info.to : marks[0].to });
+					}
+					if (marks.length > 1) {
+						const close = marks[marks.length - 1];
+						push({ kind: 'hide', from: close.from, to: close.to });
+					}
+					// Shade every line of the block so the collapsed fence lines read as
+					// the block's padding rather than blank gaps.
+					const first = state.doc.lineAt(ref.from).number;
+					const last = state.doc.lineAt(ref.to).number;
+					for (let n = first; n <= last; n++) {
+						push({ kind: 'line', from: state.doc.line(n).from, class: 'cm-preview-codeblock' });
+					}
+					break;
+				}
 				case 'ListItem': {
 					const task = ref.node.getChildren('Task')[0];
 					const listMark = ref.node.getChildren('ListMark')[0];

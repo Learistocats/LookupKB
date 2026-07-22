@@ -103,6 +103,23 @@ describe('computePreviewDecorations — lists, tasks, quotes (full set)', () => 
 		expect(ds.some((d) => d.kind === 'line' && d.class === 'cm-preview-quote')).toBe(true);
 		expect(kinds(ds, 'hide').some((d) => sliceMark(doc, d) === '> ')).toBe(true);
 	});
+
+	it('hides the fence + language tag of a code block and shades it', () => {
+		const doc = '```js\nlet x = 1;\n```\n\nx';
+		const ds = decos(doc);
+		const hidden = kinds(ds, 'hide').map((d) => sliceMark(doc, d));
+		expect(hidden).toContain('```js'); // opening fence + language
+		expect(hidden).toContain('```'); // closing fence
+		expect(ds.some((d) => d.kind === 'line' && d.class === 'cm-preview-codeblock')).toBe(true);
+	});
+
+	it('reveals the fence when the cursor is on the fence line', () => {
+		const doc = '```js\nlet x = 1;\n```\n\nx';
+		const onOpen = decos(doc, 2); // cursor inside the opening ```js line
+		expect(kinds(onOpen, 'hide').some((d) => sliceMark(doc, d) === '```js')).toBe(false);
+		// the shading still applies while editing
+		expect(onOpen.some((d) => d.kind === 'line' && d.class === 'cm-preview-codeblock')).toBe(true);
+	});
 });
 
 describe('computePreviewDecorations — active-line reveal', () => {

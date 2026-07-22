@@ -67,6 +67,11 @@ export const editorTheme = EditorView.theme(
 			paddingLeft: '0.75rem',
 			color: muted
 		},
+		'.cm-preview-codeblock': {
+			backgroundColor: bg,
+			borderLeft: `3px solid ${border}`,
+			paddingLeft: '0.75rem'
+		},
 		'.cm-preview-bullet': { color: accent, paddingRight: '0.4em' },
 		'.cm-preview-checkbox': {
 			marginRight: '0.4em',
