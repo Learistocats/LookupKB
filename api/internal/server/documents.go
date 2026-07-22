@@ -15,14 +15,20 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// DocumentStore is the subset of the generated queries the draft routes need.
+// DocumentStore is the subset of the generated queries the document routes need.
 // *dbgen.Queries satisfies it; kept as an interface so the handlers are testable
-// without a database. All three queries are owner-scoped (author_id) and never
+// without a database. The draft queries are owner-scoped (author_id) and never
 // touch versions/index/status — see internal/db/queries/documents.sql.
+//
+// SetRenderedHTML is the write path to documents.rendered_html for the sanitized
+// publish-time HTML (LOO-16). It has no handler yet: the publish gate (LOO-14)
+// composes render.RenderAndSanitize output into its publish transaction and calls
+// it there. The seam ships now so that ticket has nothing to retrofit here.
 type DocumentStore interface {
 	CreateDraft(ctx context.Context, arg dbgen.CreateDraftParams) (dbgen.Document, error)
 	SaveDraft(ctx context.Context, arg dbgen.SaveDraftParams) (dbgen.Document, error)
 	GetDraft(ctx context.Context, arg dbgen.GetDraftParams) (dbgen.Document, error)
+	SetRenderedHTML(ctx context.Context, arg dbgen.SetRenderedHTMLParams) error
 }
 
 // draftResponse is the JSON projection returned to the caller. Only the fields

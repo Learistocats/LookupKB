@@ -22,6 +22,18 @@ WHERE id = $1
   AND status = 'draft'
 RETURNING *;
 
+-- name: SetRenderedHTML :exec
+-- Cache the publish-time sanitized HTML into the current-version cache column.
+-- This is the ONLY write path to documents.rendered_html, and the value MUST be
+-- render.RenderAndSanitize output — no unsanitized HTML ever reaches this column
+-- (06-security.md §2; LOO-16). Status / published_at / version-snapshot
+-- transitions are the publish gate's job (LOO-14/LOO-17); this primitive only
+-- caches the HTML so those tickets compose it into their publish transaction.
+UPDATE documents
+SET rendered_html = $2,
+    updated_at    = now()
+WHERE id = $1;
+
 -- name: GetDraft :one
 -- Read a single draft owned by the author (drafts are private to their author,
 -- 03-data-model.md §2). deleted_at IS NULL excludes soft-deleted rows.
