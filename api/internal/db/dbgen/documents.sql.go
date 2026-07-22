@@ -98,6 +98,54 @@ func (q *Queries) GetDraft(ctx context.Context, arg GetDraftParams) (Document, e
 	return i, err
 }
 
+const listDrafts = `-- name: ListDrafts :many
+SELECT id, slug, status, title, updated_at
+FROM documents
+WHERE author_id = $1
+  AND status = 'draft'
+  AND deleted_at IS NULL
+ORDER BY updated_at DESC
+`
+
+type ListDraftsRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	Slug      string             `json:"slug"`
+	Status    DocumentStatus     `json:"status"`
+	Title     *string            `json:"title"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+// List the author's own drafts for their private workspace (AC-2.5). Owner-scoped
+// so no other user's drafts are ever returned (AC-2.3); status='draft' excludes
+// published/unpublished docs and deleted_at IS NULL excludes soft-deleted rows.
+// Ordered by recency (most recently edited first). Only the columns the workspace
+// list needs are projected — never source_md/rendered_html.
+func (q *Queries) ListDrafts(ctx context.Context, authorID pgtype.UUID) ([]ListDraftsRow, error) {
+	rows, err := q.db.Query(ctx, listDrafts, authorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListDraftsRow
+	for rows.Next() {
+		var i ListDraftsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Slug,
+			&i.Status,
+			&i.Title,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const saveDraft = `-- name: SaveDraft :one
 UPDATE documents
 SET title       = $3,

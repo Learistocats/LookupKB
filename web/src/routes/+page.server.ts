@@ -24,7 +24,7 @@ export const actions: Actions = {
 	// attached server-side; the browser never sees the token. The new draft's id
 	// comes back from the API and drives the redirect.
 	createDraft: async ({ locals }) => {
-		const res = await apiFetch(locals.accessToken, '/api/v1/documents', { method: 'POST' });
+		const res = await apiFetch(locals.accessToken, '/api/documents', { method: 'POST' });
 		if (!res.ok) {
 			error(res.status === 401 ? 401 : 502, `Could not create draft (API ${res.status})`);
 		}

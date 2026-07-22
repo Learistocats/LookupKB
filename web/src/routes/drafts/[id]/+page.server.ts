@@ -17,7 +17,7 @@ export type Draft = {
 };
 
 export const load: PageServerLoad = async ({ locals, params }) => {
-	const res = await apiFetch(locals.accessToken, `/api/v1/drafts/${params.id}`);
+	const res = await apiFetch(locals.accessToken, `/api/drafts/${params.id}`);
 	// 404 covers both "no such draft" and "not yours" — the API never leaks which
 	// (ownership is enforced server-side, AC-2.3).
 	if (res.status === 404) error(404, 'Draft not found');
@@ -35,7 +35,7 @@ export const actions: Actions = {
 			source_md: emptyToNull(form.get('source_md'))
 		};
 
-		const res = await apiFetch(locals.accessToken, `/api/v1/drafts/${params.id}`, {
+		const res = await apiFetch(locals.accessToken, `/api/drafts/${params.id}`, {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify(body)

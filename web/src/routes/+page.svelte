@@ -47,9 +47,12 @@
 			{:else if data.meError}
 				<p class="badge error">API /me: {data.meError}</p>
 			{/if}
-			<form method="POST" action="?/createDraft">
-				<button type="submit">New draft</button>
-			</form>
+			<div class="workspace-actions">
+				<form method="POST" action="?/createDraft">
+					<button type="submit">New draft</button>
+				</form>
+				<a class="workspace" href="/drafts">Your drafts →</a>
+			</div>
 			<a class="logout" href="/auth/logout">Log out</a>
 		</section>
 	{/if}
@@ -180,6 +183,23 @@
 
 	button:hover {
 		background: #23272e;
+	}
+
+	.workspace-actions {
+		display: flex;
+		align-items: center;
+		gap: 1.25rem;
+		margin-top: 0.5rem;
+	}
+
+	.workspace-actions form button {
+		margin-top: 0.75rem;
+	}
+
+	.workspace {
+		color: #93c5fd;
+		text-decoration: none;
+		font-size: 0.9rem;
 	}
 
 	.logout {

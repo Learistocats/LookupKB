@@ -28,6 +28,7 @@ type DocumentStore interface {
 	CreateDraft(ctx context.Context, arg dbgen.CreateDraftParams) (dbgen.Document, error)
 	SaveDraft(ctx context.Context, arg dbgen.SaveDraftParams) (dbgen.Document, error)
 	GetDraft(ctx context.Context, arg dbgen.GetDraftParams) (dbgen.Document, error)
+	ListDrafts(ctx context.Context, authorID pgtype.UUID) ([]dbgen.ListDraftsRow, error)
 	SetRenderedHTML(ctx context.Context, arg dbgen.SetRenderedHTMLParams) error
 }
 
@@ -55,6 +56,28 @@ func toDraftResponse(d dbgen.Document) draftResponse {
 		SourceMd:    d.SourceMd,
 		CreatedAt:   formatTime(d.CreatedAt),
 		UpdatedAt:   formatTime(d.UpdatedAt),
+	}
+}
+
+// draftListItem is the per-row projection for the private workspace list. It is
+// deliberately lighter than draftResponse — title (nullable; the UI renders
+// "Untitled" when absent) and updated_at are all the list needs; source_md and
+// rendered_html are never listed.
+type draftListItem struct {
+	ID        string  `json:"id"`
+	Slug      string  `json:"slug"`
+	Status    string  `json:"status"`
+	Title     *string `json:"title"`
+	UpdatedAt string  `json:"updated_at"`
+}
+
+func toDraftListItem(r dbgen.ListDraftsRow) draftListItem {
+	return draftListItem{
+		ID:        formatUUID(r.ID),
+		Slug:      r.Slug,
+		Status:    string(r.Status),
+		Title:     r.Title,
+		UpdatedAt: formatTime(r.UpdatedAt),
 	}
 }
 
@@ -156,6 +179,30 @@ func (s *Server) handleGetDraft(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(toDraftResponse(doc))
+}
+
+// handleListDrafts returns the caller's own drafts for their private workspace
+// (AC-2.5). The query is owner-scoped (author_id) and status='draft', so no other
+// user's drafts are ever returned (AC-2.3) — admins included: there is no bypass,
+// a deliberate privacy decision (03-data-model.md §2). An empty workspace returns
+// a JSON [] (never null) so the client can render uniformly.
+func (s *Server) handleListDrafts(c *fiber.Ctx) error {
+	authorID, err := s.callerID(c)
+	if err != nil {
+		return err
+	}
+
+	rows, err := s.documents.ListDrafts(c.UserContext(), authorID)
+	if err != nil {
+		s.log.ErrorContext(c.UserContext(), "list drafts failed", "error", err.Error())
+		return internalError(c)
+	}
+
+	items := make([]draftListItem, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, toDraftListItem(r))
+	}
+	return c.JSON(items)
 }
 
 // callerID returns the verified caller's internal user id as a pgtype.UUID for
