@@ -19,6 +19,7 @@ import (
 	"github.com/Learistocats/LookupKB/api/internal/logging"
 	"github.com/Learistocats/LookupKB/api/internal/metrics"
 	"github.com/Learistocats/LookupKB/api/internal/server"
+	"github.com/Learistocats/LookupKB/api/internal/tags"
 	"github.com/Learistocats/LookupKB/api/internal/telemetry"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel"
@@ -176,6 +177,7 @@ func run(cfg config.Config, version string) error {
 	// a pool the routes are omitted (the skeleton still boots for bare `go run`).
 	if pool != nil {
 		opts = append(opts, server.WithDocuments(dbgen.New(pool)))
+		opts = append(opts, server.WithTags(tags.New(pool)))
 	}
 
 	srv := server.New(cfg, log, version, opts...)

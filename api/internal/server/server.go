@@ -41,6 +41,7 @@ type Server struct {
 	auth                *auth.Middleware
 	metrics             *metrics.Metrics
 	documents           DocumentStore
+	tags                TagStore
 }
 
 // Option configures a Server at construction. Later tickets add their own.
@@ -66,6 +67,14 @@ func WithMetrics(m *metrics.Metrics) Option {
 // registered (mirrors WithAuth's deny-by-default).
 func WithDocuments(store DocumentStore) Option {
 	return func(s *Server) { s.documents = store }
+}
+
+// WithTags enables the tag autocomplete route (GET /api/v1/tags). Omitted when no
+// database is configured (mirrors WithDocuments' deny-by-default: no store ⇒ no
+// route). The store's tag-apply/usage_count methods are consumed by the publish
+// gate directly, not through this option.
+func WithTags(store TagStore) Option {
+	return func(s *Server) { s.tags = store }
 }
 
 // New constructs a Server with base middleware and health routes registered.
@@ -172,6 +181,12 @@ func (s *Server) registerRoutes() {
 			v1.Post("/documents", s.handleCreateDraft)
 			v1.Get("/drafts/:id", s.handleGetDraft)
 			v1.Put("/drafts/:id", s.handleSaveDraft)
+		}
+
+		// Tag autocomplete (LOO-15). Only wired when a tag store is present (needs
+		// Postgres); the suggestion vocabulary is owner-agnostic.
+		if s.tags != nil {
+			v1.Get("/tags", s.handleListTags)
 		}
 	}
 }
