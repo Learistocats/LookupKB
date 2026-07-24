@@ -79,6 +79,49 @@ test.describe('draft round-trip', () => {
 			await ctx.close();
 		}
 	});
+
+	// F5: the publish gate is a deliberate two-step confirm with server-side metadata
+	// validation. T-5.1 (confirm step shows the metadata), T-5.2 (invalid metadata →
+	// per-field errors, document stays a draft), then a valid publish → published.
+	test('publish requires a confirm step, blocks on invalid metadata, then publishes', async ({
+		page
+	}) => {
+		await login(page, USER!, PASS!);
+
+		await page.getByRole('button', { name: /new draft/i }).click();
+		await expect(page).toHaveURL(/\/drafts\/[0-9a-f-]{36}$/);
+
+		const stamp = Date.now();
+		const titleMarker = `e2e-pub-${stamp}`;
+		await page.locator('input[name="title"]').fill(titleMarker);
+		const editor = page.locator('.cm-content');
+		await editor.click();
+		await editor.pressSequentially('Some publishable body content.');
+		await expect(page.getByText(/^saved/i)).toBeVisible();
+
+		// T-5.1: clicking Publish opens a confirm step showing the metadata (the title
+		// carries over into the dialog); publishing has NOT happened yet.
+		await page.getByRole('button', { name: /^publish…$/i }).click();
+		const dialog = page.getByRole('dialog', { name: /publish document/i });
+		await expect(dialog).toBeVisible();
+		await expect(dialog.getByText(/access:\s*public/i)).toBeVisible();
+
+		// T-5.2: confirm with no tags → the server blocks publish with a per-field tag
+		// error and the document is still a draft (the dialog stays open).
+		await dialog.getByRole('button', { name: /confirm publish/i }).click();
+		await expect(dialog.getByText(/tag/i)).toBeVisible();
+		await expect(dialog).toBeVisible();
+
+		// Provide valid metadata, then confirm → the document becomes published.
+		await dialog.getByText('Description', { exact: false }); // ensure the field is present
+		await dialog.locator('textarea').fill('A short but sufficient description of the doc.');
+		await dialog.locator('input[placeholder="Add a tag…"]').fill('e2e');
+		await dialog.locator('input[placeholder="Add a tag…"]').press('Enter');
+		await dialog.getByRole('button', { name: /confirm publish/i }).click();
+
+		await expect(page.getByText(/^published$/i)).toBeVisible();
+		await expect(page.getByRole('button', { name: /^unpublish$/i })).toBeVisible();
+	});
 });
 
 // login performs the Authentik Authorization-Code flow through the browser. The

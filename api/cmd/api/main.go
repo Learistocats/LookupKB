@@ -18,6 +18,8 @@ import (
 	"github.com/Learistocats/LookupKB/api/internal/health"
 	"github.com/Learistocats/LookupKB/api/internal/logging"
 	"github.com/Learistocats/LookupKB/api/internal/metrics"
+	"github.com/Learistocats/LookupKB/api/internal/publish"
+	"github.com/Learistocats/LookupKB/api/internal/render"
 	"github.com/Learistocats/LookupKB/api/internal/server"
 	"github.com/Learistocats/LookupKB/api/internal/tags"
 	"github.com/Learistocats/LookupKB/api/internal/telemetry"
@@ -178,6 +180,11 @@ func run(cfg config.Config, version string) error {
 	if pool != nil {
 		opts = append(opts, server.WithDocuments(dbgen.New(pool)))
 		opts = append(opts, server.WithTags(tags.New(pool)))
+		// One process-wide renderer (concurrency-safe) drives the publish gate's
+		// server-side render+sanitize; the publish service composes it with the
+		// snapshot/tag/audit/outbox writes into one transaction.
+		renderer := render.New()
+		opts = append(opts, server.WithPublish(publish.NewService(pool, renderer, log)))
 	}
 
 	srv := server.New(cfg, log, version, opts...)

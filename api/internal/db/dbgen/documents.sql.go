@@ -98,6 +98,47 @@ func (q *Queries) GetDraft(ctx context.Context, arg GetDraftParams) (Document, e
 	return i, err
 }
 
+const getOwnedDocument = `-- name: GetOwnedDocument :one
+SELECT id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, current_version_id, search_tsv, deleted_at
+FROM documents
+WHERE id = $1
+  AND author_id = $2
+  AND deleted_at IS NULL
+`
+
+type GetOwnedDocumentParams struct {
+	ID       pgtype.UUID `json:"id"`
+	AuthorID pgtype.UUID `json:"author_id"`
+}
+
+// Read one of the caller's own documents in ANY status (draft/published/
+// unpublished) — the publish gate (LOO-14) needs the working copy of an
+// already-published doc for a re-publish, which GetDraft (status='draft' only)
+// cannot return. Owner-scoped so a cross-author or missing id yields pgx.ErrNoRows
+// → an identical 404 that never leaks existence (03-data-model.md §2).
+func (q *Queries) GetOwnedDocument(ctx context.Context, arg GetOwnedDocumentParams) (Document, error) {
+	row := q.db.QueryRow(ctx, getOwnedDocument, arg.ID, arg.AuthorID)
+	var i Document
+	err := row.Scan(
+		&i.ID,
+		&i.Slug,
+		&i.AuthorID,
+		&i.Status,
+		&i.Title,
+		&i.Description,
+		&i.SourceMd,
+		&i.RenderedHtml,
+		&i.Access,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.PublishedAt,
+		&i.CurrentVersionID,
+		&i.SearchTsv,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const listDrafts = `-- name: ListDrafts :many
 SELECT id, slug, status, title, updated_at
 FROM documents
@@ -144,6 +185,70 @@ func (q *Queries) ListDrafts(ctx context.Context, authorID pgtype.UUID) ([]ListD
 		return nil, err
 	}
 	return items, nil
+}
+
+const publishDocument = `-- name: PublishDocument :one
+UPDATE documents
+SET status        = 'published',
+    title         = $1,
+    description   = $2,
+    rendered_html = $3,
+    slug          = CASE WHEN published_at IS NULL THEN $4 ELSE slug END,
+    published_at  = COALESCE(published_at, now()),
+    updated_at    = now()
+WHERE id = $5
+  AND author_id = $6
+  AND deleted_at IS NULL
+RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, current_version_id, search_tsv, deleted_at
+`
+
+type PublishDocumentParams struct {
+	Title        *string     `json:"title"`
+	Description  *string     `json:"description"`
+	RenderedHtml *string     `json:"rendered_html"`
+	Slug         string      `json:"slug"`
+	ID           pgtype.UUID `json:"id"`
+	AuthorID     pgtype.UUID `json:"author_id"`
+}
+
+// Flip a document to 'published' with its just-validated metadata and freshly
+// rendered HTML, inside the publish transaction (LOO-14). First-publish semantics
+// are encoded in SQL so they cannot race a concurrent read-modify-write:
+//   - published_at = COALESCE(published_at, now()) — set once, never overwritten
+//     on re-publish (breaks "first published" sort order otherwise).
+//   - slug = CASE WHEN published_at IS NULL THEN @slug ELSE slug END — the ugly
+//     draft-<hex> placeholder is replaced with the title-derived slug on the FIRST
+//     publish only, then stays stable across edits (03-data-model.md §1 `slug`).
+//
+// Owner-scoped (author_id) so it can never publish another author's document.
+func (q *Queries) PublishDocument(ctx context.Context, arg PublishDocumentParams) (Document, error) {
+	row := q.db.QueryRow(ctx, publishDocument,
+		arg.Title,
+		arg.Description,
+		arg.RenderedHtml,
+		arg.Slug,
+		arg.ID,
+		arg.AuthorID,
+	)
+	var i Document
+	err := row.Scan(
+		&i.ID,
+		&i.Slug,
+		&i.AuthorID,
+		&i.Status,
+		&i.Title,
+		&i.Description,
+		&i.SourceMd,
+		&i.RenderedHtml,
+		&i.Access,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.PublishedAt,
+		&i.CurrentVersionID,
+		&i.SearchTsv,
+		&i.DeletedAt,
+	)
+	return i, err
 }
 
 const saveDraft = `-- name: SaveDraft :one
@@ -218,4 +323,49 @@ type SetRenderedHTMLParams struct {
 func (q *Queries) SetRenderedHTML(ctx context.Context, arg SetRenderedHTMLParams) error {
 	_, err := q.db.Exec(ctx, setRenderedHTML, arg.ID, arg.RenderedHtml)
 	return err
+}
+
+const unpublishDocument = `-- name: UnpublishDocument :one
+UPDATE documents
+SET status     = 'unpublished',
+    updated_at = now()
+WHERE id = $1
+  AND author_id = $2
+  AND status = 'published'
+  AND deleted_at IS NULL
+RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, current_version_id, search_tsv, deleted_at
+`
+
+type UnpublishDocumentParams struct {
+	ID       pgtype.UUID `json:"id"`
+	AuthorID pgtype.UUID `json:"author_id"`
+}
+
+// Revert a published document to author-only 'unpublished' visibility (AC-5.6).
+// Only a currently-published doc can be unpublished (status='published' guard), so
+// a draft/already-unpublished/other-author id yields pgx.ErrNoRows → 404.
+// published_at, current_version_id and the document_versions history are all left
+// intact — unpublish removes the doc from the index-eligible state, it does not
+// erase its past.
+func (q *Queries) UnpublishDocument(ctx context.Context, arg UnpublishDocumentParams) (Document, error) {
+	row := q.db.QueryRow(ctx, unpublishDocument, arg.ID, arg.AuthorID)
+	var i Document
+	err := row.Scan(
+		&i.ID,
+		&i.Slug,
+		&i.AuthorID,
+		&i.Status,
+		&i.Title,
+		&i.Description,
+		&i.SourceMd,
+		&i.RenderedHtml,
+		&i.Access,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.PublishedAt,
+		&i.CurrentVersionID,
+		&i.SearchTsv,
+		&i.DeletedAt,
+	)
+	return i, err
 }

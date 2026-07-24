@@ -1,0 +1,12 @@
+-- Transactional outbox for Meilisearch index ops (03-data-model.md §4,
+-- 00004_index_outbox.sql). The publish gate (LOO-14) enqueues a row in the SAME
+-- transaction as the status flip, so a failed Meili write can be retried without
+-- losing the DB commit and a rolled-back publish never leaves a stray index op.
+-- Dequeue → Meili upsert/delete is M2's consumer; this ticket only enqueues.
+
+-- name: EnqueueIndexOp :exec
+-- Enqueue an index operation for a document: 'upsert' on publish/re-publish,
+-- 'delete' on unpublish. status defaults to 'pending' and attempts to 0 — the M2
+-- worker scans (status,created_at) oldest-first.
+INSERT INTO index_outbox (document_id, op)
+VALUES ($1, $2);
