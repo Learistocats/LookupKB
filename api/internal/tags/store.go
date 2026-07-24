@@ -51,15 +51,33 @@ func (s *Store) SearchTags(ctx context.Context, rawQuery string, limit int32) ([
 	return s.q.SearchTags(ctx, dbgen.SearchTagsParams{Slug: pattern, Limit: limit})
 }
 
-// SetDocumentTags replaces a document's tag set with the normalized `raw` tags and
-// keeps each tag's usage_count in sync — the reusable apply the publish gate
-// (LOO-14) and re-publish path (LOO-17) call inside their transaction. It is
-// atomic (all-or-nothing) and idempotent (re-applying the same set is a no-op for
-// counts). Passing an empty/nil set detaches all tags (see ClearDocumentTags).
+// TagWriter is the narrow, transaction-bound query surface ApplyDocumentTags needs
+// — exactly the tag-membership + usage_count statements, nothing else. Both
+// *dbgen.Queries (via WithTx) and a test fake satisfy it, and it lets the publish
+// gate (LOO-14) run the tag apply INSIDE its own publish transaction rather than a
+// separate one, so a rolled-back publish never leaves usage_count incremented
+// (mirrors versions.VersionWriter / versions.CreateSnapshot).
+type TagWriter interface {
+	ListDocumentTags(ctx context.Context, documentID pgtype.UUID) ([]dbgen.ListDocumentTagsRow, error)
+	RemoveDocumentTag(ctx context.Context, arg dbgen.RemoveDocumentTagParams) error
+	DecrementTagUsage(ctx context.Context, id pgtype.UUID) error
+	UpsertTag(ctx context.Context, arg dbgen.UpsertTagParams) (dbgen.Tag, error)
+	AddDocumentTag(ctx context.Context, arg dbgen.AddDocumentTagParams) error
+	IncrementTagUsage(ctx context.Context, id pgtype.UUID) error
+}
+
+// ApplyDocumentTags replaces a document's tag set with the normalized `raw` tags
+// and keeps each tag's usage_count in sync, using the caller-provided
+// transaction-bound queries so it composes into a larger transaction (the publish
+// gate, LOO-14) as an all-or-nothing unit. It is idempotent (re-applying the same
+// set is a no-op for counts) and passing an empty/nil set detaches all tags.
 //
 // usage_count therefore tracks LIVE published usage: publishing a tag increments
 // it, unpublishing or dropping the tag on edit decrements it (clamped at zero).
-func (s *Store) SetDocumentTags(ctx context.Context, docID pgtype.UUID, raw []string) error {
+//
+// The caller owns the transaction boundary (Begin/Commit); ApplyDocumentTags never
+// commits — a failure returns an error and the caller's deferred Rollback undoes it.
+func ApplyDocumentTags(ctx context.Context, q TagWriter, docID pgtype.UUID, raw []string) error {
 	// Normalize + de-dupe the desired set once, up front.
 	want := make(map[string]struct{}, len(raw))
 	for _, r := range raw {
@@ -68,15 +86,8 @@ func (s *Store) SetDocumentTags(ctx context.Context, docID pgtype.UUID, raw []st
 		}
 	}
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin tag tx: %w", err)
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // no-op after Commit; safe rollback on any early return
-	qtx := s.q.WithTx(tx)
-
 	// Current membership is the diff source.
-	current, err := qtx.ListDocumentTags(ctx, docID)
+	current, err := q.ListDocumentTags(ctx, docID)
 	if err != nil {
 		return fmt.Errorf("list current tags: %w", err)
 	}
@@ -90,10 +101,10 @@ func (s *Store) SetDocumentTags(ctx context.Context, docID pgtype.UUID, raw []st
 		if _, keep := want[slug]; keep {
 			continue
 		}
-		if err := qtx.RemoveDocumentTag(ctx, dbgen.RemoveDocumentTagParams{DocumentID: docID, TagID: id}); err != nil {
+		if err := q.RemoveDocumentTag(ctx, dbgen.RemoveDocumentTagParams{DocumentID: docID, TagID: id}); err != nil {
 			return fmt.Errorf("remove tag %q: %w", slug, err)
 		}
-		if err := qtx.DecrementTagUsage(ctx, id); err != nil {
+		if err := q.DecrementTagUsage(ctx, id); err != nil {
 			return fmt.Errorf("decrement tag %q: %w", slug, err)
 		}
 	}
@@ -103,16 +114,34 @@ func (s *Store) SetDocumentTags(ctx context.Context, docID pgtype.UUID, raw []st
 		if _, exists := have[slug]; exists {
 			continue // already attached — leave count untouched (idempotent).
 		}
-		tag, err := qtx.UpsertTag(ctx, dbgen.UpsertTagParams{Slug: slug, Label: slug})
+		tag, err := q.UpsertTag(ctx, dbgen.UpsertTagParams{Slug: slug, Label: slug})
 		if err != nil {
 			return fmt.Errorf("upsert tag %q: %w", slug, err)
 		}
-		if err := qtx.AddDocumentTag(ctx, dbgen.AddDocumentTagParams{DocumentID: docID, TagID: tag.ID}); err != nil {
+		if err := q.AddDocumentTag(ctx, dbgen.AddDocumentTagParams{DocumentID: docID, TagID: tag.ID}); err != nil {
 			return fmt.Errorf("attach tag %q: %w", slug, err)
 		}
-		if err := qtx.IncrementTagUsage(ctx, tag.ID); err != nil {
+		if err := q.IncrementTagUsage(ctx, tag.ID); err != nil {
 			return fmt.Errorf("increment tag %q: %w", slug, err)
 		}
+	}
+
+	return nil
+}
+
+// SetDocumentTags is the standalone wrapper over ApplyDocumentTags: it owns a
+// transaction (pool Begin → WithTx → deferred Rollback → Commit) for callers
+// applying tags outside a larger transaction. The publish gate calls
+// ApplyDocumentTags directly on its own transaction instead.
+func (s *Store) SetDocumentTags(ctx context.Context, docID pgtype.UUID, raw []string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tag tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after Commit; safe rollback on any early return
+
+	if err := ApplyDocumentTags(ctx, s.q.WithTx(tx), docID, raw); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(ctx); err != nil {

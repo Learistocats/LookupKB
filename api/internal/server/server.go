@@ -42,6 +42,7 @@ type Server struct {
 	metrics             *metrics.Metrics
 	documents           DocumentStore
 	tags                TagStore
+	publish             PublishService
 }
 
 // Option configures a Server at construction. Later tickets add their own.
@@ -75,6 +76,13 @@ func WithDocuments(store DocumentStore) Option {
 // gate directly, not through this option.
 func WithTags(store TagStore) Option {
 	return func(s *Server) { s.tags = store }
+}
+
+// WithPublish enables the publish/unpublish routes (POST /api/documents/:id/publish
+// and .../unpublish). The service needs Postgres + the renderer, so it is omitted
+// when no database is configured (deny-by-default: no service ⇒ no route).
+func WithPublish(svc PublishService) Option {
+	return func(s *Server) { s.publish = svc }
 }
 
 // New constructs a Server with base middleware and health routes registered.
@@ -199,6 +207,15 @@ func (s *Server) registerRoutes() {
 			api.Get("/drafts", s.handleListDrafts)
 			api.Get("/drafts/:id", s.handleGetDraft)
 			api.Put("/drafts/:id", s.handleSaveDraft)
+		}
+
+		// Publish gate (LOO-14). The deliberate, metadata-validated draft→published
+		// transition and its reverse. Only wired when the publish service is present
+		// (needs Postgres + the renderer). Lives on the unversioned internal /api,
+		// like the draft routes — never /api/v1.
+		if s.publish != nil {
+			api.Post("/documents/:id/publish", s.handlePublish)
+			api.Post("/documents/:id/unpublish", s.handleUnpublish)
 		}
 	}
 }

@@ -32,6 +32,7 @@ export const actions: Actions = {
 		const form = await request.formData();
 		const body = {
 			title: emptyToNull(form.get('title')),
+			description: emptyToNull(form.get('description')),
 			source_md: emptyToNull(form.get('source_md'))
 		};
 

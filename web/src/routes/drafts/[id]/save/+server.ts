@@ -10,11 +10,16 @@ import { json, error, type RequestHandler } from '@sveltejs/kit';
 import { apiFetch } from '$lib/server/api';
 
 export const PUT: RequestHandler = async ({ locals, params, request }) => {
-	const incoming = (await request.json()) as { title?: string | null; source_md?: string | null };
+	const incoming = (await request.json()) as {
+		title?: string | null;
+		description?: string | null;
+		source_md?: string | null;
+	};
 	// Only the working-copy fields autosave touches; no validation gate (that is
 	// publish-time). Blank strings persist as-is; the editor sends null for empty.
 	const body = {
 		title: incoming.title ?? null,
+		description: incoming.description ?? null,
 		source_md: incoming.source_md ?? null
 	};
 
