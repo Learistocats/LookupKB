@@ -139,6 +139,71 @@ func (q *Queries) GetOwnedDocument(ctx context.Context, arg GetOwnedDocumentPara
 	return i, err
 }
 
+const getPublishedBySlug = `-- name: GetPublishedBySlug :one
+SELECT
+    d.slug,
+    d.title,
+    d.description,
+    d.rendered_html,
+    d.access,
+    d.author_id,
+    d.published_at,
+    u.display_name AS author_display_name,
+    v.version_no   AS version_no,
+    COALESCE(array_remove(array_agg(t.label ORDER BY t.label), NULL), '{}')::text[] AS tags
+FROM documents d
+JOIN users u ON u.id = d.author_id
+LEFT JOIN document_versions v ON v.id = d.current_version_id
+LEFT JOIN document_tags dt ON dt.document_id = d.id
+LEFT JOIN tags t ON t.id = dt.tag_id
+WHERE d.slug = $1
+  AND d.status = 'published'
+  AND d.deleted_at IS NULL
+GROUP BY d.id, u.display_name, v.version_no
+`
+
+type GetPublishedBySlugRow struct {
+	Slug              string             `json:"slug"`
+	Title             *string            `json:"title"`
+	Description       *string            `json:"description"`
+	RenderedHtml      *string            `json:"rendered_html"`
+	Access            DocumentAccess     `json:"access"`
+	AuthorID          pgtype.UUID        `json:"author_id"`
+	PublishedAt       pgtype.Timestamptz `json:"published_at"`
+	AuthorDisplayName *string            `json:"author_display_name"`
+	VersionNo         *int32             `json:"version_no"`
+	Tags              []string           `json:"tags"`
+}
+
+// The hot read path (F8, 01-architecture.md §3.2): fetch a PUBLISHED document by
+// its slug for the rendered-HTML view. status='published' means a draft/unpublished
+// (or soft-deleted) slug yields pgx.ErrNoRows → an identical 404, never partial
+// content. Reads the current rendered_html COLUMN (not a document_versions snapshot)
+// so the "current view" is consistent — no publish-time render on this path.
+//   - JOIN users        → author display name for the byline.
+//   - LEFT JOIN versions → current version_no (via current_version_id; nullable).
+//   - tags aggregated as labels for the metadata display.
+//
+// author_id/access are selected only to feed the server-side access check (CanRead);
+// they are NOT projected to the client. One round trip keeps the path fast.
+func (q *Queries) GetPublishedBySlug(ctx context.Context, slug string) (GetPublishedBySlugRow, error) {
+	row := q.db.QueryRow(ctx, getPublishedBySlug, slug)
+	var i GetPublishedBySlugRow
+	err := row.Scan(
+		&i.Slug,
+		&i.Title,
+		&i.Description,
+		&i.RenderedHtml,
+		&i.Access,
+		&i.AuthorID,
+		&i.PublishedAt,
+		&i.AuthorDisplayName,
+		&i.VersionNo,
+		&i.Tags,
+	)
+	return i, err
+}
+
 const listDrafts = `-- name: ListDrafts :many
 SELECT id, slug, status, title, updated_at
 FROM documents

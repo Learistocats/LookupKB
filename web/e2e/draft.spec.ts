@@ -122,6 +122,55 @@ test.describe('draft round-trip', () => {
 		await expect(page.getByText(/^published$/i)).toBeVisible();
 		await expect(page.getByRole('button', { name: /^unpublish$/i })).toBeVisible();
 	});
+
+	// F8: a published document is readable at /docs/{slug} — the server serves its
+	// pre-rendered, sanitized HTML (AC-8.1: the Markdown heading is a real <h1>, not
+	// raw "# ") plus minimal metadata (AC-8.5: tags + version). This publishes a doc,
+	// reads its title-derived slug off the editor, then opens the read view.
+	test('a published document is readable at its slug with rendered HTML and metadata', async ({
+		page
+	}) => {
+		await login(page, USER!, PASS!);
+
+		await page.getByRole('button', { name: /new draft/i }).click();
+		await expect(page).toHaveURL(/\/drafts\/[0-9a-f-]{36}$/);
+
+		const stamp = Date.now();
+		const titleMarker = `e2e-read-${stamp}`;
+		const headingMarker = `Read Heading ${stamp}`;
+		await page.locator('input[name="title"]').fill(titleMarker);
+		const editor = page.locator('.cm-content');
+		await editor.click();
+		await editor.pressSequentially(`# ${headingMarker}`);
+		await page.keyboard.press('Enter');
+		await editor.pressSequentially('Readable body paragraph.');
+		await expect(page.getByText(/^saved/i)).toBeVisible();
+
+		// Publish with valid metadata (title carries over from the editor).
+		await page.getByRole('button', { name: /^publish…$/i }).click();
+		const dialog = page.getByRole('dialog', { name: /publish document/i });
+		await expect(dialog).toBeVisible();
+		await dialog.locator('textarea').fill('A short but sufficient description of the doc.');
+		await dialog.locator('input[placeholder="Add a tag…"]').fill('read-e2e');
+		await dialog.locator('input[placeholder="Add a tag…"]').press('Enter');
+		await dialog.getByRole('button', { name: /confirm publish/i }).click();
+		await expect(page.getByText(/^published$/i)).toBeVisible();
+
+		// On first publish the placeholder draft-<hex> slug becomes the title-derived
+		// slug; read it off the editor's metadata line, then open the read view.
+		const slug = (await page.locator('.meta code').innerText()).trim();
+		expect(slug).not.toMatch(/^draft-/);
+		await page.goto(`/docs/${slug}`);
+
+		// AC-8.1: pre-rendered sanitized HTML — the Markdown heading renders as a real
+		// heading element, and the body paragraph is present.
+		await expect(page.getByRole('heading', { name: headingMarker })).toBeVisible();
+		await expect(page.getByText('Readable body paragraph.')).toBeVisible();
+
+		// AC-8.5: minimal metadata — the tag chip and version number are shown.
+		await expect(page.getByText('read-e2e')).toBeVisible();
+		await expect(page.getByText(/^v\d+$/)).toBeVisible();
+	});
 });
 
 // login performs the Authentik Authorization-Code flow through the browser. The

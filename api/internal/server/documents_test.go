@@ -59,6 +59,10 @@ type fakeDocStore struct {
 
 	setRenderedArg dbgen.SetRenderedHTMLParams
 	setRenderedErr error
+
+	getBySlugArg string
+	getBySlugRow dbgen.GetPublishedBySlugRow
+	getBySlugErr error
 }
 
 func (f *fakeDocStore) CreateDraft(_ context.Context, arg dbgen.CreateDraftParams) (dbgen.Document, error) {
@@ -86,6 +90,13 @@ func (f *fakeDocStore) ListDrafts(_ context.Context, authorID pgtype.UUID) ([]db
 func (f *fakeDocStore) SetRenderedHTML(_ context.Context, arg dbgen.SetRenderedHTMLParams) error {
 	f.setRenderedArg = arg
 	return f.setRenderedErr
+}
+
+// GetPublishedBySlug satisfies DocumentStore for the read-path handler tests. It
+// records the slug it was asked for and returns the canned row/error.
+func (f *fakeDocStore) GetPublishedBySlug(_ context.Context, slug string) (dbgen.GetPublishedBySlugRow, error) {
+	f.getBySlugArg = slug
+	return f.getBySlugRow, f.getBySlugErr
 }
 
 // callerUUID is the internal user id the fake upserter returns for the verified

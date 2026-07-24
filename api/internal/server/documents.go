@@ -30,6 +30,10 @@ type DocumentStore interface {
 	GetDraft(ctx context.Context, arg dbgen.GetDraftParams) (dbgen.Document, error)
 	ListDrafts(ctx context.Context, authorID pgtype.UUID) ([]dbgen.ListDraftsRow, error)
 	SetRenderedHTML(ctx context.Context, arg dbgen.SetRenderedHTMLParams) error
+	// GetPublishedBySlug is the hot read path (F8): a published doc by slug, NOT
+	// owner-scoped (public reads), with author/version/tags joined. status guard
+	// makes a draft/unpublished slug indistinguishable from a missing one (404).
+	GetPublishedBySlug(ctx context.Context, slug string) (dbgen.GetPublishedBySlugRow, error)
 }
 
 // draftResponse is the JSON projection returned to the caller. Only the fields
