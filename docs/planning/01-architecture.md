@@ -72,7 +72,8 @@ Local email/password accounts; there is no external identity provider.
 > extremely fast. No Markdown parsing or diagram rendering on the read path.
 
 ### 3.3 Search (hot path)
-1. Browser sends query to `/api/search` (never directly to Meilisearch).
+1. Browser sends the query to the web BFF (`/search`), which forwards it with the
+   caller's token to `GET /api/search` (never directly to Meilisearch).
 2. API injects an **access filter** derived from the caller's groups
    (`access = 'public' OR acl_groups IN [user's groups]`) and forwards to Meilisearch
    with a scoped, read-only key.

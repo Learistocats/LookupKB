@@ -9,7 +9,7 @@
 	<title>Sign in · LookupKB</title>
 </svelte:head>
 
-<AuthShell tagline="Sign in to your knowledge base.">
+<AuthShell tagline="Sign in">
 	<form method="POST">
 		<input type="hidden" name="returnTo" value={data.returnTo} />
 		<label>

@@ -21,7 +21,7 @@ describe('publishDraft', () => {
 
 		expect(out).toEqual({ ok: true, doc });
 		expect(fetchFn).toHaveBeenCalledWith(
-			'/drafts/d1/publish',
+			'/entries/d1/publish',
 			expect.objectContaining({ method: 'POST' })
 		);
 		// The body carries exactly the confirm-flow metadata.
@@ -68,7 +68,7 @@ describe('unpublishDraft', () => {
 
 		const got = await unpublishDraft('d1', fetchFn as unknown as typeof fetch);
 		expect(got).toEqual(doc);
-		expect(fetchFn).toHaveBeenCalledWith('/drafts/d1/unpublish', { method: 'POST' });
+		expect(fetchFn).toHaveBeenCalledWith('/entries/d1/unpublish', { method: 'POST' });
 	});
 
 	it('throws on a non-OK response', async () => {

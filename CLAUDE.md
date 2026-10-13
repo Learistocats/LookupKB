@@ -128,6 +128,23 @@ comes back as `pgx.ErrNoRows` → **404 with an identical body** for "not yours"
 hiding another user's content. This scaffolding is extended (not rewritten) by the
 M3 group-ACL work — structure new access checks as an author-or-public branch.
 
+### Search: outbox worker + server-side filter
+`api/internal/search` holds a small hand-rolled Meilisearch client (no SDK — avoids a
+forced Go bump), the outbox worker (started from `main.go` when Postgres + Meili are
+configured) and the query service behind `GET /api/search`. Publish/unpublish only
+enqueue `index_outbox` rows inside their transaction; the worker applies them. The
+access filter is always built server-side from the verified caller. `body_text` comes
+from the published `rendered_html`, never from the working copy.
+
+### Web UI: design tokens + app shell
+All colors/type come from tokens in `web/src/app.css` (light on `:root`, dark via
+`prefers-color-scheme` and `[data-theme]`); never put literal colors in components —
+the CodeMirror theme uses the same `var(--…)` tokens. Theme choice lives in the
+`lkb_theme` cookie and is rendered into `<html data-theme>` by `hooks.server.ts`.
+Signed-in pages live in the `routes/(app)` group: its layout loads the history panel
+(`/api/documents/mine`, `depends('app:entries')` — call `invalidate('app:entries')`
+after anything that changes an entry). Editor is `/entries/{id}`, reader `/docs/{slug}`.
+
 ### Health/readiness distinction
 `/healthz` = liveness (process up, never touches deps). `/readyz` = readiness:
 **Postgres/Valkey/Meilisearch/Kroki/Garage gate** it (503 if any fail). Probe errors are

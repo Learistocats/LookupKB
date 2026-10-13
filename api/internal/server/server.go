@@ -39,6 +39,7 @@ type Server struct {
 	documents       DocumentStore
 	tags            TagStore
 	publish         PublishService
+	search          SearchService
 }
 
 // Option configures a Server at construction. Later tickets add their own.
@@ -88,6 +89,12 @@ func WithTags(store TagStore) Option {
 // when no database is configured (deny-by-default: no service ⇒ no route).
 func WithPublish(svc PublishService) Option {
 	return func(s *Server) { s.publish = svc }
+}
+
+// WithSearch enables GET /api/search. Omitted when Meilisearch is not configured
+// (deny-by-default: no service ⇒ no route).
+func WithSearch(svc SearchService) Option {
+	return func(s *Server) { s.search = svc }
 }
 
 // New constructs a Server with base middleware and health routes registered.
@@ -211,6 +218,9 @@ func (s *Server) registerRoutes() {
 		if s.documents != nil {
 			api.Post("/documents", s.handleCreateDraft)
 			api.Get("/drafts", s.handleListDrafts)
+			// The caller's entries for the history panel (drafts pinned first). The
+			// static /documents/mine is registered before /documents/:slug.
+			api.Get("/documents/mine", s.handleListMyDocuments)
 			api.Get("/drafts/:id", s.handleGetDraft)
 			api.Put("/drafts/:id", s.handleSaveDraft)
 
@@ -225,6 +235,10 @@ func (s *Server) registerRoutes() {
 		// transition and its reverse. Only wired when the publish service is present
 		// (needs Postgres + the renderer). Lives on the unversioned internal /api,
 		// like the draft routes — never /api/v1.
+		if s.search != nil {
+			api.Get("/search", s.handleSearch)
+		}
+
 		if s.publish != nil {
 			api.Post("/documents/:id/publish", s.handlePublish)
 			api.Post("/documents/:id/unpublish", s.handleUnpublish)

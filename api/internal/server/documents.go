@@ -29,6 +29,8 @@ type DocumentStore interface {
 	SaveDraft(ctx context.Context, arg dbgen.SaveDraftParams) (dbgen.Document, error)
 	GetDraft(ctx context.Context, arg dbgen.GetDraftParams) (dbgen.Document, error)
 	ListDrafts(ctx context.Context, authorID pgtype.UUID) ([]dbgen.ListDraftsRow, error)
+	ListMyDocuments(ctx context.Context, authorID pgtype.UUID) ([]dbgen.ListMyDocumentsRow, error)
+	ListDocumentTagLabels(ctx context.Context, documentID pgtype.UUID) ([]string, error)
 	SetRenderedHTML(ctx context.Context, arg dbgen.SetRenderedHTMLParams) error
 	// GetPublishedBySlug is the hot read path (F8): a published doc by slug, NOT
 	// owner-scoped (public reads), with author/version/tags joined. status guard
@@ -48,6 +50,8 @@ type draftResponse struct {
 	SourceMd    *string `json:"source_md"`
 	CreatedAt   string  `json:"created_at"`
 	UpdatedAt   string  `json:"updated_at"`
+	// Tags are the labels attached at the last publish (only on GET).
+	Tags []string `json:"tags,omitempty"`
 }
 
 func toDraftResponse(d dbgen.Document) draftResponse {
@@ -116,9 +120,10 @@ func (s *Server) handleCreateDraft(c *fiber.Ctx) error {
 
 // handleSaveDraft overwrites the draft's working copy in place (AC-2.2): title,
 // description and source_md are all optional and empty/partial metadata saves
-// with no validation gate (that gate is publish-time, M1). The query is scoped
-// to author_id AND status='draft', so a non-owner (or a published doc) yields no
-// row → 404, never a cross-author write.
+// with no validation gate (that gate is publish-time). The query is scoped to
+// author_id, so a non-owner yields no row → 404, never a cross-author write. A
+// published entry may be saved too: only its working copy changes until the
+// author re-publishes.
 func (s *Server) handleSaveDraft(c *fiber.Ctx) error {
 	docID, ok := parseDocID(c)
 	if !ok {
@@ -182,7 +187,43 @@ func (s *Server) handleGetDraft(c *fiber.Ctx) error {
 		return internalError(c)
 	}
 
-	return c.JSON(toDraftResponse(doc))
+	tags, err := s.documents.ListDocumentTagLabels(c.UserContext(), doc.ID)
+	if err != nil {
+		s.log.ErrorContext(c.UserContext(), "list document tags failed", "error", err.Error())
+		return internalError(c)
+	}
+	resp := toDraftResponse(doc)
+	resp.Tags = tags
+	if resp.Tags == nil {
+		resp.Tags = []string{}
+	}
+	return c.JSON(resp)
+}
+
+// handleListMyDocuments returns the caller's own entries for the history panel:
+// drafts first, then the rest by most recent edit. Owner-scoped like every
+// draft query; an empty list is [] (never null).
+func (s *Server) handleListMyDocuments(c *fiber.Ctx) error {
+	authorID, err := s.callerID(c)
+	if err != nil {
+		return err
+	}
+	rows, err := s.documents.ListMyDocuments(c.UserContext(), authorID)
+	if err != nil {
+		s.log.ErrorContext(c.UserContext(), "list my documents failed", "error", err.Error())
+		return internalError(c)
+	}
+	items := make([]draftListItem, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, draftListItem{
+			ID:        formatUUID(r.ID),
+			Slug:      r.Slug,
+			Status:    string(r.Status),
+			Title:     r.Title,
+			UpdatedAt: formatTime(r.UpdatedAt),
+		})
+	}
+	return c.JSON(items)
 }
 
 // handleListDrafts returns the caller's own drafts for their private workspace

@@ -38,6 +38,8 @@ services:
       # /readyz dependency probes (AC-11.1). Internal service URLs assembled here
       # (never in .env). Postgres/Valkey/Meili/Kroki/Garage gate readiness.
       LOOKUPKB_MEILI_URL: http://meilisearch:7700
+      # Indexing + search key (server-side only; never sent to the browser).
+      LOOKUPKB_MEILI_KEY: ${MEILI_MASTER_KEY}
       LOOKUPKB_KROKI_URL: http://kroki:8000
       LOOKUPKB_GARAGE_ADMIN_URL: http://garage:3903
     # Loopback-only by default: the browser talks to `web`, never to the API. Point

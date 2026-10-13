@@ -9,6 +9,8 @@ import { apiFetch } from '$lib/server/api';
 // PublishedDoc is the published-safe projection the API returns — rendered HTML plus
 // display metadata only. It deliberately carries no source_md/author_id.
 export type PublishedDoc = {
+	/** Present only when the caller wrote this entry (enables "Edit"). */
+	id?: string;
 	slug: string;
 	title: string | null;
 	description: string | null;

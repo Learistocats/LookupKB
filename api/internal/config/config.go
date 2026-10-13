@@ -70,7 +70,10 @@ type Config struct {
 	// health path is appended by the *HealthURL helpers below. Following the
 	// "empty disables it" convention, an unset URL skips that check so the
 	// skeleton/tests stay ready without the dependency running.
-	MeiliURL       string `env:"LOOKUPKB_MEILI_URL"`
+	MeiliURL string `env:"LOOKUPKB_MEILI_URL"`
+	// MeiliKey is the Meilisearch API key the API uses for indexing and search.
+	// It never leaves the server.
+	MeiliKey       string `env:"LOOKUPKB_MEILI_KEY"`
 	KrokiURL       string `env:"LOOKUPKB_KROKI_URL"`
 	GarageAdminURL string `env:"LOOKUPKB_GARAGE_ADMIN_URL"`
 

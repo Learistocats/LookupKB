@@ -5,6 +5,7 @@
 // the API). Also sets the baseline security headers the edge proxy used to add.
 import { redirect, type Handle } from '@sveltejs/kit';
 import { getAuthConfig } from '$lib/server/auth';
+import { THEME_COOKIE, parseTheme } from '$lib/theme';
 import {
 	getSessionCookie,
 	clearSessionCookie,
@@ -26,6 +27,16 @@ function withSecurityHeaders(response: Response, secure: boolean): Response {
 	return response;
 }
 
+/** Render the saved theme into <html> so the first paint is already right. */
+function themed(event: Parameters<Handle>[0]['event']) {
+	const theme = parseTheme(event.cookies.get(THEME_COOKIE));
+	if (theme === 'system') return {};
+	return {
+		transformPageChunk: ({ html }: { html: string }) =>
+			html.replace('<html lang="en"', `<html lang="en" data-theme="${theme}"`)
+	};
+}
+
 export const handle: Handle = async ({ event, resolve }) => {
 	// Liveness probe is always open (used by the container healthcheck).
 	if (event.url.pathname === '/healthz') {
@@ -36,7 +47,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 
 	// Auth disabled (no secret configured): serve openly, no user context.
 	if (!cfg) {
-		return withSecurityHeaders(await resolve(event), false);
+		return withSecurityHeaders(await resolve(event, themed(event)), false);
 	}
 
 	const raw = getSessionCookie(event.cookies);
@@ -59,5 +70,5 @@ export const handle: Handle = async ({ event, resolve }) => {
 		redirect(302, `/login?returnTo=${encodeURIComponent(returnTo)}`);
 	}
 
-	return withSecurityHeaders(await resolve(event), cfg.secure);
+	return withSecurityHeaders(await resolve(event, themed(event)), cfg.secure);
 };

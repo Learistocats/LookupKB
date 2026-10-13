@@ -9,7 +9,7 @@
 	<title>Create account · LookupKB</title>
 </svelte:head>
 
-<AuthShell tagline="Create your account.">
+<AuthShell tagline="Create your account">
 	<form method="POST">
 		<label>
 			<span>Email</span>

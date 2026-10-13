@@ -10,8 +10,10 @@ VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
 -- name: SaveDraft :one
--- Overwrite the working copy in place (draft saves are not versioned). Scoped to
--- author_id so an author can only save their own draft.
+-- Overwrite the working copy in place (saves are not versioned). Scoped to
+-- author_id so an author can only save their own document. Any status: editing a
+-- published entry changes only the working copy — rendered_html and the search
+-- index change on the next (re-)publish.
 UPDATE documents
 SET title       = $3,
     description = $4,
@@ -19,7 +21,7 @@ SET title       = $3,
     updated_at  = now()
 WHERE id = $1
   AND author_id = $2
-  AND status = 'draft'
+  AND deleted_at IS NULL
 RETURNING *;
 
 -- name: SetRenderedHTML :exec
@@ -64,6 +66,7 @@ WHERE id = $1
 -- author_id/access are selected only to feed the server-side access check (CanRead);
 -- they are NOT projected to the client. One round trip keeps the path fast.
 SELECT
+    d.id,
     d.slug,
     d.title,
     d.description,
@@ -71,7 +74,7 @@ SELECT
     d.access,
     d.author_id,
     d.published_at,
-    u.display_name AS author_display_name,
+    COALESCE(u.display_name, split_part(u.email::text, '@', 1))::text AS author_display_name,
     COALESCE(array_remove(array_agg(t.label ORDER BY t.label), NULL), '{}')::text[] AS tags
 FROM documents d
 JOIN users u ON u.id = d.author_id
@@ -80,7 +83,7 @@ LEFT JOIN tags t ON t.id = dt.tag_id
 WHERE d.slug = $1
   AND d.status = 'published'
   AND d.deleted_at IS NULL
-GROUP BY d.id, u.display_name;
+GROUP BY d.id, u.display_name, u.email;
 
 -- name: PublishDocument :one
 -- Flip a document to 'published' with its just-validated metadata and freshly
@@ -132,3 +135,54 @@ WHERE author_id = $1
   AND status = 'draft'
   AND deleted_at IS NULL
 ORDER BY updated_at DESC;
+
+-- name: ListMyDocuments :many
+-- The caller's own entries for the history panel: drafts pinned first, then
+-- everything else by most recent edit. Owner-scoped; never source/HTML.
+SELECT id, slug, status, title, updated_at
+FROM documents
+WHERE author_id = $1
+  AND deleted_at IS NULL
+ORDER BY (status = 'draft') DESC, updated_at DESC
+LIMIT 100;
+
+-- name: ListDocumentTagLabels :many
+-- Tag labels currently attached to a document (prefills the re-publish dialog).
+SELECT t.label
+FROM document_tags dt
+JOIN tags t ON t.id = dt.tag_id
+WHERE dt.document_id = $1
+ORDER BY t.label;
+
+-- name: GetIndexProjection :one
+-- Everything the search index stores for one PUBLISHED document. Built from the
+-- published columns (rendered_html, not the working-copy source_md).
+SELECT
+    d.id,
+    d.slug,
+    d.title,
+    d.description,
+    d.rendered_html,
+    d.access,
+    d.author_id,
+    d.created_at,
+    d.published_at,
+    -- Display name, else the email's local part: full emails are never indexed.
+    COALESCE(u.display_name, split_part(u.email::text, '@', 1))::text AS author,
+    COALESCE(array_remove(array_agg(t.label ORDER BY t.label), NULL), '{}')::text[] AS tags,
+    COALESCE((SELECT array_agg(a.group_id) FROM document_acl a WHERE a.document_id = d.id), '{}')::uuid[] AS acl_group_ids
+FROM documents d
+JOIN users u ON u.id = d.author_id
+LEFT JOIN document_tags dt ON dt.document_id = d.id
+LEFT JOIN tags t ON t.id = dt.tag_id
+WHERE d.id = $1
+  AND d.status = 'published'
+  AND d.deleted_at IS NULL
+GROUP BY d.id, u.display_name, u.email;
+
+-- name: ListPublishedDocumentIDs :many
+-- Every published document id (search index bootstrap / rebuild).
+SELECT id
+FROM documents
+WHERE status = 'published'
+  AND deleted_at IS NULL;

@@ -29,7 +29,7 @@ func publishedRow(access dbgen.DocumentAccess, authorID uuid.UUID) dbgen.GetPubl
 		Access:            access,
 		AuthorID:          pgUUID(authorID),
 		PublishedAt:       pgtype.Timestamptz{Time: time.Now(), Valid: true},
-		AuthorDisplayName: &name,
+		AuthorDisplayName: name,
 		Tags:              []string{"guide", "kubernetes"},
 	}
 }
@@ -72,6 +72,22 @@ func TestReadDocument_DoesNotLeakSourceOrAuthorID(t *testing.T) {
 	_, hasAuthorID := raw["author_id"]
 	require.False(t, hasSource, "source_md must not be exposed on the read path")
 	require.False(t, hasAuthorID, "author_id must not be exposed on the read path")
+	_, hasID := raw["id"]
+	require.False(t, hasID, "a non-author never learns the internal id")
+}
+
+// The author gets the document id so the reader can link to the editor.
+func TestReadDocument_AuthorGetsID(t *testing.T) {
+	row := publishedRow(dbgen.DocumentAccessPublic, callerUUID)
+	docID := uuid.New()
+	row.ID = pgUUID(docID)
+	s := newDraftServer(t, &fakeDocStore{getBySlugRow: row})
+
+	resp := doReq(t, s, http.MethodGet, "/api/documents/kubernetes-guide-abcd1234", "")
+	defer resp.Body.Close()
+	var got readResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	require.Equal(t, docID.String(), got.ID)
 }
 
 // A draft/unpublished/soft-deleted/missing slug all surface as pgx.ErrNoRows from

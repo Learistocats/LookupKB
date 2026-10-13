@@ -19,6 +19,7 @@ import (
 	"github.com/Learistocats/LookupKB/api/internal/logging"
 	"github.com/Learistocats/LookupKB/api/internal/publish"
 	"github.com/Learistocats/LookupKB/api/internal/render"
+	"github.com/Learistocats/LookupKB/api/internal/search"
 	"github.com/Learistocats/LookupKB/api/internal/server"
 	"github.com/Learistocats/LookupKB/api/internal/tags"
 	"github.com/Learistocats/LookupKB/api/internal/valkey"
@@ -165,6 +166,18 @@ func run(cfg config.Config, version string) error {
 		// tag/audit/outbox writes into one transaction.
 		renderer := render.New()
 		opts = append(opts, server.WithPublish(publish.NewService(pool, renderer, log)))
+	}
+
+	// Search needs both Postgres (the outbox + projections) and Meilisearch. The
+	// worker drains index_outbox into the index for the life of the process.
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	defer stopWorker()
+	if pool != nil && cfg.MeiliURL != "" {
+		meili := search.NewClient(cfg.MeiliURL, cfg.MeiliKey)
+		opts = append(opts, server.WithSearch(search.NewService(meili)))
+		go search.NewWorker(dbgen.New(pool), meili, log).Run(workerCtx)
+	} else {
+		log.Warn("search disabled (needs LOOKUPKB_DATABASE_URL and LOOKUPKB_MEILI_URL)")
 	}
 
 	srv := server.New(cfg, log, version, opts...)

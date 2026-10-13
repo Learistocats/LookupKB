@@ -34,6 +34,9 @@ func CanRead(callerID pgtype.UUID, callerGroups []string, access dbgen.DocumentA
 // (AC-8.5). It never exposes source_md, author_id, or the raw status — only the
 // published projection a reader is allowed to see.
 type readResponse struct {
+	// ID is set only when the caller is the author, so the UI can link to the
+	// editor; other readers never learn the internal id.
+	ID                string   `json:"id,omitempty"`
 	Slug              string   `json:"slug"`
 	Title             *string  `json:"title"`
 	Description       *string  `json:"description"`
@@ -52,7 +55,7 @@ func toReadResponse(row dbgen.GetPublishedBySlugRow) readResponse {
 		Slug:              row.Slug,
 		Title:             row.Title,
 		Description:       row.Description,
-		AuthorDisplayName: row.AuthorDisplayName,
+		AuthorDisplayName: &row.AuthorDisplayName,
 		PublishedAt:       formatTime(row.PublishedAt),
 		Tags:              tags,
 		RenderedHTML:      *row.RenderedHtml,
@@ -104,7 +107,11 @@ func (s *Server) handleReadDocument(c *fiber.Ctx) error {
 		return internalError(c)
 	}
 
-	return c.JSON(toReadResponse(row))
+	resp := toReadResponse(row)
+	if callerID.Valid && callerID == row.AuthorID {
+		resp.ID = formatUUID(row.ID)
+	}
+	return c.JSON(resp)
 }
 
 // documentNotFound is the read path's 404. Its body is identical whether the doc is

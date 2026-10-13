@@ -30,7 +30,7 @@ export const PUT: RequestHandler = async ({ locals, params, request }) => {
 	});
 	// 404 covers "no such draft" and "not yours" identically (ownership enforced
 	// server-side, AC-2.3) — never leak which.
-	if (res.status === 404) error(404, 'Draft not found');
+	if (res.status === 404) error(404, 'Entry not found');
 	if (!res.ok) error(502, `Save failed (API ${res.status})`);
 
 	return json(await res.json());

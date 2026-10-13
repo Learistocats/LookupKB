@@ -1,7 +1,7 @@
-// Minimal draft editor + read view (LOO-11 walking skeleton). All API calls go
-// server-side with the caller's bearer (never exposed to the browser). `load`
-// reads the current source back from Postgres — reloading this page is the
-// round-trip persistence proof — and the `save` action PUTs the edited source.
+// Entry editor. All API calls go server-side with the caller's bearer (never
+// exposed to the browser). `load` reads the working copy back from Postgres —
+// reloading this page is the round-trip persistence proof — and the `save`
+// action is the no-JS fallback for autosave.
 import { error, fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { apiFetch } from '$lib/server/api';
@@ -14,14 +14,15 @@ export type Draft = {
 	description: string | null;
 	source_md: string | null;
 	updated_at: string;
+	tags?: string[];
 };
 
 export const load: PageServerLoad = async ({ locals, params }) => {
 	const res = await apiFetch(locals.accessToken, `/api/drafts/${params.id}`);
 	// 404 covers both "no such draft" and "not yours" — the API never leaks which
 	// (ownership is enforced server-side, AC-2.3).
-	if (res.status === 404) error(404, 'Draft not found');
-	if (!res.ok) error(502, `Could not load draft (API ${res.status})`);
+	if (res.status === 404) error(404, 'Entry not found');
+	if (!res.ok) error(502, `Could not load this entry (API ${res.status})`);
 	return { draft: (await res.json()) as Draft };
 };
 
@@ -41,7 +42,7 @@ export const actions: Actions = {
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify(body)
 		});
-		if (res.status === 404) error(404, 'Draft not found');
+		if (res.status === 404) error(404, 'Entry not found');
 		if (!res.ok) return fail(502, { message: `Save failed (API ${res.status})` });
 
 		return { saved: true, draft: (await res.json()) as Draft };

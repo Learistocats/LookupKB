@@ -42,7 +42,7 @@ export type PublishOutcome =
 
 /**
  * publishDraft posts the confirm-flow metadata to the same-origin proxy at
- * /drafts/{id}/publish (NOT /api/*, to avoid the dev-time Vite /api proxy). On 422
+ * /entries/{id}/publish (NOT /api/*, to avoid the dev-time Vite /api proxy). On 422
  * it returns the per-field errors so the dialog can render them inline and keep the
  * document a draft; on any other non-OK status it throws.
  */
@@ -51,7 +51,7 @@ export async function publishDraft(
 	req: PublishRequest,
 	fetchFn: typeof fetch = fetch
 ): Promise<PublishOutcome> {
-	const res = await fetchFn(`/drafts/${id}/publish`, {
+	const res = await fetchFn(`/entries/${id}/publish`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(req)
@@ -67,14 +67,14 @@ export async function publishDraft(
 }
 
 /**
- * unpublishDraft posts to /drafts/{id}/unpublish and returns the reverted document.
+ * unpublishDraft posts to /entries/{id}/unpublish and returns the reverted document.
  * Throws on any non-OK status (there is no per-field failure mode for unpublish).
  */
 export async function unpublishDraft(
 	id: string,
 	fetchFn: typeof fetch = fetch
 ): Promise<PublishedDoc> {
-	const res = await fetchFn(`/drafts/${id}/unpublish`, { method: 'POST' });
+	const res = await fetchFn(`/entries/${id}/unpublish`, { method: 'POST' });
 	if (!res.ok) throw new Error(`unpublish failed (${res.status})`);
 	return (await res.json()) as PublishedDoc;
 }

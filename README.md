@@ -43,7 +43,8 @@ make garage-init          # one-time: assign the Garage cluster layout
 
 Then:
 
-- App: <http://localhost:3000> — create an account at `/signup`
+- App: <http://localhost:3000> — create an account at `/signup`, then search from the
+  home page or press **+** to write an entry; your entries live in the panel on the left
 - API liveness: <http://127.0.0.1:8080/healthz>
 - API readiness: <http://127.0.0.1:8080/readyz>
 

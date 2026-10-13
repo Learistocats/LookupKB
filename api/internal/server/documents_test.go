@@ -51,6 +51,9 @@ type fakeDocStore struct {
 	setRenderedArg dbgen.SetRenderedHTMLParams
 	setRenderedErr error
 
+	mineRows  []dbgen.ListMyDocumentsRow
+	tagLabels []string
+
 	getBySlugArg string
 	getBySlugRow dbgen.GetPublishedBySlugRow
 	getBySlugErr error
@@ -81,6 +84,15 @@ func (f *fakeDocStore) ListDrafts(_ context.Context, authorID pgtype.UUID) ([]db
 func (f *fakeDocStore) SetRenderedHTML(_ context.Context, arg dbgen.SetRenderedHTMLParams) error {
 	f.setRenderedArg = arg
 	return f.setRenderedErr
+}
+
+func (f *fakeDocStore) ListMyDocuments(_ context.Context, authorID pgtype.UUID) ([]dbgen.ListMyDocumentsRow, error) {
+	f.listArg = authorID
+	return f.mineRows, f.listErr
+}
+
+func (f *fakeDocStore) ListDocumentTagLabels(_ context.Context, _ pgtype.UUID) ([]string, error) {
+	return f.tagLabels, nil
 }
 
 // GetPublishedBySlug satisfies DocumentStore for the read-path handler tests. It

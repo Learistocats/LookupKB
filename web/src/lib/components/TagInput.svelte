@@ -8,6 +8,7 @@
   unit-tested independently and this component stays presentational.
 -->
 <script lang="ts">
+	import Icon from './Icon.svelte';
 	import {
 		normalizeTag,
 		validateTags,
@@ -73,15 +74,15 @@
 </script>
 
 <div class="tag-input">
-	<label for="tag-entry">{label}</label>
+	<label class="field-label" for="tag-entry">{label}</label>
 
 	{#if tags.length > 0}
 		<ul class="chips">
 			{#each tags as tag (tag)}
-				<li class="chip">
+				<li class="chip tag">
 					<span>{tag}</span>
 					<button type="button" aria-label={`Remove ${tag}`} onclick={() => removeTag(tag)}>
-						×
+						<Icon name="x" size={12} />
 					</button>
 				</li>
 			{/each}
@@ -90,6 +91,7 @@
 
 	<input
 		id="tag-entry"
+		class="input"
 		type="text"
 		autocomplete="off"
 		placeholder="Add a tag…"
@@ -112,22 +114,15 @@
 	{/if}
 
 	{#each errors as err (err)}
-		<span class="badge error">{err}</span>
+		<p class="error-text">{err}</p>
 	{/each}
 </div>
 
 <style>
 	.tag-input {
 		display: grid;
-		gap: 0.5rem;
+		gap: 0.4rem;
 		position: relative;
-	}
-
-	label {
-		color: #9aa0a6;
-		font-size: 0.85rem;
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
 	}
 
 	.chips {
@@ -136,55 +131,44 @@
 		padding: 0;
 		display: flex;
 		flex-wrap: wrap;
-		gap: 0.4rem;
-	}
-
-	.chip {
-		display: inline-flex;
-		align-items: center;
 		gap: 0.35rem;
-		padding: 0.2rem 0.5rem;
-		border-radius: 999px;
-		background: #1a1d22;
-		border: 1px solid #2a2e35;
-		color: #e8eaed;
-		font-size: 0.85rem;
 	}
 
-	.chip button {
-		border: none;
-		background: none;
-		color: #9aa0a6;
-		cursor: pointer;
-		font-size: 1rem;
-		line-height: 1;
+	.tag {
+		height: 1.625rem;
+		padding-right: 0.25rem;
+		background: var(--accent-soft);
+		color: var(--accent);
+		font-size: var(--text-sm);
+	}
+
+	.tag button {
+		display: grid;
+		place-items: center;
+		width: 1.125rem;
+		height: 1.125rem;
 		padding: 0;
+		border: none;
+		border-radius: 50%;
+		background: none;
+		color: inherit;
+		cursor: pointer;
 	}
 
-	.chip button:hover {
-		color: #f87171;
-	}
-
-	input {
-		width: 100%;
-		box-sizing: border-box;
-		padding: 0.6rem 0.75rem;
-		border: 1px solid #2a2e35;
-		border-radius: 0.5rem;
-		background: #131519;
-		color: #e8eaed;
-		font: inherit;
+	.tag button:hover {
+		background: var(--surface);
 	}
 
 	.suggestions {
 		list-style: none;
 		margin: 0;
 		padding: 0.25rem;
-		border: 1px solid #2a2e35;
-		border-radius: 0.5rem;
-		background: #131519;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		background: var(--surface);
+		box-shadow: var(--shadow-md);
 		display: grid;
-		gap: 0.15rem;
+		gap: 1px;
 	}
 
 	.suggestions button {
@@ -194,32 +178,19 @@
 		align-items: center;
 		padding: 0.4rem 0.5rem;
 		border: none;
-		border-radius: 0.35rem;
+		border-radius: 4px;
 		background: none;
-		color: #e8eaed;
 		cursor: pointer;
-		font: inherit;
+		text-align: left;
 	}
 
 	.suggestions button:hover {
-		background: #1a1d22;
+		background: var(--surface-hover);
 	}
 
 	.count {
-		color: #9aa0a6;
-		font-size: 0.8rem;
-	}
-
-	.badge {
-		display: inline-block;
-		padding: 0.25rem 0.6rem;
-		border-radius: 999px;
-		font-weight: 600;
-		font-size: 0.85rem;
-	}
-
-	.badge.error {
-		background: #2e1113;
-		color: #f87171;
+		color: var(--fg-subtle);
+		font-size: var(--text-xs);
+		font-variant-numeric: tabular-nums;
 	}
 </style>

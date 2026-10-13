@@ -86,9 +86,24 @@ PostgreSQL is the source of truth; Meilisearch is a derived, rebuildable project
 3. This guarantees the index eventually matches Postgres even if Meilisearch is briefly down — no lost updates, no dual-write inconsistency.
 
 ### Body-text extraction
-At publish, produce `body_text` by rendering Markdown to text (strip code fences to plain,
-drop diagram source, keep headings/paragraphs) so search matches prose, not syntax noise.
-Store alongside the document row for deterministic reindex.
+`body_text` is extracted from the **published** `rendered_html` (tags dropped, block
+boundaries become spaces, `script`/`style`/`svg`/`math` skipped) when the worker builds the
+projection — never from `source_md`, which may hold unpublished edits to a published entry.
+Being derived from a stored column, it is deterministic for reindex.
+
+### Worker (implemented in `api/internal/search`)
+- Runs inside the API process when both Postgres and Meilisearch are configured.
+- On start: create the index + apply settings (waits for the task), requeue ops left
+  `processing` by a crash, and — if the index is empty — enqueue an upsert for every
+  published document (bootstrap/recovery).
+- Loop: claim up to 50 `pending` ops (`FOR UPDATE SKIP LOCKED`), apply, mark `done`; a
+  failure increments `attempts` and returns the op to `pending` until 5 attempts, then
+  `failed`. Polls every second (freshness target < 2 s) with backoff while Meilisearch is
+  down. An `upsert` for a document that is no longer published deletes it instead.
+- Query path: `GET /api/search?q=&limit=` (UI) — the access filter is built from the
+  verified caller (UUIDs validated before they reach the filter); highlights use control
+  characters as markers, then the snippet is HTML-escaped and only `<mark>` is re-allowed.
+  An empty query returns the latest published entries.
 
 ### Full rebuild
 `POST /admin/reindex` streams all published documents from Postgres, rebuilds settings +
