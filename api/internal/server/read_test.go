@@ -14,14 +14,13 @@ import (
 )
 
 // publishedRow builds a canned published-doc read row with the given access scope
-// and author. rendered_html/tags/author/version are all populated so a 200 exercises
+// and author. rendered_html/tags/author are all populated so a 200 exercises
 // the full projection.
 func publishedRow(access dbgen.DocumentAccess, authorID uuid.UUID) dbgen.GetPublishedBySlugRow {
 	title := "Kubernetes Guide"
 	desc := "How we run k8s"
 	html := "<h1>Kubernetes</h1><p>content</p>"
 	name := "Ada Lovelace"
-	var ver int32 = 3
 	return dbgen.GetPublishedBySlugRow{
 		Slug:              "kubernetes-guide-abcd1234",
 		Title:             &title,
@@ -31,13 +30,12 @@ func publishedRow(access dbgen.DocumentAccess, authorID uuid.UUID) dbgen.GetPubl
 		AuthorID:          pgUUID(authorID),
 		PublishedAt:       pgtype.Timestamptz{Time: time.Now(), Valid: true},
 		AuthorDisplayName: &name,
-		VersionNo:         &ver,
 		Tags:              []string{"guide", "kubernetes"},
 	}
 }
 
 // AC-8.1/8.5: a public published doc returns its cached HTML plus the display
-// metadata (author, published date, tags, version). The handler passes the slug
+// metadata (author, published date, tags). The handler passes the slug
 // through unchanged and never exposes source_md or author_id.
 func TestReadDocument_PublicReturnsRenderedHTMLAndMetadata(t *testing.T) {
 	store := &fakeDocStore{getBySlugRow: publishedRow(dbgen.DocumentAccessPublic, uuid.New())}
@@ -54,8 +52,6 @@ func TestReadDocument_PublicReturnsRenderedHTMLAndMetadata(t *testing.T) {
 	require.Equal(t, "<h1>Kubernetes</h1><p>content</p>", got.RenderedHTML)
 	require.NotNil(t, got.AuthorDisplayName)
 	require.Equal(t, "Ada Lovelace", *got.AuthorDisplayName)
-	require.NotNil(t, got.Version)
-	require.Equal(t, int32(3), *got.Version)
 	require.Equal(t, []string{"guide", "kubernetes"}, got.Tags)
 	require.NotEmpty(t, got.PublishedAt)
 }

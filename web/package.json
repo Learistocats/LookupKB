@@ -46,7 +46,6 @@
 		"@codemirror/view": "^6.43.6",
 		"@lezer/common": "^1.5.2",
 		"@lezer/highlight": "^1.2.3",
-		"jose": "^6.2.3",
-		"openid-client": "^6.8.4"
+		"jose": "^6.2.3"
 	}
 }

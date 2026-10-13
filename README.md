@@ -19,17 +19,15 @@ tech stack, data model, security, roadmap).
 |---|---|
 | Backend | Go 1.25 · [Fiber v2](https://gofiber.io) · `slog` · `caarlos0/env` |
 | Frontend | SvelteKit · TypeScript · Vite |
-| Edge | Caddy (auto-TLS, security headers) |
-| Data | PostgreSQL · Meilisearch · Garage (S3) · Kroki (diagrams) |
-| Identity | Authentik (OIDC) |
-| Telemetry | OpenTelemetry Collector |
+| Data | PostgreSQL · Meilisearch · Garage (S3) · Kroki (diagrams) · Valkey (rate limits) |
+| Identity | Built-in email + password (argon2id), open signup |
 
 ## Repository layout
 
 ```
 api/     Go + Fiber backend (cmd/api, internal/*)
 web/     SvelteKit frontend
-deploy/  docker-compose stack, Caddyfile, service configs
+deploy/  docker-compose stack, service configs
 docs/    planning & specifications
 ```
 
@@ -39,29 +37,25 @@ Prerequisites: **Docker** + **Docker Compose v2**.
 
 ```bash
 cp .env.example .env      # then edit secrets (or `make env`)
-make up                   # build + start the core stack (detached)
+make up                   # build + start the stack (detached)
 make garage-init          # one-time: assign the Garage cluster layout
 ```
 
 Then:
 
-- App: <http://localhost> (SvelteKit SPA — shows live API health)
-- API liveness: <http://localhost/healthz>
-- API readiness: <http://localhost/readyz>
+- App: <http://localhost:3000> — create an account at `/signup`
+- API liveness: <http://127.0.0.1:8080/healthz>
+- API readiness: <http://127.0.0.1:8080/readyz>
 
 Stop it with `make down` (add `make clean` to also drop volumes).
 
-The default `make up` starts the **core stack** (Caddy, API, web, Postgres,
-Valkey, Meilisearch, Kroki, Garage, OTel Collector) with healthchecks gating an
-ordered start. Identity and the bundled telemetry backend are opt-in:
-
-```bash
-make auth-up      # + Authentik (--profile auth)
-make obs-up       # + Prometheus/Tempo/Loki/Grafana (Grafana at /grafana)
-```
+`make up` starts web, API, Postgres, Valkey, Meilisearch, Kroki and Garage with
+healthchecks gating an ordered start. No reverse proxy is bundled — put your own
+TLS proxy in front of `web` for anything deployed.
 
 See [`docs/deploy.md`](docs/deploy.md) for the full bring-up, health, network
-boundary, and configuration reference.
+boundary, and configuration reference, and [`docs/auth.md`](docs/auth.md) for
+accounts and sessions.
 
 ## Local development (without containers)
 
@@ -75,7 +69,9 @@ cd api && go run ./cmd/api
 cd web && pnpm install && pnpm dev
 ```
 
-Open <http://localhost:5173>.
+Open <http://localhost:5173>. Without `LOOKUPKB_AUTH_SECRET` (API) and
+`SESSION_COOKIE_SECRET` (web) auth is disabled and protected routes don't exist;
+with them (plus a database) you can sign up locally.
 
 ## Common tasks
 
@@ -98,7 +94,7 @@ as parallel jobs:
 | `api` | `go vet`, `golangci-lint` (govet/staticcheck/**gosec**), sqlc freshness, `go test -race`, testcontainers integration tests, build |
 | `vuln` | `govulncheck` — Go dependency/stdlib vulnerabilities |
 | `web` | Prettier, ESLint, `svelte-check`, Vitest, build |
-| `compose` | `docker compose config` validation (core + observability overlay) |
+| `compose` | `docker compose config` validation |
 | `trivy-config` | Trivy IaC/misconfiguration scan of Dockerfiles + compose |
 | `images` | Build the API & web images, then Trivy image scans |
 
@@ -116,8 +112,9 @@ accepted exceptions are documented in [`.trivyignore`](.trivyignore).
 
 - The API image is a **distroless, non-root, read-only-filesystem** static
   binary with a self-probe healthcheck (no shell in the image).
-- Compose uses **network segmentation**: only Caddy is published; datastores
-  live on an `internal` network. `no-new-privileges`, dropped capabilities and
+- Passwords are stored as **argon2id** hashes only; login/signup are rate-limited.
+- Compose uses **network segmentation**: only `web` is published (the API binds to
+  loopback); datastores live on an `internal` network. `no-new-privileges`, dropped capabilities and
   per-container resource limits are set across the stack.
 - All third-party images are **pinned by digest**.
 - **No secrets in git**: `.env` is git-ignored; `.env.example` documents every

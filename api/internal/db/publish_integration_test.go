@@ -52,11 +52,11 @@ func tagUsage(t *testing.T, ctx context.Context, pool *pgxpool.Pool, slug string
 }
 
 // TestPublishFlow_FirstPublish covers AC-5.3 end-to-end through the real service:
-// valid metadata → published, published_at set, a title-derived slug, one snapshot,
+// valid metadata → published, published_at set, a title-derived slug,
 // live tag membership + usage_count, an audit row, and an enqueued index upsert.
 func TestPublishFlow_FirstPublish(t *testing.T) {
 	ctx := context.Background()
-	pool, author := newVersionsFixture(t, ctx)
+	pool, author := newFixture(t, ctx)
 	svc := newPublishService(pool)
 	q := dbgen.New(pool)
 
@@ -71,7 +71,7 @@ func TestPublishFlow_FirstPublish(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Empty(t, fieldErrs)
-	require.Equal(t, int32(1), res.VersionNo)
+	require.Equal(t, dbgen.DocumentStatusPublished, res.Document.Status)
 
 	doc, err := q.GetOwnedDocument(ctx, dbgen.GetOwnedDocumentParams{ID: docID, AuthorID: author})
 	require.NoError(t, err)
@@ -82,8 +82,7 @@ func TestPublishFlow_FirstPublish(t *testing.T) {
 	// Slug is title-derived, no longer the draft placeholder.
 	require.Regexp(t, `^how-to-deploy-lookupkb-[0-9a-f]+$`, doc.Slug)
 
-	// One snapshot; live tags applied with usage_count; audit + index-outbox rows.
-	require.Equal(t, 1, countVersions(t, ctx, pool, docID))
+	// Live tags applied with usage_count; audit + index-outbox rows.
 	require.Equal(t, 2, countRows(t, ctx, pool, "SELECT count(*) FROM document_tags WHERE document_id=$1", docID))
 	require.Equal(t, 1, tagUsage(t, ctx, pool, "ops"))
 	require.Equal(t, 1, tagUsage(t, ctx, pool, "deploy"))
@@ -93,11 +92,11 @@ func TestPublishFlow_FirstPublish(t *testing.T) {
 		"SELECT count(*) FROM index_outbox WHERE document_id=$1 AND op='upsert'", docID))
 }
 
-// TestPublishFlow_RePublish covers AC-5.5: a re-publish appends a new snapshot,
+// TestPublishFlow_RePublish covers AC-5.5: a re-publish overwrites the content,
 // leaves published_at and the slug unchanged, and enqueues another index upsert.
 func TestPublishFlow_RePublish(t *testing.T) {
 	ctx := context.Background()
-	pool, author := newVersionsFixture(t, ctx)
+	pool, author := newFixture(t, ctx)
 	svc := newPublishService(pool)
 	q := dbgen.New(pool)
 
@@ -117,14 +116,13 @@ func TestPublishFlow_RePublish(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Empty(t, fieldErrs)
-	require.Equal(t, int32(2), res2.VersionNo)
+	require.Equal(t, dbgen.DocumentStatusPublished, res2.Document.Status)
 
 	after, err := q.GetOwnedDocument(ctx, dbgen.GetOwnedDocumentParams{ID: docID, AuthorID: author})
 	require.NoError(t, err)
 	require.Equal(t, before.PublishedAt.Time, after.PublishedAt.Time, "published_at is not clobbered on re-publish")
 	require.Equal(t, before.Slug, after.Slug, "slug stays stable across re-publishes")
 
-	require.Equal(t, 2, countVersions(t, ctx, pool, docID))
 	require.Equal(t, 2, countRows(t, ctx, pool, "SELECT count(*) FROM index_outbox WHERE document_id=$1 AND op='upsert'", docID))
 	// beta newly added; alpha unchanged (idempotent).
 	require.Equal(t, 1, tagUsage(t, ctx, pool, "alpha"))
@@ -136,7 +134,7 @@ func TestPublishFlow_RePublish(t *testing.T) {
 // no index op.
 func TestPublishFlow_InvalidMetadataNoStateChange(t *testing.T) {
 	ctx := context.Background()
-	pool, author := newVersionsFixture(t, ctx)
+	pool, author := newFixture(t, ctx)
 	svc := newPublishService(pool)
 	q := dbgen.New(pool)
 
@@ -154,7 +152,6 @@ func TestPublishFlow_InvalidMetadataNoStateChange(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, dbgen.DocumentStatusDraft, doc.Status, "document stays a draft")
 	require.False(t, doc.PublishedAt.Valid)
-	require.Zero(t, countVersions(t, ctx, pool, docID))
 	require.Zero(t, countRows(t, ctx, pool, "SELECT count(*) FROM audit_log WHERE target_id=$1", uuidStr(docID)))
 	require.Zero(t, countRows(t, ctx, pool, "SELECT count(*) FROM index_outbox WHERE document_id=$1", docID))
 }
@@ -163,7 +160,7 @@ func TestPublishFlow_InvalidMetadataNoStateChange(t *testing.T) {
 // settings table is honored on the next publish attempt, no redeploy.
 func TestPublishFlow_SettingsLimitEnforced(t *testing.T) {
 	ctx := context.Background()
-	pool, author := newVersionsFixture(t, ctx)
+	pool, author := newFixture(t, ctx)
 	svc := newPublishService(pool)
 
 	// Tighten the title max to 5 chars; a previously-valid title now violates it.
@@ -188,11 +185,11 @@ func TestPublishFlow_SettingsLimitEnforced(t *testing.T) {
 }
 
 // TestPublishFlow_Unpublish covers AC-5.6: unpublish reverts to author-only status,
-// retains published_at and the version history, enqueues an index delete, drops live
+// retains published_at, enqueues an index delete, drops live
 // tag counts, and writes an audit row.
 func TestPublishFlow_Unpublish(t *testing.T) {
 	ctx := context.Background()
-	pool, author := newVersionsFixture(t, ctx)
+	pool, author := newFixture(t, ctx)
 	svc := newPublishService(pool)
 	q := dbgen.New(pool)
 
@@ -213,7 +210,6 @@ func TestPublishFlow_Unpublish(t *testing.T) {
 	require.Equal(t, dbgen.DocumentStatusUnpublished, doc.Status)
 	require.True(t, doc.PublishedAt.Valid, "published_at retained on unpublish")
 
-	require.Equal(t, 1, countVersions(t, ctx, pool, docID), "version history retained")
 	require.Equal(t, 0, tagUsage(t, ctx, pool, "alpha"), "unpublished doc stops counting toward tag popularity")
 	require.Equal(t, 1, countRows(t, ctx, pool, "SELECT count(*) FROM index_outbox WHERE document_id=$1 AND op='delete'", docID))
 	require.Equal(t, 1, countRows(t, ctx, pool,
@@ -224,10 +220,10 @@ func TestPublishFlow_Unpublish(t *testing.T) {
 // attempt is ErrNotFound, never a cross-author publish.
 func TestPublishFlow_CrossAuthorIsNotFound(t *testing.T) {
 	ctx := context.Background()
-	pool, author := newVersionsFixture(t, ctx)
+	pool, author := newFixture(t, ctx)
 	svc := newPublishService(pool)
 
-	other, err := dbgen.New(pool).UpsertUser(ctx, dbgen.UpsertUserParams{OidcSub: "other-sub"})
+	other, err := dbgen.New(pool).CreateUser(ctx, dbgen.CreateUserParams{Email: "other-sub@example.com", PasswordHash: "x"})
 	require.NoError(t, err)
 
 	docID := newDraftWithSource(t, ctx, pool, author, "draft-owned", "# doc")

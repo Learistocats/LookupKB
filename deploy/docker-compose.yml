@@ -1,60 +1,17 @@
 # LookupKB single-host Docker Compose stack (see docs/planning/01-architecture.md §5).
 #
-# Network segmentation: only `caddy` is published to the host. Everything else
-# talks over internal networks. `edge` carries browser-facing traffic (Caddy →
-# web/api/authentik); `data` carries backend traffic (api/authentik → datastores).
-# Datastores sit ONLY on `data`, so they are unreachable from the edge.
+#   web, api (+ one-shot migrate), postgres, valkey, meilisearch, kroki(+mermaid), garage
 #
-# Heavy, not-yet-wired services live behind Compose profiles so a default
-# `docker compose up` brings a clean core skeleton:
-#   (default)        caddy, api, web, postgres, valkey, meilisearch, kroki(+mermaid), garage
-#   --profile auth   authentik-server, authentik-worker  (OIDC wiring: later ticket)
-#   --profile observability  otel-collector             (telemetry wiring: later ticket)
+# Network segmentation: `web` is the only browser-facing service (published on
+# LOOKUPKB_WEB_PORT); the API port is bound to 127.0.0.1 by default and is only
+# needed by a host reverse proxy that exposes the public /api surface. TLS is the
+# host proxy's job. Datastores sit ONLY on the internal `data` network.
 #
 # All third-party images are pinned by digest (updated via Renovate).
 
 name: lookupkb
 
 services:
-  # ---- Edge -----------------------------------------------------------------
-  caddy:
-    image: caddy:2.8-alpine@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17
-    restart: unless-stopped
-    depends_on:
-      api:
-        condition: service_healthy
-      web:
-        condition: service_healthy
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    environment:
-      SITE_ADDRESS: ${SITE_ADDRESS:-http://localhost}
-      # Authentik gets its own hostname so the OIDC issuer is stable end-to-end
-      # (see docs/auth-setup.md). In dev *.localhost resolves to 127.0.0.1 in the
-      # browser; the network alias below lets the api/web containers reach the
-      # same URL via Caddy so the token issuer matches.
-      AUTH_SITE_ADDRESS: ${AUTH_SITE_ADDRESS:-http://authentik.localhost}
-      ACME_EMAIL: ${ACME_EMAIL:-}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    networks:
-      edge:
-        aliases:
-          # Dev default AUTH_SITE_ADDRESS host. Override in production with real
-          # DNS (then this alias is unused and harmless).
-          - authentik.localhost
-    security_opt:
-      - no-new-privileges:true
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 128M
-
   # ---- Application ----------------------------------------------------------
   api:
     build:
@@ -71,32 +28,23 @@ services:
       # Runtime DB connection as the least-privilege app role (DML only). Built
       # from the fixed role name + password so the URL never lands in .env.
       LOOKUPKB_DATABASE_URL: postgres://lookupkb_app:${LOOKUPKB_APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-lookupkb}?sslmode=disable
-      # OIDC token verification (LOO-8). Empty issuer disables protected routes so
-      # the core stack boots without Authentik (--profile auth). Audience is the
-      # provider client id.
-      LOOKUPKB_OIDC_ISSUER: ${LOOKUPKB_OIDC_ISSUER:-}
-      # Split-horizon discovery: the API fetches discovery/JWKS from Authentik's
-      # internal service address while still validating the EXTERNAL issuer above
-      # on browser-minted tokens. This default is required for the compose stack:
-      # the external `authentik.localhost` is a network alias on the `caddy`
-      # container, and `caddy` waits for the api to be healthy (depends_on) — so at
-      # boot the api cannot resolve it (chicken-and-egg). Reaching authentik-server
-      # directly breaks that cycle. Override for a non-compose Authentik, or if the
-      # provider app slug is not `lookupkb`. Ignored when the issuer above is empty.
-      LOOKUPKB_OIDC_ISSUER_INTERNAL: ${LOOKUPKB_OIDC_ISSUER_INTERNAL:-http://authentik-server:9000/application/o/lookupkb/}
-      LOOKUPKB_OIDC_AUDIENCE: ${LOOKUPKB_OIDC_AUDIENCE:-}
-      # OTLP export target (the collector runs in the core stack). The API's OTel
-      # SDK exports traces/metrics/logs here; empty disables telemetry export so
-      # the stack boots without a collector (like an empty DATABASE_URL).
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      # Token authentication: the API signs/verifies its own HS256 access tokens
+      # with this secret (≥32 bytes). Empty disables signup/login and every
+      # protected route.
+      LOOKUPKB_AUTH_SECRET: ${LOOKUPKB_AUTH_SECRET:-}
+      LOOKUPKB_AUTH_TOKEN_TTL: ${LOOKUPKB_AUTH_TOKEN_TTL:-168h}
+      # Shared login/signup rate-limit counters.
+      LOOKUPKB_VALKEY_URL: redis://valkey:6379/0
       # /readyz dependency probes (AC-11.1). Internal service URLs assembled here
-      # (never in .env). Meili/Kroki/Garage gate readiness; the collector's
-      # health_check extension (:13133, distinct from the OTLP :4317 endpoint) is
-      # probed best-effort and never blocks readiness.
+      # (never in .env). Postgres/Valkey/Meili/Kroki/Garage gate readiness.
       LOOKUPKB_MEILI_URL: http://meilisearch:7700
       LOOKUPKB_KROKI_URL: http://kroki:8000
       LOOKUPKB_GARAGE_ADMIN_URL: http://garage:3903
-      LOOKUPKB_OTEL_COLLECTOR_HEALTH_URL: http://otel-collector:13133
+    # Loopback-only by default: the browser talks to `web`, never to the API. Point
+    # a host reverse proxy at it (and set LOOKUPKB_API_BIND=0.0.0.0 if that proxy
+    # runs elsewhere) to expose the public /api surface.
+    ports:
+      - "${LOOKUPKB_API_BIND:-127.0.0.1}:${LOOKUPKB_API_PORT:-8080}:8080"
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -122,19 +70,14 @@ services:
         condition: service_healthy
       kroki:
         condition: service_started
-    # Probe /readyz (not /healthz) so `caddy depends_on api: service_healthy`
-    # reflects real readiness — the API is "healthy" only once its gating
-    # dependencies (Postgres/Meili/Kroki/Garage) are reachable (AC-11.1). The
-    # start_period covers the dependency probes warming up AND, when auth is
-    # enabled, the API waiting for Authentik's OIDC discovery to come up (it is
-    # not listening yet during that retry) — Authentik's own start_period is 60s,
-    # so give the API enough runway not to be flagged unhealthy while it waits.
+    # Probe /readyz (not /healthz) so the container is "healthy" only once its
+    # gating dependencies are reachable (AC-11.1).
     healthcheck:
       test: ["CMD", "/api", "readycheck"]
       interval: 15s
       timeout: 5s
       retries: 3
-      start_period: 120s
+      start_period: 30s
     deploy:
       resources:
         limits:
@@ -178,32 +121,29 @@ services:
     image: lookupkb-web:${LOOKUPKB_VERSION:-dev}
     restart: unless-stopped
     environment:
-      # OIDC BFF (LOO-8). Empty OIDC_ISSUER disables auth so the core stack boots
-      # without Authentik. Client id/secret/redirect are shared with the Authentik
-      # blueprint via the LOOKUPKB_OIDC_* vars (single source of truth).
-      OIDC_ISSUER: ${OIDC_ISSUER:-}
-      OIDC_CLIENT_ID: ${LOOKUPKB_OIDC_CLIENT_ID:-lookupkb}
-      OIDC_CLIENT_SECRET: ${LOOKUPKB_OIDC_CLIENT_SECRET:-}
-      OIDC_REDIRECT_URI: ${LOOKUPKB_OIDC_REDIRECT_URI:-http://localhost/auth/callback}
-      OIDC_POST_LOGOUT_REDIRECT_URI: ${OIDC_POST_LOGOUT_REDIRECT_URI:-http://localhost/}
-      OIDC_SCOPES: ${OIDC_SCOPES:-openid profile email groups}
-      # Dev serves plain HTTP, so cookies must not be Secure-only. Never true in prod.
-      OIDC_ALLOW_INSECURE: ${OIDC_ALLOW_INSECURE:-true}
+      # Seals the API token into the session cookie. Empty disables auth (the
+      # web app then serves openly, for `pnpm dev`-style setups only).
       SESSION_COOKIE_SECRET: ${SESSION_COOKIE_SECRET:-}
+      # Plain-http local use needs non-Secure cookies. Set false behind HTTPS.
+      SESSION_COOKIE_INSECURE: ${SESSION_COOKIE_INSECURE:-true}
       # Server-side API base for bearer-proxied calls (internal service address).
       API_INTERNAL_BASE: http://api:8080
-      # adapter-node: trust Caddy's forwarded proto/host and fix the origin for
-      # CSRF/redirect correctness behind the reverse proxy.
-      ORIGIN: ${SITE_ADDRESS:-http://localhost}
-      PROTOCOL_HEADER: x-forwarded-proto
-      HOST_HEADER: x-forwarded-host
+      # adapter-node: the public origin, for CSRF/redirect correctness. Set it to
+      # your https URL when a host proxy terminates TLS in front of this service.
+      ORIGIN: ${ORIGIN:-http://localhost:3000}
+      # The client IP (for login rate limiting) as seen behind a host proxy. Leave
+      # empty when browsers connect to this port directly.
+      ADDRESS_HEADER: ${WEB_ADDRESS_HEADER:-}
+      XFF_DEPTH: ${WEB_XFF_DEPTH:-1}
+    ports:
+      - "${LOOKUPKB_WEB_BIND:-0.0.0.0}:${LOOKUPKB_WEB_PORT:-3000}:8080"
     networks:
       - edge
     security_opt:
       - no-new-privileges:true
     depends_on:
       api:
-        condition: service_started
+        condition: service_healthy
     # node:slim has no wget/curl; probe with Node's global fetch against the
     # unauthenticated /healthz route.
     healthcheck:
@@ -235,10 +175,6 @@ services:
       # migration roles the API and `api migrate` connect as (06-security.md §8).
       LOOKUPKB_APP_DB_PASSWORD: ${LOOKUPKB_APP_DB_PASSWORD:?LOOKUPKB_APP_DB_PASSWORD is required}
       LOOKUPKB_MIGRATOR_DB_PASSWORD: ${LOOKUPKB_MIGRATOR_DB_PASSWORD:?LOOKUPKB_MIGRATOR_DB_PASSWORD is required}
-      # Consumed by the init script to provision the Authentik database/role.
-      AUTHENTIK_DB: ${AUTHENTIK_DB:-authentik}
-      AUTHENTIK_DB_USER: ${AUTHENTIK_DB_USER:-authentik}
-      AUTHENTIK_DB_PASSWORD: ${AUTHENTIK_DB_PASSWORD:?AUTHENTIK_DB_PASSWORD is required}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
@@ -378,102 +314,6 @@ services:
           cpus: "1.0"
           memory: 512M
 
-  # ---- Identity (OIDC wiring is a later ticket) -----------------------------
-  authentik-server:
-    image: ghcr.io/goauthentik/server:2024.10.5@sha256:c4aa2113d0c2379faa9e8a28f4ab13816b4e6f2847b272e37d68e518fdf76880
-    restart: unless-stopped
-    profiles: ["auth"]
-    command: server
-    environment: &authentik-env
-      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:?AUTHENTIK_SECRET_KEY is required}
-      AUTHENTIK_POSTGRESQL__HOST: postgres
-      AUTHENTIK_POSTGRESQL__NAME: ${AUTHENTIK_DB:-authentik}
-      AUTHENTIK_POSTGRESQL__USER: ${AUTHENTIK_DB_USER:-authentik}
-      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_DB_PASSWORD:?AUTHENTIK_DB_PASSWORD is required}
-      AUTHENTIK_REDIS__HOST: valkey
-      # First-boot admin bootstrap so there is a usable akadmin account without
-      # manual setup. OIDC application/provider config is a later ticket.
-      AUTHENTIK_BOOTSTRAP_EMAIL: ${AUTHENTIK_BOOTSTRAP_EMAIL:-admin@localhost}
-      AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:-}
-      AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN:-}
-      # Consumed by the LookupKB blueprint (deploy/authentik/blueprints/lookupkb.yaml)
-      # to provision the OAuth2 provider without hardcoding secrets.
-      LOOKUPKB_OIDC_CLIENT_ID: ${LOOKUPKB_OIDC_CLIENT_ID:-lookupkb}
-      LOOKUPKB_OIDC_CLIENT_SECRET: ${LOOKUPKB_OIDC_CLIENT_SECRET:-}
-      LOOKUPKB_OIDC_REDIRECT_URI: ${LOOKUPKB_OIDC_REDIRECT_URI:-http://localhost/auth/callback}
-    volumes:
-      - authentik_media:/media
-      - authentik_templates:/templates
-    networks:
-      - edge
-      - data
-    depends_on:
-      postgres:
-        condition: service_healthy
-      valkey:
-        condition: service_healthy
-    security_opt:
-      - no-new-privileges:true
-    # Authentik ships an `ak healthcheck` command for exactly this purpose.
-    healthcheck:
-      test: ["CMD", "ak", "healthcheck"]
-      interval: 30s
-      timeout: 30s
-      retries: 5
-      start_period: 60s
-    deploy:
-      resources:
-        limits:
-          cpus: "2.0"
-          memory: 1024M
-
-  authentik-worker:
-    image: ghcr.io/goauthentik/server:2024.10.5@sha256:c4aa2113d0c2379faa9e8a28f4ab13816b4e6f2847b272e37d68e518fdf76880
-    restart: unless-stopped
-    profiles: ["auth"]
-    command: worker
-    environment: *authentik-env
-    volumes:
-      - authentik_media:/media
-      - authentik_templates:/templates
-      # File-based blueprint, auto-discovered and applied on boot.
-      - ./authentik/blueprints:/blueprints/lookupkb:ro
-    networks:
-      - data
-    depends_on:
-      postgres:
-        condition: service_healthy
-      valkey:
-        condition: service_healthy
-    security_opt:
-      - no-new-privileges:true
-    deploy:
-      resources:
-        limits:
-          cpus: "2.0"
-          memory: 1024M
-
-  # ---- Observability --------------------------------------------------------
-  # The collector is a core service (01-architecture.md §5.1): the API exports
-  # OTLP to it and /readyz probes it. Its base config only logs to `debug`; the
-  # opt-in docker-compose.observability.yml overlay swaps in a config that fans
-  # out to Prometheus/Tempo/Loki and starts those backends.
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.116.1@sha256:d0ebf65280da2e1b1491d1b93648281afd353d4b9ea19160090303cec9a233bd
-    restart: unless-stopped
-    command: ["--config=/etc/otel-collector-config.yaml"]
-    volumes:
-      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
-    networks:
-      - data
-    security_opt:
-      - no-new-privileges:true
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 256M
-
 networks:
   edge:
     driver: bridge
@@ -482,12 +322,8 @@ networks:
     internal: true
 
 volumes:
-  caddy_data:
-  caddy_config:
   postgres_data:
   valkey_data:
   meili_data:
   garage_meta:
   garage_data:
-  authentik_media:
-  authentik_templates:

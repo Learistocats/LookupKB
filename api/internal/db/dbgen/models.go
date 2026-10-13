@@ -131,21 +131,20 @@ type AuditLog struct {
 }
 
 type Document struct {
-	ID               pgtype.UUID        `json:"id"`
-	Slug             string             `json:"slug"`
-	AuthorID         pgtype.UUID        `json:"author_id"`
-	Status           DocumentStatus     `json:"status"`
-	Title            *string            `json:"title"`
-	Description      *string            `json:"description"`
-	SourceMd         *string            `json:"source_md"`
-	RenderedHtml     *string            `json:"rendered_html"`
-	Access           DocumentAccess     `json:"access"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
-	PublishedAt      pgtype.Timestamptz `json:"published_at"`
-	CurrentVersionID pgtype.UUID        `json:"current_version_id"`
-	SearchTsv        interface{}        `json:"search_tsv"`
-	DeletedAt        pgtype.Timestamptz `json:"deleted_at"`
+	ID           pgtype.UUID        `json:"id"`
+	Slug         string             `json:"slug"`
+	AuthorID     pgtype.UUID        `json:"author_id"`
+	Status       DocumentStatus     `json:"status"`
+	Title        *string            `json:"title"`
+	Description  *string            `json:"description"`
+	SourceMd     *string            `json:"source_md"`
+	RenderedHtml *string            `json:"rendered_html"`
+	Access       DocumentAccess     `json:"access"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+	PublishedAt  pgtype.Timestamptz `json:"published_at"`
+	SearchTsv    interface{}        `json:"search_tsv"`
+	DeletedAt    pgtype.Timestamptz `json:"deleted_at"`
 }
 
 type DocumentAcl struct {
@@ -158,26 +157,15 @@ type DocumentTag struct {
 	TagID      pgtype.UUID `json:"tag_id"`
 }
 
-type DocumentVersion struct {
-	ID           pgtype.UUID        `json:"id"`
-	DocumentID   pgtype.UUID        `json:"document_id"`
-	VersionNo    int32              `json:"version_no"`
-	Title        *string            `json:"title"`
-	Description  *string            `json:"description"`
-	SourceMd     *string            `json:"source_md"`
-	RenderedHtml *string            `json:"rendered_html"`
-	Tags         []string           `json:"tags"`
-	Access       DocumentAccess     `json:"access"`
-	AclGroupIds  []pgtype.UUID      `json:"acl_group_ids"`
-	PublishedBy  pgtype.UUID        `json:"published_by"`
-	PublishedAt  pgtype.Timestamptz `json:"published_at"`
+type Group struct {
+	ID        pgtype.UUID        `json:"id"`
+	Name      string             `json:"name"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
-type Group struct {
-	ID          pgtype.UUID        `json:"id"`
-	AuthentikID string             `json:"authentik_id"`
-	Name        string             `json:"name"`
-	SyncedAt    pgtype.Timestamptz `json:"synced_at"`
+type GroupMember struct {
+	GroupID pgtype.UUID `json:"group_id"`
+	UserID  pgtype.UUID `json:"user_id"`
 }
 
 type IndexOutbox struct {
@@ -207,10 +195,10 @@ type Tag struct {
 }
 
 type User struct {
-	ID          pgtype.UUID        `json:"id"`
-	OidcSub     string             `json:"oidc_sub"`
-	Email       *string            `json:"email"`
-	DisplayName *string            `json:"display_name"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	LastSeenAt  pgtype.Timestamptz `json:"last_seen_at"`
+	ID           pgtype.UUID        `json:"id"`
+	Email        string             `json:"email"`
+	DisplayName  *string            `json:"display_name"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	LastSeenAt   pgtype.Timestamptz `json:"last_seen_at"`
+	PasswordHash string             `json:"password_hash"`
 }

@@ -9,7 +9,6 @@ Traceable test plan. Each entry links a functional/NFR acceptance criterion (fro
 |---|---|---|
 | Unit | Go `testing`+`testify`; Vitest (front) | Pure logic: validation, ACL rule, body-text extraction, slugging |
 | Integration | `testcontainers-go` (Postgres, Meilisearch, Kroki, Garage/S3 mock) | API ↔ real services: publish, index, search, uploads |
-| Contract | OIDC mock / Authentik test realm | Token verification, group claims |
 | E2E | Playwright | Browser flows: auth, draft, publish, search, read, restrict |
 | Performance | k6 | Search & read latency under load |
 | Security | Semgrep, gosec, govulncheck, Trivy, OWASP ZAP, XSS corpus | SAST/DAST/deps/sanitization/access-control |
@@ -17,11 +16,8 @@ Traceable test plan. Each entry links a functional/NFR acceptance criterion (fro
 
 ## 2. Performance budgets (pass/fail gates)
 
-Corpus: **100k published documents**, realistic sizes, warm cache. **All budgets are
-measured from OpenTelemetry metrics/traces** (see [01](01-architecture.md) §6): k6 drives
-load, and pass/fail is read from the OTel `search_latency`/`read_latency`/`index_lag_seconds`
-instruments (Grafana dashboards preload these budgets), so acceptance is verified against
-the same telemetry the running system emits in production.
+Corpus: **100k published documents**, realistic sizes, warm cache. Budgets are
+measured client-side by k6 (latency percentiles from its own timings).
 
 | Metric | Budget | Test |
 |---|---|---|
@@ -36,10 +32,13 @@ the same telemetry the running system emits in production.
 ## 3. Functional test matrix
 
 ### Auth (F1)
-- **T-1.1** (AC-1.1) Unauthenticated route access → redirect to Authentik → returns authenticated. *(E2E)*
-- **T-1.2** (AC-1.2) Tampered/expired/invalid-signature JWT → 401. *(Integration)*
-- **T-1.3** (AC-1.3) Expired access token → silent refresh success; refresh-fail → re-auth. *(E2E)*
-- **T-1.4** (AC-1.4) Token groups drive access decision (parametrized groups). *(Integration)*
+- **T-1.1** (AC-1.1) Unauthenticated route access → redirect to `/login` → sign in → back to the route. *(E2E)*
+- **T-1.2** (AC-1.2) Tampered/expired/foreign-secret/missing-`exp` token → 401. *(Unit)*
+- **T-1.3** (AC-1.3) Expired session → cookie cleared, redirect to `/login`. *(E2E)*
+- **T-1.4** (AC-1.4) `group_members` drive the access decision (parametrized groups). *(Integration)*
+- **T-1.5** (AC-1.5) Stored hash is argon2id, never the password; wrong-password and unknown-email responses are identical. *(Unit)*
+- **T-1.6** (AC-1.6) Signup creates + signs in; duplicate email (other casing) → 409; short password / malformed email → 422. *(Unit+E2E)*
+- **T-1.7** (AC-1.7) > 10 login/signup attempts per minute from one IP → 429. *(Unit)*
 - **T-1.5** (AC-1.5) No password field/endpoint exists in LookupKB. *(Unit/Contract)*
 
 ### Drafts (F2)
@@ -64,8 +63,8 @@ the same telemetry the running system emits in production.
 ### Publish gate (F5)
 - **T-5.1** (AC-5.1) Publish shows confirm step with metadata summary. *(E2E)*
 - **T-5.2** (AC-5.2) Missing title/description/tag or limit violation → publish blocked, per-field errors, stays draft. *(Integration+E2E)*
-- **T-5.3** (AC-5.3) Valid metadata → published, `published_at` set, snapshot created, indexed. *(Integration)*
-- **T-5.4** (AC-5.5) Re-publish → new version snapshot; index updated. *(Integration)*
+- **T-5.3** (AC-5.3) Valid metadata → published, `published_at` set, indexed. *(Integration)*
+- **T-5.4** (AC-5.5) Re-publish → content overwritten; slug and `published_at` unchanged; index updated. *(Integration)*
 - **T-5.5** (AC-5.6) Unpublish → removed from index, author-only, history retained. *(Integration)*
 
 ### Tags (F6)
@@ -88,12 +87,10 @@ the same telemetry the running system emits in production.
 - **T-8.3** (AC-8.4) Restricted doc by direct URL → 403/404, no content leak. *(Integration)* **[access-control]**
 
 ### Versioning (F9)
-- **T-9.1** (AC-9.1) History lists versions with metadata. *(Integration)*
-- **T-9.2** (AC-9.2) Diff between versions. *(Integration)*
-- **T-9.3** (AC-9.3) Restore old version → new current snapshot. *(Integration)*
+- *(Retired with F9 — no version history.)*
 
 ### Groups & admin (F10)
-- **T-10.1** (AC-10.1) Authentik group sync → usable as ACL. *(Integration/Contract)*
+- **T-10.1** (AC-10.1) Local group + members → usable as ACL immediately. *(Integration)*
 - **T-10.2** (AC-10.2) Restrict doc to groups → only members + author + admin can read/find. *(Integration+E2E)* **[access-control]**
 - **T-10.3** (AC-10.3) ACL change reflected in index & reads immediately; audited. *(Integration)*
 - **T-10.4** (AC-10.4) Changing metadata limits enforced on next publish. *(Integration)*
@@ -120,8 +117,8 @@ the same telemetry the running system emits in production.
 ## 4. Security test suite (see [06](06-security.md))
 
 - **SEC-1 XSS corpus:** a battery of malicious Markdown/HTML/SVG payloads; assert none survive sanitization in rendered output. *(Integration)*
-- **SEC-2 Access-control matrix:** exhaustive user×group×doc-access combinations across read, search, facets, attachments, version history, **and the public API (PAT + service account)** — **zero leakage**; the UI and API share one access path and are tested against the same matrix. *(Integration)*
-- **SEC-3 IDOR:** enumerate draft/attachment/version IDs as non-owner → denied. *(Integration)*
+- **SEC-2 Access-control matrix:** exhaustive user×group×doc-access combinations across read, search, facets, attachments, **and the public API (PAT)** — **zero leakage**; the UI and API share one access path and are tested against the same matrix. *(Integration)*
+- **SEC-3 IDOR:** enumerate draft/attachment IDs as non-owner → denied. *(Integration)*
 - **SEC-4 SSRF:** diagram/embed remote-include attempts blocked; egress restricted. *(Integration)*
 - **SEC-5 AuthN:** forged/expired/wrong-audience tokens rejected. *(Integration)*
 - **SEC-6 Rate limiting/DoS:** oversized upload, huge diagram, query flood → bounded/rejected. *(Integration+Perf)*

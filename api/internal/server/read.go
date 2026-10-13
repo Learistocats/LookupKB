@@ -2,21 +2,13 @@ package server
 
 import (
 	"errors"
-	"time"
 
 	"github.com/Learistocats/LookupKB/api/internal/auth"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 )
-
-// readTracer emits the explicit read-path span. otelfiber already produces a
-// route-templated RED span per request; this adds a "documents.read" child so the
-// hot read (F8) is attributable on its own, alongside the read_latency metric.
-var readTracer = otel.Tracer("github.com/Learistocats/LookupKB/api/internal/server")
 
 // CanRead decides read access to a PUBLISHED document — the single access-check
 // seam for the read path (F8, 03-data-model.md §2). M1 scope is public-or-author:
@@ -48,7 +40,6 @@ type readResponse struct {
 	AuthorDisplayName *string  `json:"author_display_name"`
 	PublishedAt       string   `json:"published_at"`
 	Tags              []string `json:"tags"`
-	Version           *int32   `json:"version"`
 	RenderedHTML      string   `json:"rendered_html"`
 }
 
@@ -64,32 +55,19 @@ func toReadResponse(row dbgen.GetPublishedBySlugRow) readResponse {
 		AuthorDisplayName: row.AuthorDisplayName,
 		PublishedAt:       formatTime(row.PublishedAt),
 		Tags:              tags,
-		Version:           row.VersionNo,
 		RenderedHTML:      *row.RenderedHtml,
 	}
 }
 
 // handleReadDocument serves a published document's cached, sanitized HTML by slug
 // (F8, AC-8.1). It is intentionally thin: a straight column read — NO Markdown
-// parsing or diagram rendering on this path (that happened once at publish). The
-// read_latency metric + a span bound the handler so PERF-2 is measurable from day
-// one (01-architecture.md §6).
+// parsing or diagram rendering on this path (that happened once at publish).
 //
 // Not-found, not-published, soft-deleted, and access-denied all return the SAME 404
 // so a probing caller can never distinguish "doesn't exist" from "exists but denied"
 // (AC-8.4, no content/existence/timing leak).
 func (s *Server) handleReadDocument(c *fiber.Ctx) error {
-	start := time.Now()
-	ctx, span := readTracer.Start(c.UserContext(), "documents.read")
-	defer span.End()
-	// Record read_latency for EVERY request to this endpoint (nil-checked: WithMetrics
-	// is optional, telemetry disabled in local dev). Deferred so it captures the full
-	// handler duration on any return path.
-	defer func() {
-		if s.metrics != nil {
-			s.metrics.ReadLatency.Record(ctx, time.Since(start).Seconds())
-		}
-	}()
+	ctx := c.UserContext()
 
 	slug := c.Params("slug")
 	if slug == "" {
@@ -126,7 +104,6 @@ func (s *Server) handleReadDocument(c *fiber.Ctx) error {
 		return internalError(c)
 	}
 
-	span.SetAttributes(attribute.String("document.access", string(row.Access)))
 	return c.JSON(toReadResponse(row))
 }
 

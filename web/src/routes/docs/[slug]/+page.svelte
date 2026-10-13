@@ -25,15 +25,12 @@
 		<p class="description">{doc.description}</p>
 	{/if}
 
-	<!-- Minimal metadata (AC-8.5): author, published date, version, tags. -->
+	<!-- Minimal metadata (AC-8.5): author, published date, tags. -->
 	<div class="meta">
 		{#if doc.author_display_name}
 			<span>{doc.author_display_name}</span>
 		{/if}
 		<span>{formatDate(doc.published_at)}</span>
-		{#if doc.version != null}
-			<span>v{doc.version}</span>
-		{/if}
 	</div>
 	{#if doc.tags.length > 0}
 		<ul class="tags">

@@ -1,26 +1,16 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { getHealth, type Health } from '$lib/api';
+	import { invalidateAll } from '$app/navigation';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
 
-	type State =
-		{ kind: 'loading' } | { kind: 'ok'; health: Health } | { kind: 'error'; message: string };
-
-	let state = $state<State>({ kind: 'loading' });
+	let checking = $state(false);
 
 	async function check() {
-		state = { kind: 'loading' };
-		try {
-			const health = await getHealth();
-			state = { kind: 'ok', health };
-		} catch (err) {
-			state = { kind: 'error', message: err instanceof Error ? err.message : String(err) };
-		}
+		checking = true;
+		await invalidateAll();
+		checking = false;
 	}
-
-	onMount(check);
 </script>
 
 <svelte:head>
@@ -36,11 +26,9 @@
 			<h2>Signed in</h2>
 			<dl>
 				<dt>email</dt>
-				<dd>{data.user.email || '—'}</dd>
-				<dt>subject</dt>
-				<dd>{data.user.sub}</dd>
+				<dd>{data.user.email}</dd>
 				<dt>groups</dt>
-				<dd>{data.user.groups.length ? data.user.groups.join(', ') : '(none)'}</dd>
+				<dd>{data.me?.groups.length ? data.me.groups.join(', ') : '(none)'}</dd>
 			</dl>
 			{#if data.me}
 				<p class="badge ok">API verified token (/api/v1/me)</p>
@@ -53,27 +41,29 @@
 				</form>
 				<a class="workspace" href="/drafts">Your drafts →</a>
 			</div>
-			<a class="logout" href="/auth/logout">Log out</a>
+			<form method="POST" action="/auth/logout">
+				<button type="submit" class="logout">Log out</button>
+			</form>
 		</section>
 	{/if}
 
 	<section class="status" aria-live="polite">
 		<h2>API health</h2>
-		{#if state.kind === 'loading'}
+		{#if checking}
 			<p class="badge loading">Checking <code>/healthz</code>…</p>
-		{:else if state.kind === 'ok'}
+		{:else if data.health.ok}
 			<p class="badge ok">API is up</p>
 			<dl>
 				<dt>service</dt>
-				<dd>{state.health.service}</dd>
+				<dd>{data.health.health.service}</dd>
 				<dt>status</dt>
-				<dd>{state.health.status}</dd>
+				<dd>{data.health.health.status}</dd>
 				<dt>version</dt>
-				<dd>{state.health.version}</dd>
+				<dd>{data.health.health.version}</dd>
 			</dl>
 		{:else}
 			<p class="badge error">API unreachable</p>
-			<p class="detail">{state.message}</p>
+			<p class="detail">{data.health.message}</p>
 		{/if}
 		<button onclick={check}>Re-check</button>
 	</section>

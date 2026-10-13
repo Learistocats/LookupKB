@@ -15,7 +15,6 @@ export type PublishedDoc = {
 	author_display_name: string | null;
 	published_at: string;
 	tags: string[];
-	version: number | null;
 	rendered_html: string;
 };
 

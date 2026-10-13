@@ -1,6 +1,6 @@
-// Thin client for the LookupKB API. The base URL is empty by default so calls
-// are same-origin: in dev, Vite proxies /healthz to the Go API; in the compose
-// stack, Caddy routes /healthz and /api to the API container. Override with
+// Thin client for the LookupKB API health probe. The home page calls it
+// server-side with apiFetch (the browser has no direct route to the API); the
+// base URL is empty so a same-origin fetchFn can be passed in tests. Override with
 // PUBLIC_API_BASE only for unusual split-origin deployments.
 import { env } from '$env/dynamic/public';
 

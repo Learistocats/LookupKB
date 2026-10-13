@@ -17,14 +17,12 @@ import (
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/Learistocats/LookupKB/api/internal/health"
 	"github.com/Learistocats/LookupKB/api/internal/logging"
-	"github.com/Learistocats/LookupKB/api/internal/metrics"
 	"github.com/Learistocats/LookupKB/api/internal/publish"
 	"github.com/Learistocats/LookupKB/api/internal/render"
 	"github.com/Learistocats/LookupKB/api/internal/server"
 	"github.com/Learistocats/LookupKB/api/internal/tags"
-	"github.com/Learistocats/LookupKB/api/internal/telemetry"
+	"github.com/Learistocats/LookupKB/api/internal/valkey"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"go.opentelemetry.io/otel"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=...".
@@ -56,8 +54,7 @@ func main() {
 	}
 
 	if err := run(cfg, version); err != nil {
-		// A stdout-only logger for the fatal path — run owns the OTel-bridged one.
-		logging.New(cfg.LogFormat, cfg.LogLevel, version, nil).
+		logging.New(cfg.LogFormat, cfg.LogLevel, version).
 			Error("server exited with error", "error", err)
 		os.Exit(1)
 	}
@@ -88,7 +85,7 @@ func migrate(cfg config.Config, version string) int {
 		direction = os.Args[2]
 	}
 
-	log := logging.New(cfg.LogFormat, cfg.LogLevel, version, nil)
+	log := logging.New(cfg.LogFormat, cfg.LogLevel, version)
 	ctx := context.Background()
 
 	if err := db.RunMigrations(ctx, cfg.MigrateDSN(), direction); err != nil {
@@ -100,40 +97,7 @@ func migrate(cfg config.Config, version string) int {
 }
 
 func run(cfg config.Config, version string) error {
-	// Initialise the OpenTelemetry SDK first so the logger can bridge to it and
-	// every provider is installed before anything is instrumented. A no-op when
-	// no OTLP endpoint is configured (boots without a collector).
-	initCtx, cancelInit := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancelInit()
-	loggerProvider, shutdownTelemetry, err := telemetry.Init(initCtx, cfg, version)
-	if err != nil {
-		return err
-	}
-
-	// The process-wide logger: stdout JSON + (when enabled) OTLP logs, every
-	// line trace-correlated. Built after telemetry so the bridge is live.
-	log := logging.New(cfg.LogFormat, cfg.LogLevel, version, loggerProvider)
-	if cfg.OTelEnabled() {
-		log.Info("opentelemetry sdk initialised", "endpoint", cfg.OTelExporterEndpoint)
-	} else {
-		log.Warn("OTEL_EXPORTER_OTLP_ENDPOINT is empty; telemetry export is disabled")
-	}
-	// Flush traces/metrics/logs on the way out so the last requests before a
-	// container stop are not silently dropped.
-	defer func() {
-		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := shutdownTelemetry(flushCtx); err != nil {
-			log.Error("telemetry shutdown failed", "error", err)
-		}
-	}()
-
-	// Register the scaffolded business instruments on the global MeterProvider so
-	// later feature tickets can record on them.
-	appMetrics, err := metrics.New(otel.GetMeterProvider())
-	if err != nil {
-		return err
-	}
+	log := logging.New(cfg.LogFormat, cfg.LogLevel, version)
 
 	// Connect to Postgres when configured. Empty DATABASE_URL keeps the M0
 	// skeleton bootable without a database (e.g. unit tests, bare `go run`).
@@ -152,37 +116,53 @@ func run(cfg config.Config, version string) error {
 		log.Warn("LOOKUPKB_DATABASE_URL is empty; starting without a database")
 	}
 
-	// Configure OIDC token verification when an issuer is set. Empty issuer
-	// keeps the API open (no protected routes) so the core stack boots without
-	// Authentik (--profile auth), mirroring the empty-DATABASE_URL behaviour.
+	// Configure token authentication when a secret is set. An empty secret keeps
+	// the API open (no protected routes) so bare `go run` and tests boot without it,
+	// mirroring the empty-DATABASE_URL behaviour.
 	var opts []server.Option
 	if cfg.AuthEnabled() {
-		verifier, err := discoverOIDC(cfg, log)
+		tokens, err := auth.NewTokens(cfg.AuthSecret, cfg.AuthTokenTTL)
 		if err != nil {
 			return err
 		}
-		var users auth.UserUpserter
+		var groups auth.GroupLister
 		if pool != nil {
-			users = dbgen.New(pool)
+			groups = dbgen.New(pool)
+			// Signup/login need the users table, so they exist only with a database.
+			opts = append(opts, server.WithAccounts(dbgen.New(pool), tokens))
 		} else {
-			log.Warn("auth enabled without a database; user projection upsert is disabled")
+			log.Warn("auth enabled without a database; signup/login and group lookup are disabled")
 		}
-		opts = append(opts, server.WithAuth(auth.NewMiddleware(verifier, users, log)))
-		log.Info("oidc verification enabled", "issuer", cfg.OIDCIssuer, "audience", cfg.OIDCAudience)
+		opts = append(opts, server.WithAuth(auth.NewMiddleware(tokens, groups, log)))
+		log.Info("token authentication enabled", "token_ttl", cfg.AuthTokenTTL.String())
 	} else {
-		log.Warn("LOOKUPKB_OIDC_ISSUER is empty; protected routes are disabled")
+		log.Warn("LOOKUPKB_AUTH_SECRET is empty; protected routes are disabled")
 	}
 
-	opts = append(opts, server.WithMetrics(appMetrics))
+	// Share login/signup rate-limit counters through Valkey when configured; the
+	// limiter otherwise counts in process memory (fine for a single instance).
+	var kv *valkey.Storage
+	if cfg.ValkeyURL != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		store, err := valkey.New(ctx, cfg.ValkeyURL)
+		if err != nil {
+			return err
+		}
+		kv = store
+		defer func() { _ = kv.Close() }()
+		opts = append(opts, server.WithLimiterStorage(kv))
+		log.Info("valkey rate-limit storage ready")
+	}
 
-	// Wire the walking-skeleton draft routes when Postgres is configured. Without
-	// a pool the routes are omitted (the skeleton still boots for bare `go run`).
+	// Wire the document routes when Postgres is configured. Without a pool the
+	// routes are omitted (the skeleton still boots for bare `go run`).
 	if pool != nil {
 		opts = append(opts, server.WithDocuments(dbgen.New(pool)))
 		opts = append(opts, server.WithTags(tags.New(pool)))
 		// One process-wide renderer (concurrency-safe) drives the publish gate's
 		// server-side render+sanitize; the publish service composes it with the
-		// snapshot/tag/audit/outbox writes into one transaction.
+		// tag/audit/outbox writes into one transaction.
 		renderer := render.New()
 		opts = append(opts, server.WithPublish(publish.NewService(pool, renderer, log)))
 	}
@@ -190,6 +170,9 @@ func run(cfg config.Config, version string) error {
 	srv := server.New(cfg, log, version, opts...)
 	if pool != nil {
 		srv.RegisterReadinessCheck("postgres", db.ReadinessCheck(pool))
+	}
+	if kv != nil {
+		srv.RegisterReadinessCheck("valkey", kv.Ping)
 	}
 	registerDependencyChecks(cfg, srv, log)
 
@@ -212,45 +195,10 @@ func run(cfg config.Config, version string) error {
 	}
 }
 
-// discoverOIDC resolves the OIDC verifier, tolerating an Authentik that is not
-// ready yet at startup. Authentik boots slower than the API (fresh DB migrations
-// + blueprint application), and its front proxy returns 502 "authentik starting"
-// until the backend is up. The API is in the core stack while Authentik is
-// profile-gated, so this ordering can't be a compose depends_on — instead we
-// retry discovery with a short backoff until Authentik answers or the deadline
-// elapses, rather than exiting and relying on a container crash-loop.
-func discoverOIDC(cfg config.Config, log *slog.Logger) (*auth.Verifier, error) {
-	const (
-		perAttempt = 10 * time.Second
-		interval   = 3 * time.Second
-		maxWait    = 90 * time.Second
-	)
-	deadline := time.Now().Add(maxWait)
-	var lastErr error
-	for attempt := 1; ; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), perAttempt)
-		verifier, err := auth.New(ctx, cfg)
-		cancel()
-		if err == nil {
-			if attempt > 1 {
-				log.Info("oidc discovery succeeded after retry", "attempts", attempt)
-			}
-			return verifier, nil
-		}
-		lastErr = err
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("oidc discovery failed after %s: %w", maxWait, lastErr)
-		}
-		log.Warn("oidc discovery not ready, retrying", "attempt", attempt, "error", err.Error())
-		time.Sleep(interval)
-	}
-}
-
 // registerDependencyChecks wires the /readyz probes for the downstream services
 // (AC-11.1). Each is registered only when its URL is configured, so the skeleton
 // stays ready without the dependency (mirroring the empty-DATABASE_URL pattern).
-// Meili/Kroki/Garage gate readiness; the OTel collector is best-effort so local
-// dev without observability is never "not ready". Each probe is bounded by
+// Meili/Kroki/Garage gate readiness. Each probe is bounded by
 // cfg.ReadinessTimeout and cached for cfg.ReadinessCacheTTL.
 func registerDependencyChecks(cfg config.Config, srv *server.Server, log *slog.Logger) {
 	cache := cfg.ReadinessCacheTTL
@@ -267,9 +215,5 @@ func registerDependencyChecks(cfg config.Config, srv *server.Server, log *slog.L
 			continue
 		}
 		srv.RegisterReadinessCheck(dep.name, health.Cached(cache, health.HTTPCheck(dep.name, dep.url, timeout)))
-	}
-
-	if url := cfg.CollectorHealthURL(); url != "" {
-		srv.RegisterInformationalCheck("otel_collector", health.Cached(cache, health.HTTPCheck("otel_collector", url, timeout)))
 	}
 }

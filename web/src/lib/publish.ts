@@ -30,7 +30,6 @@ export interface PublishedDoc {
 	access: string;
 	published_at: string;
 	updated_at: string;
-	version_no?: number;
 }
 
 /**

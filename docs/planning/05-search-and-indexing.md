@@ -29,8 +29,7 @@ PostgreSQL.
   "created_at": 1731542400,     // unix ts (filterable/sortable)
   "published_at": 1731628800,
   "access": "public",           // or "restricted"   -> filterable facet
-  "acl_group_ids": ["uuid", …], // empty when public -> filterable facet
-  "version_no": 3
+  "acl_group_ids": ["uuid", …]  // empty when public -> filterable facet
 }
 ```
 
@@ -89,7 +88,7 @@ PostgreSQL is the source of truth; Meilisearch is a derived, rebuildable project
 ### Body-text extraction
 At publish, produce `body_text` by rendering Markdown to text (strip code fences to plain,
 drop diagram source, keep headings/paragraphs) so search matches prose, not syntax noise.
-Store alongside the version snapshot for deterministic reindex.
+Store alongside the document row for deterministic reindex.
 
 ### Full rebuild
 `POST /admin/reindex` streams all published documents from Postgres, rebuilds settings +

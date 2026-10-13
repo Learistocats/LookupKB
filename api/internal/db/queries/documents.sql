@@ -1,5 +1,5 @@
--- Walking-skeleton draft path only (M0): create, save, read a draft. Publish,
--- versioning, ACL and search queries arrive with their own milestones — keep
+-- Document queries: drafts, publish/unpublish and the read path. ACL and search
+-- queries arrive with their own milestones — keep
 -- queries close to the feature that needs them (03-data-model.md, ticket note).
 
 -- name: CreateDraft :one
@@ -23,12 +23,11 @@ WHERE id = $1
 RETURNING *;
 
 -- name: SetRenderedHTML :exec
--- Cache the publish-time sanitized HTML into the current-version cache column.
+-- Cache the publish-time sanitized HTML into the documents.rendered_html column.
 -- This is the ONLY write path to documents.rendered_html, and the value MUST be
 -- render.RenderAndSanitize output — no unsanitized HTML ever reaches this column
--- (06-security.md §2; LOO-16). Status / published_at / version-snapshot
--- transitions are the publish gate's job (LOO-14/LOO-17); this primitive only
--- caches the HTML so those tickets compose it into their publish transaction.
+-- (06-security.md §2; LOO-16). Status / published_at transitions are the
+-- publish gate's job (LOO-14); this primitive only caches the HTML.
 UPDATE documents
 SET rendered_html = $2,
     updated_at    = now()
@@ -59,10 +58,8 @@ WHERE id = $1
 -- The hot read path (F8, 01-architecture.md §3.2): fetch a PUBLISHED document by
 -- its slug for the rendered-HTML view. status='published' means a draft/unpublished
 -- (or soft-deleted) slug yields pgx.ErrNoRows → an identical 404, never partial
--- content. Reads the current rendered_html COLUMN (not a document_versions snapshot)
--- so the "current view" is consistent — no publish-time render on this path.
---   * JOIN users        → author display name for the byline.
---   * LEFT JOIN versions → current version_no (via current_version_id; nullable).
+-- content. Reads the cached rendered_html column — no render on this path.
+--   * JOIN users → author display name for the byline.
 --   * tags aggregated as labels for the metadata display.
 -- author_id/access are selected only to feed the server-side access check (CanRead);
 -- they are NOT projected to the client. One round trip keeps the path fast.
@@ -75,17 +72,15 @@ SELECT
     d.author_id,
     d.published_at,
     u.display_name AS author_display_name,
-    v.version_no   AS version_no,
     COALESCE(array_remove(array_agg(t.label ORDER BY t.label), NULL), '{}')::text[] AS tags
 FROM documents d
 JOIN users u ON u.id = d.author_id
-LEFT JOIN document_versions v ON v.id = d.current_version_id
 LEFT JOIN document_tags dt ON dt.document_id = d.id
 LEFT JOIN tags t ON t.id = dt.tag_id
 WHERE d.slug = $1
   AND d.status = 'published'
   AND d.deleted_at IS NULL
-GROUP BY d.id, u.display_name, v.version_no;
+GROUP BY d.id, u.display_name;
 
 -- name: PublishDocument :one
 -- Flip a document to 'published' with its just-validated metadata and freshly
@@ -114,9 +109,8 @@ RETURNING *;
 -- Revert a published document to author-only 'unpublished' visibility (AC-5.6).
 -- Only a currently-published doc can be unpublished (status='published' guard), so
 -- a draft/already-unpublished/other-author id yields pgx.ErrNoRows → 404.
--- published_at, current_version_id and the document_versions history are all left
--- intact — unpublish removes the doc from the index-eligible state, it does not
--- erase its past.
+-- published_at and rendered_html are left intact — unpublish removes the doc from
+-- the index-eligible state, it does not erase its content.
 UPDATE documents
 SET status     = 'unpublished',
     updated_at = now()

@@ -10,7 +10,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 describe('publishDraft', () => {
 	it('posts the metadata to the same-origin proxy and returns the published doc', async () => {
-		const doc = { id: 'd1', slug: 'a-title-abcd', status: 'published', version_no: 1 };
+		const doc = { id: 'd1', slug: 'a-title-abcd', status: 'published' };
 		const fetchFn = vi.fn().mockResolvedValue(jsonResponse(doc));
 
 		const out = await publishDraft(

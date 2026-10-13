@@ -7,8 +7,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 // TestRenderAndSanitize_XSSCorpus is the SEC-1 seed (06-security.md §10,
@@ -130,40 +128,6 @@ func TestRenderAndSanitize_SizeCap(t *testing.T) {
 func TestWithMaxBytes_IgnoresNonPositive(t *testing.T) {
 	r := New(WithMaxBytes(0))
 	require.Equal(t, DefaultMaxBytes, r.maxBytes)
-}
-
-// TestRenderAndSanitize_RecordsRenderDuration verifies the render_duration metric
-// is recorded exactly once per call (supports the "invoked once per publish, not
-// per read" AC at the unit level: each RenderAndSanitize is one observation).
-func TestRenderAndSanitize_RecordsRenderDuration(t *testing.T) {
-	reader := sdkmetric.NewManualReader()
-	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	hist, err := mp.Meter("test").Float64Histogram("render_duration")
-	require.NoError(t, err)
-
-	r := New(WithRenderDuration(hist))
-	_, err = r.RenderAndSanitize(context.Background(), "# one")
-	require.NoError(t, err)
-	_, err = r.RenderAndSanitize(context.Background(), "# two")
-	require.NoError(t, err)
-
-	var rm metricdata.ResourceMetrics
-	require.NoError(t, reader.Collect(context.Background(), &rm))
-
-	var count uint64
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if m.Name != "render_duration" {
-				continue
-			}
-			h, ok := m.Data.(metricdata.Histogram[float64])
-			require.True(t, ok)
-			for _, dp := range h.DataPoints {
-				count += dp.Count
-			}
-		}
-	}
-	require.Equal(t, uint64(2), count, "expected exactly one observation per render call")
 }
 
 // TestNew_DefaultDiagramRenderer confirms the M1 default is the no-op renderer,

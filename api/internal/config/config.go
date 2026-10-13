@@ -13,9 +13,7 @@ import (
 
 // Config holds all runtime configuration for the API.
 //
-// Only variables needed by the M0 scaffolding are wired today; later tickets
-// (OIDC, Postgres, Meilisearch, Garage, OTel) add their own fields. Keep the
-// struct flat and env-driven so nothing but the environment configures a
+// Keep the struct flat and env-driven so nothing but the environment configures a
 // running container.
 type Config struct {
 	// Env is the deployment environment: "development", "staging" or
@@ -53,32 +51,19 @@ type Config struct {
 	DBMaxConnIdleTime time.Duration `env:"LOOKUPKB_DB_MAX_CONN_IDLE_TIME" envDefault:"30m"`
 	DBConnectTimeout  time.Duration `env:"LOOKUPKB_DB_CONNECT_TIMEOUT" envDefault:"5s"`
 
-	// OIDCIssuer is the external issuer URL that must match the `iss` claim in
-	// tokens (e.g. https://kb.example.com/application/o/lookupkb/). Empty
-	// disables token verification so the skeleton/tests boot without Authentik
-	// (mirrors the empty-DatabaseURL behaviour). See 06-security.md §5.
-	OIDCIssuer string `env:"LOOKUPKB_OIDC_ISSUER"`
+	// AuthSecret is the HS256 secret the API signs and verifies its own access
+	// tokens with (≥32 bytes). Empty disables authentication so the skeleton/tests
+	// boot without it — no protected routes are registered (mirrors the
+	// empty-DatabaseURL behaviour).
+	AuthSecret string `env:"LOOKUPKB_AUTH_SECRET"`
 
-	// OIDCIssuerInternal is the URL the API reaches for OIDC discovery and JWKS
-	// (e.g. http://authentik-server:9000/application/o/lookupkb/). Behind a
-	// reverse proxy this differs from the external issuer: JWKS is fetched here
-	// but the `iss` claim is still validated against OIDCIssuer. Empty falls
-	// back to OIDCIssuer (no split-horizon).
-	OIDCIssuerInternal string `env:"LOOKUPKB_OIDC_ISSUER_INTERNAL"`
+	// AuthTokenTTL bounds each access token's lifetime. There is no refresh: the
+	// user logs in again once it expires.
+	AuthTokenTTL time.Duration `env:"LOOKUPKB_AUTH_TOKEN_TTL" envDefault:"168h"`
 
-	// OIDCAudience is the expected `aud` claim (the LookupKB OAuth2 client id).
-	// Validated explicitly alongside issuer/signature/expiry — a JWKS-only check
-	// would let tokens minted for other Authentik apps be replayed here.
-	OIDCAudience string `env:"LOOKUPKB_OIDC_AUDIENCE"`
-
-	// OTelExporterEndpoint is the OTLP endpoint the OpenTelemetry SDK exports
-	// traces/metrics/logs to (the otel-collector, e.g.
-	// http://otel-collector:4317). It follows the OTel spec's standard variable
-	// so `OTEL_EXPORTER_OTLP_*` overrides work unchanged. Empty disables the SDK
-	// (no-op providers) so the skeleton/tests boot without a collector — the same
-	// pattern as an empty DatabaseURL or OIDCIssuer. An `http://` scheme selects
-	// the insecure (plaintext) gRPC transport automatically.
-	OTelExporterEndpoint string `env:"OTEL_EXPORTER_OTLP_ENDPOINT"`
+	// ValkeyURL (redis://host:6379/0) backs the login/signup rate limiter so limits
+	// survive restarts. Empty falls back to an in-process limiter.
+	ValkeyURL string `env:"LOOKUPKB_VALKEY_URL"`
 
 	// Downstream dependency base URLs used only by the /readyz probes
 	// (01-architecture.md §6, AC-11.1). Each is the service's base URL; the
@@ -88,14 +73,6 @@ type Config struct {
 	MeiliURL       string `env:"LOOKUPKB_MEILI_URL"`
 	KrokiURL       string `env:"LOOKUPKB_KROKI_URL"`
 	GarageAdminURL string `env:"LOOKUPKB_GARAGE_ADMIN_URL"`
-
-	// OTelCollectorHealthURL is the collector's health_check extension base URL
-	// (e.g. http://otel-collector:13133), distinct from OTelExporterEndpoint
-	// (the OTLP :4317 target). Probed *best-effort* by /readyz: a down collector
-	// is reported but never makes the API "not ready" (AC-11.1 gates only on
-	// Postgres/Meili/Kroki/Garage — local dev without observability must stay
-	// ready). Empty skips the check.
-	OTelCollectorHealthURL string `env:"LOOKUPKB_OTEL_COLLECTOR_HEALTH_URL"`
 
 	// ReadinessTimeout bounds each /readyz dependency probe so an unreachable
 	// dependency can never hang the readiness endpoint (AC-11.1).
@@ -120,10 +97,6 @@ func (c Config) KrokiHealthURL() string { return healthURL(c.KrokiURL, "/health"
 
 // GarageHealthURL returns the Garage admin health endpoint, or "" when unconfigured.
 func (c Config) GarageHealthURL() string { return healthURL(c.GarageAdminURL, "/health") }
-
-// CollectorHealthURL returns the OTel collector health_check endpoint (served at
-// the extension root), or "" when unconfigured.
-func (c Config) CollectorHealthURL() string { return healthURL(c.OTelCollectorHealthURL, "/") }
 
 // healthURL joins a configured base with its health path, preserving the
 // "empty base disables the check" convention.
@@ -153,29 +126,11 @@ func (c Config) IsProduction() bool {
 	return c.Env == "production"
 }
 
-// AuthEnabled reports whether OIDC token verification is configured. When the
-// issuer is empty the API boots without protected routes (dev/tests), the same
+// AuthEnabled reports whether token authentication is configured. When the
+// secret is empty the API boots without protected routes (dev/tests), the same
 // pattern as an empty DatabaseURL disabling the pool.
 func (c Config) AuthEnabled() bool {
-	return c.OIDCIssuer != ""
-}
-
-// OTelEnabled reports whether OpenTelemetry export is configured. When the OTLP
-// endpoint is empty the SDK is not initialised (no-op providers) so the API
-// boots without a collector — the same pattern as an empty DatabaseURL disabling
-// the pool.
-func (c Config) OTelEnabled() bool {
-	return c.OTelExporterEndpoint != ""
-}
-
-// OIDCDiscoveryURL returns the URL used for OIDC discovery / JWKS fetch,
-// preferring the internal URL when set (reverse-proxy split-horizon) and
-// otherwise the external issuer.
-func (c Config) OIDCDiscoveryURL() string {
-	if c.OIDCIssuerInternal != "" {
-		return c.OIDCIssuerInternal
-	}
-	return c.OIDCIssuer
+	return c.AuthSecret != ""
 }
 
 // Load parses configuration from the process environment.

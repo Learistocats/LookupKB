@@ -1,7 +1,7 @@
 // End-to-end proof for F2 (LOO-11 + LOO-13): log in → create draft → type
 // content → it AUTOSAVES with no button press → reload → content persists → the
-// private workspace lists it, through the REAL stack (Caddy → API → Postgres,
-// Authentik session). Plus an ownership spot-check: a second user cannot read the
+// private workspace lists it, through the REAL stack (web BFF → API → Postgres,
+// email/password session). Plus an ownership spot-check: a second user cannot read the
 // first user's draft (AC-2.3).
 //
 // Runs only when E2E_BASE_URL + credentials are set (see playwright.config.ts);
@@ -109,7 +109,7 @@ test.describe('draft round-trip', () => {
 		// T-5.2: confirm with no tags → the server blocks publish with a per-field tag
 		// error and the document is still a draft (the dialog stays open).
 		await dialog.getByRole('button', { name: /confirm publish/i }).click();
-		await expect(dialog.getByText(/tag/i)).toBeVisible();
+		await expect(dialog.locator('.badge.error').filter({ hasText: /tag/i })).toBeVisible();
 		await expect(dialog).toBeVisible();
 
 		// Provide valid metadata, then confirm → the document becomes published.
@@ -119,7 +119,7 @@ test.describe('draft round-trip', () => {
 		await dialog.locator('input[placeholder="Add a tag…"]').press('Enter');
 		await dialog.getByRole('button', { name: /confirm publish/i }).click();
 
-		await expect(page.getByText(/^published$/i)).toBeVisible();
+		await expect(page.locator('.status.published')).toBeVisible();
 		await expect(page.getByRole('button', { name: /^unpublish$/i })).toBeVisible();
 	});
 
@@ -154,7 +154,7 @@ test.describe('draft round-trip', () => {
 		await dialog.locator('input[placeholder="Add a tag…"]').fill('read-e2e');
 		await dialog.locator('input[placeholder="Add a tag…"]').press('Enter');
 		await dialog.getByRole('button', { name: /confirm publish/i }).click();
-		await expect(page.getByText(/^published$/i)).toBeVisible();
+		await expect(page.locator('.status.published')).toBeVisible();
 
 		// On first publish the placeholder draft-<hex> slug becomes the title-derived
 		// slug; read it off the editor's metadata line, then open the read view.
@@ -167,47 +167,21 @@ test.describe('draft round-trip', () => {
 		await expect(page.getByRole('heading', { name: headingMarker })).toBeVisible();
 		await expect(page.getByText('Readable body paragraph.')).toBeVisible();
 
-		// AC-8.5: minimal metadata — the tag chip and version number are shown.
+		// AC-8.5: minimal metadata — the tag chip is shown.
 		await expect(page.getByText('read-e2e')).toBeVisible();
-		await expect(page.getByText(/^v\d+$/)).toBeVisible();
 	});
 });
 
-// login performs the Authentik Authorization-Code flow through the browser. The
-// app redirects an unauthenticated visitor to Authentik; we fill the identifier
-// then password stage (Authentik's default flow), handle an optional consent
-// screen, and land back on the app. Fields are targeted by their form `name`
-// (Authentik's inputs carry no associated <label>); Playwright pierces the
-// flow's web-component shadow DOM for name/role selectors.
-async function login(page: Page, username: string, password: string) {
+// login signs in through the app's email/password form. The accounts must exist
+// already (create them once via /signup).
+async function login(page: Page, email: string, password: string) {
+	// Unauthenticated visits are redirected to the app's own /login form.
 	await page.goto('/');
+	await expect(page).toHaveURL(/\/login/);
+	await page.locator('input[name="email"]').fill(email);
+	await page.locator('input[name="password"]').fill(password);
+	await page.getByRole('button', { name: /sign in/i }).click();
 
-	// Identification stage: the visible identifier field is input[name="uidField"].
-	// Submit with Enter — Authentik's flow submits reliably on Enter, whereas
-	// clicking the freshly-rendered stage button can race the web-component swap.
-	const uid = page.locator('input[name="uidField"]');
-	await uid.waitFor({ state: 'visible' });
-	await uid.fill(username);
-	await uid.press('Enter');
-
-	// Password stage.
-	const pw = page.locator('input[name="password"]');
-	await pw.waitFor({ state: 'visible' });
-	await pw.fill(password);
-	await pw.press('Enter');
-
-	// Authentik then shows an auth-completion interstitial and an explicit-consent
-	// screen, each with a primary submit ("Continue"). Click through the stages
-	// while still on an Authentik flow page (URL contains /if/flow/); stop as soon
-	// as we leave Authentik so we never click the app's own submit ("New draft" is
-	// itself a submit button).
-	for (let i = 0; i < 8 && page.url().includes('/if/flow/'); i++) {
-		const submit = page.locator('button[type=submit]:visible').first();
-		if (await submit.count()) await submit.click().catch(() => {});
-		await page.waitForTimeout(1000);
-	}
-
-	// Signed in — reaching the app proves the (chunked) session cookie survived the
-	// redirect back rather than being dropped for exceeding the per-cookie limit.
+	// Signed in — reaching the app proves the session cookie was set and accepted.
 	await expect(page.getByRole('button', { name: /new draft/i })).toBeVisible({ timeout: 15000 });
 }

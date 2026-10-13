@@ -1,21 +1,29 @@
-// The OIDC gate. On every request this resolves the encrypted session cookie,
-// silently refreshes an expired access token, and redirects unauthenticated
-// users to Authentik (AC-1.1). Auth is skipped entirely when OIDC is not
-// configured, so `pnpm dev` works without Authentik (mirrors the API).
+// The auth gate. On every request this resolves the encrypted session cookie and
+// redirects unauthenticated users to /login (AC-1.1). There is no refresh: once
+// the API token expires the user signs in again. Auth is skipped entirely when no
+// session secret is configured, so `pnpm dev` works without a backend (mirrors
+// the API). Also sets the baseline security headers the edge proxy used to add.
 import { redirect, type Handle } from '@sveltejs/kit';
-import { getConfig, refreshSession } from '$lib/server/oidc';
+import { getAuthConfig } from '$lib/server/auth';
 import {
 	getSessionCookie,
-	setSessionCookie,
 	clearSessionCookie,
 	openSession,
-	sealSession,
 	isExpired,
 	type Session
 } from '$lib/server/session';
 
-function cookieOptions(secure: boolean, maxAge: number) {
-	return { path: '/', httpOnly: true, secure, sameSite: 'lax' as const, maxAge };
+/** Routes reachable without a session. */
+const PUBLIC_PATHS = new Set(['/login', '/signup', '/healthz']);
+
+function withSecurityHeaders(response: Response, secure: boolean): Response {
+	const h = response.headers;
+	h.set('X-Content-Type-Options', 'nosniff');
+	h.set('X-Frame-Options', 'DENY');
+	h.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+	h.set('Permissions-Policy', 'geolocation=(), camera=(), microphone=(), interest-cohort=()');
+	if (secure) h.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+	return response;
 }
 
 export const handle: Handle = async ({ event, resolve }) => {
@@ -24,46 +32,32 @@ export const handle: Handle = async ({ event, resolve }) => {
 		return resolve(event);
 	}
 
-	const cfg = getConfig();
+	const cfg = getAuthConfig();
 
-	// Auth disabled (no issuer configured): serve openly, no user context.
+	// Auth disabled (no secret configured): serve openly, no user context.
 	if (!cfg) {
-		return resolve(event);
+		return withSecurityHeaders(await resolve(event), false);
 	}
 
-	const secure = !cfg.allowInsecure;
-	const isAuthRoute = event.url.pathname.startsWith('/auth/');
 	const raw = getSessionCookie(event.cookies);
-
 	let session: Session | null = raw ? await openSession(raw, cfg.sessionSecret) : null;
 
 	if (session && isExpired(session)) {
-		// Silent refresh (AC-1.3). On failure, drop the session and fall through
-		// to the redirect below rather than surfacing a raw error.
-		try {
-			session = await refreshSession(cfg, session);
-			setSessionCookie(
-				event.cookies,
-				await sealSession(session, cfg.sessionSecret, cfg.sessionTtl),
-				cookieOptions(secure, cfg.sessionTtl)
-			);
-		} catch {
-			clearSessionCookie(event.cookies);
-			session = null;
-		}
+		clearSessionCookie(event.cookies);
+		session = null;
 	}
 
 	if (session) {
-		event.locals.user = { sub: session.sub, email: session.email, groups: session.groups };
+		event.locals.user = { id: session.userId, email: session.email };
 		// Stash the access token for server-side API proxying (never sent to the client).
 		event.locals.accessToken = session.accessToken;
 	}
 
 	// Gate real app routes only (event.route.id is null for asset/404 misses).
-	if (!session && !isAuthRoute && event.route.id !== null) {
+	if (!session && !PUBLIC_PATHS.has(event.url.pathname) && event.route.id !== null) {
 		const returnTo = event.url.pathname + event.url.search;
-		redirect(302, `/auth/login?returnTo=${encodeURIComponent(returnTo)}`);
+		redirect(302, `/login?returnTo=${encodeURIComponent(returnTo)}`);
 	}
 
-	return resolve(event);
+	return withSecurityHeaders(await resolve(event), cfg.secure);
 };

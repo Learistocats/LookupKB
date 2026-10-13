@@ -13,7 +13,6 @@ import (
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/Learistocats/LookupKB/api/internal/render"
 	"github.com/Learistocats/LookupKB/api/internal/tags"
-	"github.com/Learistocats/LookupKB/api/internal/versions"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -53,16 +52,14 @@ type Input struct {
 	Tags        []string
 }
 
-// Result is the outcome of a successful publish/unpublish: the updated document row
-// and (for publish) the version number of the snapshot just created.
+// Result is the outcome of a successful publish/unpublish: the updated document row.
 type Result struct {
-	Document  dbgen.Document
-	VersionNo int32
+	Document dbgen.Document
 }
 
 // Publish validates the metadata, renders the working copy, and — only if both
-// succeed — atomically transitions the document to published: snapshot, tag apply,
-// audit and index-enqueue all commit together or not at all.
+// succeed — atomically transitions the document to published: tag apply, audit
+// and index-enqueue all commit together or not at all.
 //
 // On a metadata violation it returns the per-field errors with error==nil and NO
 // state change (the document stays a draft, AC-5.2). A render failure is surfaced
@@ -148,23 +145,6 @@ func (s *Service) Publish(ctx context.Context, in Input) (*Result, []FieldError,
 		return nil, nil, fmt.Errorf("publish document: %w", err)
 	}
 
-	// Immutable snapshot of exactly what was published; also repoints
-	// current_version_id. Access is captured from the row (public this milestone).
-	ver, err := versions.CreateSnapshot(ctx, qtx, versions.Snapshot{
-		DocumentID:   in.DocID,
-		Title:        &title,
-		Description:  &description,
-		SourceMD:     doc.SourceMd,
-		RenderedHTML: &html,
-		Tags:         normTags,
-		Access:       published.Access,
-		ACLGroupIDs:  nil, // restricted-group ACLs are M3.
-		PublishedBy:  in.AuthorID,
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("create snapshot: %w", err)
-	}
-
 	// Live tag membership + usage_count, composed into this same transaction so a
 	// later failure rolls the counts back too.
 	if err := tags.ApplyDocumentTags(ctx, qtx, in.DocID, normTags); err != nil {
@@ -172,7 +152,6 @@ func (s *Service) Publish(ctx context.Context, in Input) (*Result, []FieldError,
 	}
 
 	if err := s.audit(ctx, qtx, in.AuthorID, "document.publish", in.DocID, map[string]any{
-		"version_no":    ver.VersionNo,
 		"first_publish": firstPublish,
 	}); err != nil {
 		return nil, nil, err
@@ -188,12 +167,12 @@ func (s *Service) Publish(ctx context.Context, in Input) (*Result, []FieldError,
 		return nil, nil, fmt.Errorf("commit publish tx: %w", err)
 	}
 
-	return &Result{Document: published, VersionNo: ver.VersionNo}, nil, nil
+	return &Result{Document: published}, nil, nil
 }
 
 // Unpublish reverts a published document to author-only 'unpublished' visibility,
 // enqueues its removal from the index, and drops its live tag counts — all in one
-// transaction. published_at and the version history are retained (AC-5.6).
+// transaction. published_at and the rendered HTML are retained (AC-5.6).
 func (s *Service) Unpublish(ctx context.Context, docID, authorID pgtype.UUID) (*Result, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -212,8 +191,7 @@ func (s *Service) Unpublish(ctx context.Context, docID, authorID pgtype.UUID) (*
 		return nil, fmt.Errorf("unpublish document: %w", err)
 	}
 
-	// Detach live tags so an unpublished doc stops counting toward tag popularity;
-	// the version snapshots keep their own immutable tag copies.
+	// Detach live tags so an unpublished doc stops counting toward tag popularity.
 	if err := tags.ApplyDocumentTags(ctx, qtx, docID, nil); err != nil {
 		return nil, fmt.Errorf("clear tags: %w", err)
 	}

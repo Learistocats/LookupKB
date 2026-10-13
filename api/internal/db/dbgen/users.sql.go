@@ -7,41 +7,90 @@ package dbgen
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const upsertUser = `-- name: UpsertUser :one
+const createUser = `-- name: CreateUser :one
 
-INSERT INTO users (oidc_sub, email, display_name, last_seen_at)
-VALUES ($1, $2, $3, now())
-ON CONFLICT (oidc_sub) DO UPDATE
-SET email        = EXCLUDED.email,
-    display_name = EXCLUDED.display_name,
-    last_seen_at = now()
-RETURNING id, oidc_sub, email, display_name, created_at, last_seen_at
+INSERT INTO users (email, password_hash, display_name)
+VALUES ($1, $2, $3)
+RETURNING id, email, display_name, created_at, last_seen_at, password_hash
 `
 
-type UpsertUserParams struct {
-	OidcSub     string  `json:"oidc_sub"`
-	Email       *string `json:"email"`
-	DisplayName *string `json:"display_name"`
+type CreateUserParams struct {
+	Email        string  `json:"email"`
+	PasswordHash string  `json:"password_hash"`
+	DisplayName  *string `json:"display_name"`
 }
 
-// Users are a projection of Authentik identities (03-data-model.md §1). The auth
-// middleware upserts a row on each verified request, keyed on the stable OIDC
-// `sub`. NO authentication secret is ever stored — only display projections.
-// Insert-or-refresh the caller's projection on login/request. oidc_sub is the
-// stable Authentik subject and the conflict target; email/display_name are
-// refreshed from the verified token and last_seen_at bumped to now().
-func (q *Queries) UpsertUser(ctx context.Context, arg UpsertUserParams) (User, error) {
-	row := q.db.QueryRow(ctx, upsertUser, arg.OidcSub, arg.Email, arg.DisplayName)
+// Local email/password accounts (03-data-model.md §1 `users`). password_hash is an
+// argon2id PHC string produced by internal/auth — never plaintext.
+// Register a new account. email is citext + UNIQUE, so a duplicate (any casing)
+// fails with a unique violation the signup handler maps to a generic conflict.
+func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, error) {
+	row := q.db.QueryRow(ctx, createUser, arg.Email, arg.PasswordHash, arg.DisplayName)
 	var i User
 	err := row.Scan(
 		&i.ID,
-		&i.OidcSub,
 		&i.Email,
 		&i.DisplayName,
 		&i.CreatedAt,
 		&i.LastSeenAt,
+		&i.PasswordHash,
 	)
 	return i, err
+}
+
+const getUserByEmail = `-- name: GetUserByEmail :one
+SELECT id, email, display_name, created_at, last_seen_at, password_hash
+FROM users
+WHERE email = $1
+`
+
+// Login lookup. citext makes the match case-insensitive.
+func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
+	row := q.db.QueryRow(ctx, getUserByEmail, email)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.DisplayName,
+		&i.CreatedAt,
+		&i.LastSeenAt,
+		&i.PasswordHash,
+	)
+	return i, err
+}
+
+const getUserByID = `-- name: GetUserByID :one
+SELECT id, email, display_name, created_at, last_seen_at, password_hash
+FROM users
+WHERE id = $1
+`
+
+func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (User, error) {
+	row := q.db.QueryRow(ctx, getUserByID, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.DisplayName,
+		&i.CreatedAt,
+		&i.LastSeenAt,
+		&i.PasswordHash,
+	)
+	return i, err
+}
+
+const touchUserLastSeen = `-- name: TouchUserLastSeen :exec
+UPDATE users
+SET last_seen_at = now()
+WHERE id = $1
+`
+
+// Bump last_seen_at on a successful login.
+func (q *Queries) TouchUserLastSeen(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, touchUserLastSeen, id)
+	return err
 }

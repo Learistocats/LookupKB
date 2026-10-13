@@ -1,21 +1,35 @@
 // Demonstrates the protected API path end-to-end: server-side, attach the
-// caller's bearer and read GET /api/v1/me (AC-1.2/AC-1.4). Defensive so a
-// transient API outage degrades gracefully instead of erroring the page.
+// caller's bearer and read GET /api/v1/me (AC-1.2/AC-1.4), plus the API's
+// liveness (fetched server-side: the browser has no direct route to the API).
+// Defensive so a transient API outage degrades gracefully instead of erroring.
 import { error, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { apiFetch } from '$lib/server/api';
+import { getHealth, type Health } from '$lib/api';
+
+type HealthState = { ok: true; health: Health } | { ok: false; message: string };
+
+async function apiHealth(): Promise<HealthState> {
+	try {
+		return { ok: true, health: await getHealth((path) => apiFetch(undefined, String(path))) };
+	} catch (e) {
+		return { ok: false, message: e instanceof Error ? e.message : String(e) };
+	}
+}
 
 export const load: PageServerLoad = async ({ locals }) => {
-	if (!locals.accessToken) return { me: null, meError: null };
+	const health = await apiHealth();
+	if (!locals.accessToken) return { me: null, meError: null, health };
 	try {
 		const res = await apiFetch(locals.accessToken, '/api/v1/me');
-		if (!res.ok) return { me: null, meError: `API /api/v1/me → ${res.status}` };
+		if (!res.ok) return { me: null, meError: `API /api/v1/me → ${res.status}`, health };
 		return {
-			me: (await res.json()) as { sub: string; email: string; groups: string[] },
-			meError: null
+			me: (await res.json()) as { id: string; email: string; groups: string[] },
+			meError: null,
+			health
 		};
 	} catch (e) {
-		return { me: null, meError: e instanceof Error ? e.message : String(e) };
+		return { me: null, meError: e instanceof Error ? e.message : String(e), health };
 	}
 };
 
