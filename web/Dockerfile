@@ -2,7 +2,7 @@
 
 # ---- build stage -------------------------------------------------------------
 # Node build image pinned by digest (updated via Renovate).
-FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3 AS build
+FROM node:22-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 AS build
 
 # Enable pnpm via corepack.
 RUN corepack enable
@@ -24,9 +24,9 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     pnpm prune --prod
 
 # ---- runtime stage -----------------------------------------------------------
-# The SvelteKit BFF runs as a small Node server (adapter-node): it owns the OIDC
-# flow and the session cookie. Caddy reverse-proxies to it on :8080.
-FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
+# The SvelteKit BFF runs as a small Node server (adapter-node): it owns the login
+# flow and the session cookie, and is the stack's only browser-facing service.
+FROM node:22-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392
 
 WORKDIR /app
 ENV NODE_ENV=production \
@@ -39,6 +39,12 @@ ENV NODE_ENV=production \
 # the server never loads). Runs as root before dropping to the node user.
 RUN rm -rf /usr/local/lib/node_modules/npm \
     /usr/local/bin/npm /usr/local/bin/npx /opt/yarn* /usr/local/bin/yarn* /usr/local/bin/corepack
+
+# Apply Debian security updates the upstream node image hasn't been rebuilt with
+# yet (e.g. pcre2/perl), so fixed OS CVEs don't ship or trip the Trivy gate.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy only what the server needs: the built output and production deps.
 COPY --from=build /app/build ./build

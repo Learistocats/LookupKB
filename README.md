@@ -17,7 +17,7 @@ tech stack, data model, security, roadmap).
 
 | Layer | Tech |
 |---|---|
-| Backend | Go 1.25 · [Fiber v2](https://gofiber.io) · `slog` · `caarlos0/env` |
+| Backend | Go 1.26 · [Fiber v2](https://gofiber.io) · `slog` · `caarlos0/env` |
 | Frontend | SvelteKit · TypeScript · Vite |
 | Data | PostgreSQL · Meilisearch · Garage (S3) · Kroki (diagrams) · Valkey (rate limits) |
 | Identity | Built-in email + password (argon2id), open signup |

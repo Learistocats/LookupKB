@@ -8,7 +8,7 @@ LookupKB is a fast, minimal knowledge base: authors write Markdown in an
 Obsidian-like editor and publish into a **flat, fully-indexed corpus** — no
 folders, no file tree; organization is emergent via tags + search. Monorepo:
 
-- `api/` — Go 1.25 + Fiber v2 backend (stateless JWT-verifying API)
+- `api/` — Go 1.26 + Fiber v2 backend (stateless JWT-verifying API)
 - `web/` — SvelteKit + TypeScript frontend, acting as a **BFF** (owns the auth session)
 - `deploy/` — Docker Compose stack (single file, no profiles/overlays) + per-service configs
 - `docs/planning/` — the specs (see below); the source of truth for all behavior

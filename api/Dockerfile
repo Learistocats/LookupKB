@@ -3,7 +3,7 @@
 # ---- build stage -------------------------------------------------------------
 # Pin the toolchain image by digest (see docs/planning/01-architecture.md §5.2,
 # 06-security.md §8). Update digests via Renovate.
-FROM golang:1.25-bookworm@sha256:ea341baa9bd5ba6784f6d7161ace70544349a6242d54d34a0fbfd2c4d51c9d58 AS build
+FROM golang:1.26-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS build
 
 WORKDIR /src
 
