@@ -86,12 +86,12 @@
 		<a class="wordmark" href="/">LookupKB</a>
 	</div>
 
-	<form method="POST" action="/entries/new" class="new-form">
-		<button class="btn new" type="submit">
+	<div class="new-form">
+		<a class="btn new" href="/entries/new">
 			<Icon name="plus" size={16} />
 			New entry
-		</button>
-	</form>
+		</a>
+	</div>
 
 	<nav class="lists">
 		{#if drafts.length > 0}

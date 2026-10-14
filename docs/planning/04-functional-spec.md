@@ -23,7 +23,7 @@ Priority: **P0** = MVP, **P1** = fast-follow, **P2** = later.
 
 **Story:** As an author, I can create and save a document privately, even without metadata.
 
-- **AC-2.1** Given an author, when they create a new document, then a `draft` is created owned by them with no metadata required.
+- **AC-2.1** Given an author, when they create a new document, then a `draft` is created owned by them with no metadata required. The row is created on the first non-blank save (any of title, description or body): opening a new entry and leaving it untouched persists nothing.
 - **AC-2.2** Given a draft with empty/partial metadata, when the author saves, then the save succeeds and no validation error is shown.
 - **AC-2.3** Given a draft, when any other non-admin user queries or searches, then the draft is never returned or visible.
 - **AC-2.4** Given a draft, when saved, then it is **not** added to the search index.

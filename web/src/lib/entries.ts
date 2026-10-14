@@ -22,3 +22,21 @@ export type SearchHit = {
 };
 
 export type SearchResult = { hits: SearchHit[]; took_ms: number };
+
+/** The id segment of an entry that does not exist yet (`/entries/new`). */
+export const NEW_ENTRY_ID = 'new';
+
+/** The editable working copy, as autosave sends it (blank fields are null). */
+export type WorkingCopy = {
+	title: string | null;
+	description: string | null;
+	source_md: string | null;
+};
+
+/**
+ * isBlankEntry: nothing has been written yet. A new entry is only created on its
+ * first non-blank save, so opening the editor and leaving never leaves an empty draft.
+ */
+export function isBlankEntry(c: WorkingCopy): boolean {
+	return !c.title?.trim() && !c.description?.trim() && !c.source_md?.trim();
+}

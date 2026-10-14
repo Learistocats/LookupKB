@@ -20,9 +20,8 @@ test.describe('draft round-trip', () => {
 	test('autosave persists, the panel pins the draft, others cannot read it', async ({ page }) => {
 		await login(page, USER!, PASS!);
 
-		// The home page's + button creates an entry and opens it at /entries/{id}.
+		// The home page's + button opens a new entry; nothing exists until it is written.
 		await newEntry(page);
-		const draftUrl = page.url();
 
 		const stamp = Date.now();
 		const titleMarker = `e2e-title-${stamp}`;
@@ -36,8 +35,11 @@ test.describe('draft round-trip', () => {
 		await editor.click();
 		await editor.pressSequentially(bodyMarker);
 
-		// AC-2.6: autosave persists with NO explicit Save click.
+		// AC-2.6: autosave persists with NO explicit Save click, creating the entry
+		// on its first save and moving to its real URL.
 		await expect(page.getByText(/^saved/i)).toBeVisible();
+		await expect(page).toHaveURL(/\/entries\/[0-9a-f-]{36}$/);
+		const draftUrl = page.url();
 
 		// Reload: content must come back from Postgres, not in-memory state.
 		await page.reload();
@@ -77,6 +79,21 @@ test.describe('draft round-trip', () => {
 			await expect(other.getByText(titleMarker)).toHaveCount(0);
 			await ctx.close();
 		}
+	});
+
+	// AC-2.1: opening a new entry and leaving it untouched persists nothing.
+	test('an untouched new entry is never saved', async ({ page }) => {
+		await login(page, USER!, PASS!);
+		await page.goto('/');
+		await page.getByRole('button', { name: /show your entries/i }).click();
+		const panel = page.getByRole('complementary', { name: /your entries/i });
+		const before = await panel.getByRole('link').count();
+
+		await newEntry(page);
+		await expect(page.getByText(/not saved until you write/i)).toBeVisible();
+		await page.goto('/');
+		await expect(page.locator('#q')).toBeVisible();
+		await expect(panel.getByRole('link')).toHaveCount(before);
 	});
 
 	// F5: publishing is a deliberate two-step confirm with server-side validation.
@@ -177,9 +194,10 @@ async function login(page: Page, email: string, password: string) {
 	await expect(page.locator('#q')).toBeVisible({ timeout: 15000 });
 }
 
-// newEntry presses the home page's + button and waits for the editor.
+// newEntry presses the home page's + button and waits for the (not yet saved) editor.
 async function newEntry(page: Page) {
 	await page.goto('/');
-	await page.getByRole('button', { name: 'New entry' }).last().click();
-	await expect(page).toHaveURL(/\/entries\/[0-9a-f-]{36}$/);
+	await page.getByRole('link', { name: 'New entry' }).last().click();
+	await expect(page).toHaveURL(/\/entries\/new$/);
+	await expect(page.locator('.cm-content')).toBeVisible();
 }

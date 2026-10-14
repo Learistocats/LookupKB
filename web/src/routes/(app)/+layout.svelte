@@ -38,7 +38,12 @@
 <div class="shell" class:panel-open={open}>
 	<Sidebar entries={data.entries} email={data.user?.email ?? null} bind:open bind:theme />
 	<div class="main">
-		{@render children()}
+		<!-- Remount per entry: the editor seeds its state once, so moving from one
+		     entry (or /entries/new) to another must start fresh. Keyed on the route
+		     param, not the URL, so a new entry's shallow URL swap keeps the editor. -->
+		{#key page.params.id}
+			{@render children()}
+		{/key}
 	</div>
 </div>
 

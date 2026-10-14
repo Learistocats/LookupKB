@@ -1,30 +1,35 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
 	import { onMount } from 'svelte';
-	import { beforeNavigate, goto, invalidate } from '$app/navigation';
+	import { beforeNavigate, goto, invalidate, replaceState } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
 	import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
 	import PublishDialog from '$lib/components/PublishDialog.svelte';
 	import { createAutosave, type Autosave, type AutosaveState } from '$lib/autosave';
 	import { publishDraft, unpublishDraft, type FieldError } from '$lib/publish';
+	import { isBlankEntry, type WorkingCopy } from '$lib/entries';
 	import type { PageData, ActionData } from './$types';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
 
 	// Seed the editable fields once from the working copy loaded from Postgres.
+	// A new entry (`/entries/new`, draft === null) has no row yet: `id` stays null
+	// until its first non-blank save creates it, so an untouched entry never exists.
 	// svelte-ignore state_referenced_locally
-	let title = $state(data.draft.title ?? '');
+	let id = $state<string | null>(data.draft?.id ?? null);
 	// svelte-ignore state_referenced_locally
-	let description = $state(data.draft.description ?? '');
+	let title = $state(data.draft?.title ?? '');
 	// svelte-ignore state_referenced_locally
-	let source = $state(data.draft.source_md ?? '');
+	let description = $state(data.draft?.description ?? '');
 	// svelte-ignore state_referenced_locally
-	let status = $state(data.draft.status);
+	let source = $state(data.draft?.source_md ?? '');
 	// svelte-ignore state_referenced_locally
-	let slug = $state(data.draft.slug);
+	let status = $state(data.draft?.status ?? 'draft');
+	// svelte-ignore state_referenced_locally
+	let slug = $state(data.draft?.slug ?? '');
 	// Tags attached at the last publish prefill the (re-)publish dialog.
 	// svelte-ignore state_referenced_locally
-	let tags = $state<string[]>(data.draft.tags ?? []);
+	let tags = $state<string[]>(data.draft?.tags ?? []);
 
 	// Publish confirm flow (F5): the button opens the dialog, "Publish"/"Update"
 	// inside it is the deliberate second click. The server re-validates everything.
@@ -48,7 +53,11 @@
 		try {
 			// Publish renders the server-held working copy, so flush pending edits first.
 			await autosaver?.flush();
-			const outcome = await publishDraft(data.draft.id, { title, description, tags });
+			if (!id) {
+				publishError = 'Write something before publishing.';
+				return;
+			}
+			const outcome = await publishDraft(id, { title, description, tags });
 			if (outcome.ok) {
 				status = outcome.doc.status;
 				slug = outcome.doc.slug;
@@ -70,7 +79,8 @@
 		publishing = true;
 		publishError = '';
 		try {
-			const doc = await unpublishDraft(data.draft.id);
+			if (!id) return;
+			const doc = await unpublishDraft(id);
 			status = doc.status;
 			justPublished = false;
 			void invalidate('app:entries');
@@ -81,7 +91,7 @@
 		}
 	}
 
-	type Snapshot = { title: string | null; description: string | null; source_md: string | null };
+	type Snapshot = WorkingCopy;
 
 	// Client autosave (AC-2.6). The no-JS <form> still works on its own; once
 	// hydrated, edits stream into the scheduler and the indicator follows it.
@@ -103,13 +113,23 @@
 	// status saves: on a published entry this edits the working copy, and readers
 	// keep seeing the published version until "Update". Throwing on non-OK drives
 	// the scheduler's error state — a false "saved" would silently lose data.
+	//
+	// A new entry is created by its first non-blank save (the proxy creates the row
+	// and returns it); until then there is nothing to persist.
 	async function persist(snap: Snapshot): Promise<void> {
-		const res = await fetch(`/entries/${data.draft.id}/save`, {
+		if (!id && isBlankEntry(snap)) return;
+		const res = await fetch(`/entries/${id ?? 'new'}/save`, {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify(snap)
 		});
 		if (!res.ok) throw new Error(`save failed (${res.status})`);
+		if (!id) {
+			id = ((await res.json()) as { id: string }).id;
+			// Swap the URL to the real entry without reloading the editor (a reload
+			// or a shared link then opens the persisted draft).
+			replaceState(`/entries/${id}`, {});
+		}
 		justPublished = false;
 		void invalidate('app:entries');
 	}
@@ -165,6 +185,9 @@
 	}
 
 	let indicator = $derived.by(() => {
+		if (!id && save.status !== 'saving' && save.status !== 'error') {
+			return { text: 'Not saved until you write something', cls: 'idle' };
+		}
 		switch (save.status) {
 			case 'saving':
 				return { text: 'Saving…', cls: 'saving' };
@@ -182,11 +205,13 @@
 	});
 
 	const statusChip = $derived(
-		status === 'draft'
-			? { text: 'Draft', cls: 'chip-draft' }
-			: status === 'published'
-				? { text: 'Published', cls: 'chip-ok' }
-				: { text: 'Unpublished', cls: '' }
+		!id
+			? { text: 'New', cls: '' }
+			: status === 'draft'
+				? { text: 'Draft', cls: 'chip-draft' }
+				: status === 'published'
+					? { text: 'Published', cls: 'chip-ok' }
+					: { text: 'Unpublished', cls: '' }
 	);
 </script>
 

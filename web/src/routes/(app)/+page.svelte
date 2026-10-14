@@ -126,11 +126,9 @@
 					<kbd aria-hidden="true">{shortcut}</kbd>
 				{/if}
 			</label>
-			<form method="POST" action="/entries/new">
-				<button class="new" type="submit" title="New entry" aria-label="New entry">
-					<Icon name="plus" size={22} />
-				</button>
-			</form>
+			<a class="new" href="/entries/new" title="New entry" aria-label="New entry">
+				<Icon name="plus" size={22} />
+			</a>
 		</div>
 
 		<div class="results" aria-live="polite">
@@ -307,6 +305,7 @@
 
 	.new:hover {
 		background: var(--accent-hover);
+		text-decoration: none;
 	}
 
 	.results {
