@@ -7,12 +7,11 @@ declare global {
 			/**
 			 * The verified signed-in user for this request, populated by
 			 * hooks.server.ts from the encrypted session cookie. Undefined for
-			 * unauthenticated requests (e.g. the /auth/* handshake routes).
+			 * unauthenticated requests (e.g. /login, /signup).
 			 */
 			user?: {
-				sub: string;
+				id: string;
 				email: string;
-				groups: string[];
 			};
 			/**
 			 * The verified access token for this request, for server-side proxying

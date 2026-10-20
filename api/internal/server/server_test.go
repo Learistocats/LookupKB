@@ -79,27 +79,6 @@ func TestReadyzSanitizesCheckError(t *testing.T) {
 	require.NotContains(t, string(body), "connection refused")
 }
 
-// A failing informational check (e.g. the OTel collector) is reported but must
-// not flip readiness to 503 — AC-11.1 gates only on PG/Meili/Kroki/Garage.
-func TestReadyzInformationalCheckDoesNotGate(t *testing.T) {
-	s := newTestServer(t)
-	s.RegisterReadinessCheck("postgres", func() error { return nil })
-	s.RegisterInformationalCheck("otel_collector", func() error {
-		return errors.New("collector down")
-	})
-
-	resp, err := s.App().Test(httpGet("/readyz"))
-	require.NoError(t, err)
-	defer resp.Body.Close()
-
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	require.Contains(t, string(body), `"status":"ready"`)
-	require.Contains(t, string(body), `"otel_collector":"unavailable"`)
-	require.Contains(t, string(body), `"postgres":"ok"`)
-}
-
 // A same-origin browser request carries the (chunked) session cookie, so the
 // request head can be several KiB. The server must accept it rather than 431 —
 // fasthttp's default 4 KiB read buffer would reject it (guards the raised

@@ -1,7 +1,7 @@
-// End-to-end proof for F2 (LOO-11 + LOO-13): log in → create draft → type
-// content → it AUTOSAVES with no button press → reload → content persists → the
-// private workspace lists it, through the REAL stack (Caddy → API → Postgres,
-// Authentik session). Plus an ownership spot-check: a second user cannot read the
+// End-to-end proof for F2/F5/F7/F8: log in → create an entry → type content → it
+// AUTOSAVES with no button press → reload → content persists → the history panel
+// pins it as a draft → publish → read → find it through search, through the REAL stack (web BFF → API → Postgres,
+// email/password session). Plus an ownership spot-check: a second user cannot read the
 // first user's draft (AC-2.3).
 //
 // Runs only when E2E_BASE_URL + credentials are set (see playwright.config.ts);
@@ -17,47 +17,43 @@ const PASS2 = process.env.E2E_SECOND_PASSWORD;
 test.describe('draft round-trip', () => {
 	test.skip(!BASE || !USER || !PASS, 'set E2E_BASE_URL/E2E_USERNAME/E2E_PASSWORD to run');
 
-	test('autosave persists, workspace lists it, others cannot read it', async ({ page }) => {
+	test('autosave persists, the panel pins the draft, others cannot read it', async ({ page }) => {
 		await login(page, USER!, PASS!);
 
-		// Create a fresh draft; the app redirects into its editor at /drafts/{id}.
-		await page.getByRole('button', { name: /new draft/i }).click();
-		await expect(page).toHaveURL(/\/drafts\/[0-9a-f-]{36}$/);
-		const draftUrl = page.url();
+		// The home page's + button opens a new entry; nothing exists until it is written.
+		await newEntry(page);
 
-		// Give the draft a unique title so the workspace list can be asserted exactly.
 		const stamp = Date.now();
 		const titleMarker = `e2e-title-${stamp}`;
 		const bodyMarker = `e2e-body-${stamp}`;
 		await page.locator('input[name="title"]').fill(titleMarker);
 
-		// The editor is CodeMirror 6 (LOO-12): type into its contenteditable surface.
-		// The <textarea name="source_md"> still exists as the hidden form field / no-JS
-		// fallback, and its value tracks the editor — so persistence is asserted against
-		// it (a contenteditable has no toHaveValue).
+		// The editor is CodeMirror 6: type into its contenteditable surface. The
+		// <textarea name="source_md"> (no-JS fallback) tracks the editor, so
+		// persistence is asserted against it.
 		const editor = page.locator('.cm-content');
 		await editor.click();
 		await editor.pressSequentially(bodyMarker);
 
-		// AC-2.6: autosave persists after the debounce with NO explicit Save click, and
-		// the indicator visibly reaches a saved state.
+		// AC-2.6: autosave persists with NO explicit Save click, creating the entry
+		// on its first save and moving to its real URL.
 		await expect(page.getByText(/^saved/i)).toBeVisible();
+		await expect(page).toHaveURL(/\/entries\/[0-9a-f-]{36}$/);
+		const draftUrl = page.url();
 
 		// Reload: content must come back from Postgres, not in-memory state.
 		await page.reload();
 		await expect(page.locator('textarea[name="source_md"]')).toHaveValue(bodyMarker);
 		await expect(page.locator('input[name="title"]')).toHaveValue(titleMarker);
 
-		// AC-2.5: the private workspace lists this draft by its title; opening it
-		// returns to the editor.
-		await page.goto('/drafts');
-		const entry = page.getByRole('link', { name: new RegExp(titleMarker) });
+		// AC-2.5: the history panel lists the draft under Drafts, marked as such.
+		await page.getByRole('button', { name: /show your entries/i }).click();
+		const panel = page.getByRole('complementary', { name: /your entries/i });
+		const entry = panel.getByRole('link', { name: new RegExp(titleMarker) });
 		await expect(entry).toBeVisible();
-		await entry.click();
-		await expect(page).toHaveURL(draftUrl);
+		await expect(entry.getByText('Draft', { exact: true })).toBeVisible();
 
-		// Live preview (AC-3.1 / T-3.1): a Markdown heading on a non-active line
-		// renders as formatted text via a CodeMirror decoration, not raw "# ".
+		// Live preview (AC-3.1): a heading on a non-active line renders formatted.
 		await editor.click();
 		await page.keyboard.press('ControlOrMeta+a');
 		await page.keyboard.press('Delete');
@@ -66,99 +62,142 @@ test.describe('draft round-trip', () => {
 		await editor.pressSequentially('body');
 		await expect(page.locator('.cm-preview-h1')).toBeVisible();
 
-		// Ownership: a second user must not be able to read the draft, nor see it in
-		// their own workspace (AC-2.3).
+		// Ctrl/⌘+K opens search from anywhere — even with the editor focused.
+		await page.keyboard.press('ControlOrMeta+k');
+		await expect(page).toHaveURL(/\/$/);
+		await expect(page.locator('#q')).toBeFocused();
+
+		// Ownership (AC-2.3): another user can neither open the draft nor see it.
 		if (USER2 && PASS2) {
 			const ctx = await page.context().browser()!.newContext({ ignoreHTTPSErrors: true });
 			const other = await ctx.newPage();
 			await login(other, USER2, PASS2);
 			await other.goto(draftUrl);
 			await expect(other.getByText(/not found/i)).toBeVisible();
-			await other.goto('/drafts');
+			await other.goto('/');
+			await other.getByRole('button', { name: /show your entries/i }).click();
 			await expect(other.getByText(titleMarker)).toHaveCount(0);
 			await ctx.close();
 		}
 	});
 
-	// F5: the publish gate is a deliberate two-step confirm with server-side metadata
-	// validation. T-5.1 (confirm step shows the metadata), T-5.2 (invalid metadata →
-	// per-field errors, document stays a draft), then a valid publish → published.
+	// AC-2.1: opening a new entry and leaving it untouched persists nothing.
+	test('an untouched new entry is never saved', async ({ page }) => {
+		await login(page, USER!, PASS!);
+		await page.goto('/');
+		await page.getByRole('button', { name: /show your entries/i }).click();
+		const panel = page.getByRole('complementary', { name: /your entries/i });
+		const before = await panel.getByRole('link').count();
+
+		await newEntry(page);
+		await expect(page.getByText(/not saved until you write/i)).toBeVisible();
+		await page.goto('/');
+		await expect(page.locator('#q')).toBeVisible();
+		await expect(panel.getByRole('link')).toHaveCount(before);
+	});
+
+	// F5: publishing is a deliberate two-step confirm with server-side validation.
 	test('publish requires a confirm step, blocks on invalid metadata, then publishes', async ({
 		page
 	}) => {
 		await login(page, USER!, PASS!);
+		await newEntry(page);
 
-		await page.getByRole('button', { name: /new draft/i }).click();
-		await expect(page).toHaveURL(/\/drafts\/[0-9a-f-]{36}$/);
-
-		const stamp = Date.now();
-		const titleMarker = `e2e-pub-${stamp}`;
+		const titleMarker = `e2e-pub-${Date.now()}`;
 		await page.locator('input[name="title"]').fill(titleMarker);
 		const editor = page.locator('.cm-content');
 		await editor.click();
 		await editor.pressSequentially('Some publishable body content.');
 		await expect(page.getByText(/^saved/i)).toBeVisible();
 
-		// T-5.1: clicking Publish opens a confirm step showing the metadata (the title
-		// carries over into the dialog); publishing has NOT happened yet.
+		// T-5.1: Publish opens a confirm step showing the metadata; nothing is
+		// published yet.
 		await page.getByRole('button', { name: /^publish…$/i }).click();
 		const dialog = page.getByRole('dialog', { name: /publish document/i });
 		await expect(dialog).toBeVisible();
-		await expect(dialog.getByText(/access:\s*public/i)).toBeVisible();
+		await expect(dialog.getByText(/visible to everyone/i)).toBeVisible();
 
-		// T-5.2: confirm with no tags → the server blocks publish with a per-field tag
-		// error and the document is still a draft (the dialog stays open).
+		// T-5.2: no tags → per-field error, the dialog stays open, still a draft.
 		await dialog.getByRole('button', { name: /confirm publish/i }).click();
-		await expect(dialog.getByText(/tag/i)).toBeVisible();
+		await expect(dialog.locator('.error-text').filter({ hasText: /tag/i })).toBeVisible();
 		await expect(dialog).toBeVisible();
 
-		// Provide valid metadata, then confirm → the document becomes published.
-		await dialog.getByText('Description', { exact: false }); // ensure the field is present
 		await dialog.locator('textarea').fill('A short but sufficient description of the doc.');
 		await dialog.locator('input[placeholder="Add a tag…"]').fill('e2e');
 		await dialog.locator('input[placeholder="Add a tag…"]').press('Enter');
 		await dialog.getByRole('button', { name: /confirm publish/i }).click();
 
-		await expect(page.getByText(/^published$/i)).toBeVisible();
+		await expect(page.locator('.topbar').getByText('Published', { exact: true })).toBeVisible();
 		await expect(page.getByRole('button', { name: /^unpublish$/i })).toBeVisible();
+	});
+
+	// F8 + F7: a published entry is readable at its slug (pre-rendered HTML +
+	// metadata) and becomes findable from the home search box.
+	test('a published entry is readable and searchable', async ({ page }) => {
+		await login(page, USER!, PASS!);
+		await newEntry(page);
+
+		const stamp = Date.now();
+		const titleMarker = `e2e-read-${stamp}`;
+		const headingMarker = `Read Heading ${stamp}`;
+		await page.locator('input[name="title"]').fill(titleMarker);
+		const editor = page.locator('.cm-content');
+		await editor.click();
+		await editor.pressSequentially(`# ${headingMarker}`);
+		await page.keyboard.press('Enter');
+		await editor.pressSequentially('Readable body paragraph about zeppelins.');
+		await expect(page.getByText(/^saved/i)).toBeVisible();
+
+		await page.getByRole('button', { name: /^publish…$/i }).click();
+		const dialog = page.getByRole('dialog', { name: /publish document/i });
+		await dialog.locator('textarea').fill('A short but sufficient description of the doc.');
+		await dialog.locator('input[placeholder="Add a tag…"]').fill('read-e2e');
+		await dialog.locator('input[placeholder="Add a tag…"]').press('Enter');
+		await dialog.getByRole('button', { name: /confirm publish/i }).click();
+
+		// "View" opens the reader at the title-derived slug.
+		await page.getByRole('link', { name: /view/i }).click();
+		await expect(page).toHaveURL(/\/docs\/e2e-read-/);
+
+		// AC-8.1: the Markdown heading is a real heading; AC-8.5: the tag is shown.
+		await expect(page.getByRole('heading', { name: headingMarker })).toBeVisible();
+		await expect(page.getByText('Readable body paragraph about zeppelins.')).toBeVisible();
+		await expect(page.getByText('read-e2e')).toBeVisible();
+		// It's ours, so the reader offers Edit.
+		await expect(page.getByRole('link', { name: /edit/i })).toBeVisible();
+
+		// F7: the body text is indexed within seconds and found from the home page.
+		// Indexing is asynchronous (outbox worker, ~1 s), and live search only
+		// re-queries when the text changes, so retype until the entry shows up.
+		await page.goto('/');
+		const box = page.locator('#q');
+		const hit = page.locator('.hit').filter({ hasText: titleMarker });
+		await expect(async () => {
+			await box.fill('');
+			await box.fill(`zeppelins ${stamp}`);
+			await expect(hit).toBeVisible({ timeout: 1500 });
+		}).toPass({ timeout: 15000 });
 	});
 });
 
-// login performs the Authentik Authorization-Code flow through the browser. The
-// app redirects an unauthenticated visitor to Authentik; we fill the identifier
-// then password stage (Authentik's default flow), handle an optional consent
-// screen, and land back on the app. Fields are targeted by their form `name`
-// (Authentik's inputs carry no associated <label>); Playwright pierces the
-// flow's web-component shadow DOM for name/role selectors.
-async function login(page: Page, username: string, password: string) {
+// login signs in through the app's email/password form. The accounts must exist
+// already (create them once via /signup).
+async function login(page: Page, email: string, password: string) {
+	// Unauthenticated visits are redirected to the app's own /login form.
 	await page.goto('/');
+	await expect(page).toHaveURL(/\/login/);
+	await page.locator('input[name="email"]').fill(email);
+	await page.locator('input[name="password"]').fill(password);
+	await page.getByRole('button', { name: /sign in/i }).click();
 
-	// Identification stage: the visible identifier field is input[name="uidField"].
-	// Submit with Enter — Authentik's flow submits reliably on Enter, whereas
-	// clicking the freshly-rendered stage button can race the web-component swap.
-	const uid = page.locator('input[name="uidField"]');
-	await uid.waitFor({ state: 'visible' });
-	await uid.fill(username);
-	await uid.press('Enter');
+	// Signed in — reaching the app proves the session cookie was set and accepted.
+	await expect(page.locator('#q')).toBeVisible({ timeout: 15000 });
+}
 
-	// Password stage.
-	const pw = page.locator('input[name="password"]');
-	await pw.waitFor({ state: 'visible' });
-	await pw.fill(password);
-	await pw.press('Enter');
-
-	// Authentik then shows an auth-completion interstitial and an explicit-consent
-	// screen, each with a primary submit ("Continue"). Click through the stages
-	// while still on an Authentik flow page (URL contains /if/flow/); stop as soon
-	// as we leave Authentik so we never click the app's own submit ("New draft" is
-	// itself a submit button).
-	for (let i = 0; i < 8 && page.url().includes('/if/flow/'); i++) {
-		const submit = page.locator('button[type=submit]:visible').first();
-		if (await submit.count()) await submit.click().catch(() => {});
-		await page.waitForTimeout(1000);
-	}
-
-	// Signed in — reaching the app proves the (chunked) session cookie survived the
-	// redirect back rather than being dropped for exceeding the per-cookie limit.
-	await expect(page.getByRole('button', { name: /new draft/i })).toBeVisible({ timeout: 15000 });
+// newEntry presses the home page's + button and waits for the (not yet saved) editor.
+async function newEntry(page: Page) {
+	await page.goto('/');
+	await page.getByRole('link', { name: 'New entry' }).last().click();
+	await expect(page).toHaveURL(/\/entries\/new$/);
+	await expect(page.locator('.cm-content')).toBeVisible();
 }

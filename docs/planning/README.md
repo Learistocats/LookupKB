@@ -11,19 +11,18 @@ group-scoped access control. Fully open-source, hardened, and Docker-deployable.
 |---|---|---|
 | Frontend | SvelteKit + CodeMirror 6 (live-preview) | [02](02-tech-stack.md) |
 | Backend | Go + Fiber (v2) | [02](02-tech-stack.md) |
-| Observability | OpenTelemetry (OTLP) + coherent `slog` logging | [01](01-architecture.md), [02](02-tech-stack.md) |
-| Identity / groups | Authentik (OIDC) | [02](02-tech-stack.md), [06](06-security.md) |
+| Logging / health | Structured `slog` logs + `/healthz` / `/readyz` (no telemetry stack) | [01](01-architecture.md), [02](02-tech-stack.md) |
+| Identity / groups | Built-in email + password (argon2id), local groups | [02](02-tech-stack.md), [06](06-security.md) |
 | Search / indexing | Meilisearch | [05](05-search-and-indexing.md) |
 | Database | PostgreSQL | [03](03-data-model.md) |
 | Object storage | Garage (S3-compatible) | [02](02-tech-stack.md) |
 | Diagrams | Kroki (Mermaid, PlantUML/UML, GraphViz, …) | [02](02-tech-stack.md) |
 | Math / chemistry eq. | KaTeX + mhchem | [02](02-tech-stack.md) |
 | Molecular structures | SmilesDrawer (SMILES) | [02](02-tech-stack.md) |
-| Reverse proxy / TLS | Caddy | [01](01-architecture.md) |
+| Reverse proxy / TLS | Not bundled — operator's own proxy in front of `web` | [01](01-architecture.md) |
 | Deployment | Docker Compose | [01](01-architecture.md) |
 | Collaboration | Single-author drafts (multiplayer out of scope) | [00](00-overview.md) |
-| Versioning | Published-version history + restore | [03](03-data-model.md) |
-| Public API | Read-only REST + OpenAPI 3; PATs + Authentik service accounts | [10](10-public-api.md) |
+| Public API | Read-only REST + OpenAPI 3; PATs | [10](10-public-api.md) |
 
 ## Documents
 

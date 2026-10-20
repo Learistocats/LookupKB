@@ -34,7 +34,7 @@ func TestTagUsageLifecycle(t *testing.T) {
 	q := dbgen.New(pool)
 	store := tags.New(pool)
 
-	author, err := q.UpsertUser(ctx, dbgen.UpsertUserParams{OidcSub: "author-sub"})
+	author, err := q.CreateUser(ctx, dbgen.CreateUserParams{Email: "author-sub@example.com", PasswordHash: "x"})
 	require.NoError(t, err)
 	doc1, err := q.CreateDraft(ctx, dbgen.CreateDraftParams{Slug: "doc-1", AuthorID: author.ID})
 	require.NoError(t, err)
@@ -106,7 +106,7 @@ func TestSearchTags_AutocompleteRanking(t *testing.T) {
 	q := dbgen.New(pool)
 	store := tags.New(pool)
 
-	author, err := q.UpsertUser(ctx, dbgen.UpsertUserParams{OidcSub: "a"})
+	author, err := q.CreateUser(ctx, dbgen.CreateUserParams{Email: "a@example.com", PasswordHash: "x"})
 	require.NoError(t, err)
 	// "api" used by 2 docs, "api-gateway" by 1 — so "api" ranks first.
 	d1, _ := q.CreateDraft(ctx, dbgen.CreateDraftParams{Slug: "d1", AuthorID: author.ID})

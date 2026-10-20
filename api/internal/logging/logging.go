@@ -1,18 +1,11 @@
 // Package logging bootstraps the single, structured slog logger used across the
-// whole API image. Per docs/planning/02-tech-stack.md §6 there is exactly one
-// logger and one format: no ad-hoc fmt.Println, no per-package loggers.
+// whole API image. There is exactly one logger and one format: no ad-hoc
+// fmt.Println, no per-package loggers.
 //
-// The logger fans every line out to two sinks through one context-aware handler:
-//   - a JSON (or text) handler on stdout — the grep-verifiable log stream that
-//     the container runtime captures, and
-//   - the otelslog bridge to the OpenTelemetry LoggerProvider — OTLP logs the
-//     collector forwards to the backend (Loki), natively trace-correlated.
-//
-// A single contextHandler wraps both so every line — regardless of sink —
-// carries the standard schema: time, level, msg, service, version, plus
-// trace_id/span_id (from the active span) and request_id/actor_id (from the
-// request context). actor_id is the internal user id, never PII (06-security.md
-// §7).
+// A contextHandler wraps the stdout JSON (or text) handler so every line carries
+// the standard schema: time, level, msg, service, version, plus request_id and
+// actor_id (from the request context). actor_id is the internal user uuid, never
+// the email (redacted PII).
 package logging
 
 import (
@@ -20,21 +13,12 @@ import (
 	"log/slog"
 	"os"
 	"strings"
-
-	"go.opentelemetry.io/contrib/bridges/otelslog"
-	otellog "go.opentelemetry.io/otel/log"
-	"go.opentelemetry.io/otel/trace"
 )
-
-// scopeName identifies this logger's instrumentation scope in emitted OTLP logs.
-const scopeName = "github.com/Learistocats/LookupKB/api"
 
 // Standard fields attached to every log line.
 const (
 	fieldService   = "service"
 	fieldVersion   = "version"
-	fieldTraceID   = "trace_id"
-	fieldSpanID    = "span_id"
 	fieldRequestID = "request_id"
 	fieldActorID   = "actor_id"
 )
@@ -78,10 +62,7 @@ func actorIDFromCtx(ctx context.Context) string {
 //
 // format is "json" (default, production) or "text". level is one of
 // debug|info|warn|error. version is the build version stamped into every line.
-// lp is the OpenTelemetry LoggerProvider to bridge logs to; when nil the logger
-// writes only to stdout (used by the migrate/healthcheck subcommands, which run
-// before — or without — the telemetry SDK).
-func New(format, level, version string, lp otellog.LoggerProvider) *slog.Logger {
+func New(format, level, version string) *slog.Logger {
 	opts := &slog.HandlerOptions{Level: parseLevel(level)}
 
 	var stdout slog.Handler
@@ -91,25 +72,14 @@ func New(format, level, version string, lp otellog.LoggerProvider) *slog.Logger 
 		stdout = slog.NewJSONHandler(os.Stdout, opts)
 	}
 
-	handlers := []slog.Handler{stdout}
-	if lp != nil {
-		// The bridge natively stamps trace context onto the OTLP record; the
-		// contextHandler adds the same fields as attributes so the stdout sink
-		// carries them too. The redundancy on the OTLP side is harmless.
-		handlers = append(handlers, otelslog.NewHandler(scopeName, otelslog.WithLoggerProvider(lp)))
-	}
-
-	handler := &contextHandler{inner: newMultiHandler(handlers...)}
-
-	return slog.New(handler).With(
+	return slog.New(&contextHandler{inner: stdout}).With(
 		slog.String(fieldService, "lookupkb-api"),
 		slog.String(fieldVersion, version),
 	)
 }
 
-// contextHandler enriches every record with fields derived from the context —
-// trace_id/span_id from the active span and request_id/actor_id set by
-// middleware — before delegating to the wrapped handler(s).
+// contextHandler enriches every record with the request_id/actor_id set by
+// middleware before delegating to the wrapped handler.
 type contextHandler struct {
 	inner slog.Handler
 }
@@ -119,12 +89,6 @@ func (h *contextHandler) Enabled(ctx context.Context, level slog.Level) bool {
 }
 
 func (h *contextHandler) Handle(ctx context.Context, r slog.Record) error {
-	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
-		r.AddAttrs(
-			slog.String(fieldTraceID, sc.TraceID().String()),
-			slog.String(fieldSpanID, sc.SpanID().String()),
-		)
-	}
 	if id := requestIDFromCtx(ctx); id != "" {
 		r.AddAttrs(slog.String(fieldRequestID, id))
 	}
@@ -140,54 +104,6 @@ func (h *contextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 func (h *contextHandler) WithGroup(name string) slog.Handler {
 	return &contextHandler{inner: h.inner.WithGroup(name)}
-}
-
-// multiHandler fans a record out to several handlers. Kept tiny and local to
-// avoid a dependency; it dispatches Enabled/Handle/WithAttrs/WithGroup to each.
-type multiHandler struct {
-	handlers []slog.Handler
-}
-
-func newMultiHandler(handlers ...slog.Handler) *multiHandler {
-	return &multiHandler{handlers: handlers}
-}
-
-func (h *multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	for _, sub := range h.handlers {
-		if sub.Enabled(ctx, level) {
-			return true
-		}
-	}
-	return false
-}
-
-func (h *multiHandler) Handle(ctx context.Context, r slog.Record) error {
-	var firstErr error
-	for _, sub := range h.handlers {
-		if !sub.Enabled(ctx, r.Level) {
-			continue
-		}
-		if err := sub.Handle(ctx, r.Clone()); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
-}
-
-func (h *multiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	next := make([]slog.Handler, len(h.handlers))
-	for i, sub := range h.handlers {
-		next[i] = sub.WithAttrs(attrs)
-	}
-	return &multiHandler{handlers: next}
-}
-
-func (h *multiHandler) WithGroup(name string) slog.Handler {
-	next := make([]slog.Handler, len(h.handlers))
-	for i, sub := range h.handlers {
-		next[i] = sub.WithGroup(name)
-	}
-	return &multiHandler{handlers: next}
 }
 
 // parseLevel maps a level string to slog.Level, defaulting to info.

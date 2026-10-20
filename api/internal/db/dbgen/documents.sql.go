@@ -15,7 +15,7 @@ const createDraft = `-- name: CreateDraft :one
 
 INSERT INTO documents (slug, author_id, title, description, source_md)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, current_version_id, search_tsv, deleted_at
+RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, search_tsv, deleted_at
 `
 
 type CreateDraftParams struct {
@@ -26,8 +26,8 @@ type CreateDraftParams struct {
 	SourceMd    *string     `json:"source_md"`
 }
 
-// Walking-skeleton draft path only (M0): create, save, read a draft. Publish,
-// versioning, ACL and search queries arrive with their own milestones — keep
+// Document queries: drafts, publish/unpublish and the read path. ACL and search
+// queries arrive with their own milestones — keep
 // queries close to the feature that needs them (03-data-model.md, ticket note).
 // Insert a new draft owned by the author. slug is caller-supplied (title + short
 // id, stable across edits); status defaults to 'draft'.
@@ -53,7 +53,6 @@ func (q *Queries) CreateDraft(ctx context.Context, arg CreateDraftParams) (Docum
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PublishedAt,
-		&i.CurrentVersionID,
 		&i.SearchTsv,
 		&i.DeletedAt,
 	)
@@ -61,7 +60,7 @@ func (q *Queries) CreateDraft(ctx context.Context, arg CreateDraftParams) (Docum
 }
 
 const getDraft = `-- name: GetDraft :one
-SELECT id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, current_version_id, search_tsv, deleted_at
+SELECT id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, search_tsv, deleted_at
 FROM documents
 WHERE id = $1
   AND author_id = $2
@@ -91,15 +90,76 @@ func (q *Queries) GetDraft(ctx context.Context, arg GetDraftParams) (Document, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PublishedAt,
-		&i.CurrentVersionID,
 		&i.SearchTsv,
 		&i.DeletedAt,
 	)
 	return i, err
 }
 
+const getIndexProjection = `-- name: GetIndexProjection :one
+SELECT
+    d.id,
+    d.slug,
+    d.title,
+    d.description,
+    d.rendered_html,
+    d.access,
+    d.author_id,
+    d.created_at,
+    d.published_at,
+    -- Display name, else the email's local part: full emails are never indexed.
+    COALESCE(u.display_name, split_part(u.email::text, '@', 1))::text AS author,
+    COALESCE(array_remove(array_agg(t.label ORDER BY t.label), NULL), '{}')::text[] AS tags,
+    COALESCE((SELECT array_agg(a.group_id) FROM document_acl a WHERE a.document_id = d.id), '{}')::uuid[] AS acl_group_ids
+FROM documents d
+JOIN users u ON u.id = d.author_id
+LEFT JOIN document_tags dt ON dt.document_id = d.id
+LEFT JOIN tags t ON t.id = dt.tag_id
+WHERE d.id = $1
+  AND d.status = 'published'
+  AND d.deleted_at IS NULL
+GROUP BY d.id, u.display_name, u.email
+`
+
+type GetIndexProjectionRow struct {
+	ID           pgtype.UUID        `json:"id"`
+	Slug         string             `json:"slug"`
+	Title        *string            `json:"title"`
+	Description  *string            `json:"description"`
+	RenderedHtml *string            `json:"rendered_html"`
+	Access       DocumentAccess     `json:"access"`
+	AuthorID     pgtype.UUID        `json:"author_id"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	PublishedAt  pgtype.Timestamptz `json:"published_at"`
+	Author       string             `json:"author"`
+	Tags         []string           `json:"tags"`
+	AclGroupIds  []pgtype.UUID      `json:"acl_group_ids"`
+}
+
+// Everything the search index stores for one PUBLISHED document. Built from the
+// published columns (rendered_html, not the working-copy source_md).
+func (q *Queries) GetIndexProjection(ctx context.Context, id pgtype.UUID) (GetIndexProjectionRow, error) {
+	row := q.db.QueryRow(ctx, getIndexProjection, id)
+	var i GetIndexProjectionRow
+	err := row.Scan(
+		&i.ID,
+		&i.Slug,
+		&i.Title,
+		&i.Description,
+		&i.RenderedHtml,
+		&i.Access,
+		&i.AuthorID,
+		&i.CreatedAt,
+		&i.PublishedAt,
+		&i.Author,
+		&i.Tags,
+		&i.AclGroupIds,
+	)
+	return i, err
+}
+
 const getOwnedDocument = `-- name: GetOwnedDocument :one
-SELECT id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, current_version_id, search_tsv, deleted_at
+SELECT id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, search_tsv, deleted_at
 FROM documents
 WHERE id = $1
   AND author_id = $2
@@ -132,11 +192,101 @@ func (q *Queries) GetOwnedDocument(ctx context.Context, arg GetOwnedDocumentPara
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PublishedAt,
-		&i.CurrentVersionID,
 		&i.SearchTsv,
 		&i.DeletedAt,
 	)
 	return i, err
+}
+
+const getPublishedBySlug = `-- name: GetPublishedBySlug :one
+SELECT
+    d.id,
+    d.slug,
+    d.title,
+    d.description,
+    d.rendered_html,
+    d.access,
+    d.author_id,
+    d.published_at,
+    COALESCE(u.display_name, split_part(u.email::text, '@', 1))::text AS author_display_name,
+    COALESCE(array_remove(array_agg(t.label ORDER BY t.label), NULL), '{}')::text[] AS tags
+FROM documents d
+JOIN users u ON u.id = d.author_id
+LEFT JOIN document_tags dt ON dt.document_id = d.id
+LEFT JOIN tags t ON t.id = dt.tag_id
+WHERE d.slug = $1
+  AND d.status = 'published'
+  AND d.deleted_at IS NULL
+GROUP BY d.id, u.display_name, u.email
+`
+
+type GetPublishedBySlugRow struct {
+	ID                pgtype.UUID        `json:"id"`
+	Slug              string             `json:"slug"`
+	Title             *string            `json:"title"`
+	Description       *string            `json:"description"`
+	RenderedHtml      *string            `json:"rendered_html"`
+	Access            DocumentAccess     `json:"access"`
+	AuthorID          pgtype.UUID        `json:"author_id"`
+	PublishedAt       pgtype.Timestamptz `json:"published_at"`
+	AuthorDisplayName string             `json:"author_display_name"`
+	Tags              []string           `json:"tags"`
+}
+
+// The hot read path (F8, 01-architecture.md §3.2): fetch a PUBLISHED document by
+// its slug for the rendered-HTML view. status='published' means a draft/unpublished
+// (or soft-deleted) slug yields pgx.ErrNoRows → an identical 404, never partial
+// content. Reads the cached rendered_html column — no render on this path.
+//   - JOIN users → author display name for the byline.
+//   - tags aggregated as labels for the metadata display.
+//
+// author_id/access are selected only to feed the server-side access check (CanRead);
+// they are NOT projected to the client. One round trip keeps the path fast.
+func (q *Queries) GetPublishedBySlug(ctx context.Context, slug string) (GetPublishedBySlugRow, error) {
+	row := q.db.QueryRow(ctx, getPublishedBySlug, slug)
+	var i GetPublishedBySlugRow
+	err := row.Scan(
+		&i.ID,
+		&i.Slug,
+		&i.Title,
+		&i.Description,
+		&i.RenderedHtml,
+		&i.Access,
+		&i.AuthorID,
+		&i.PublishedAt,
+		&i.AuthorDisplayName,
+		&i.Tags,
+	)
+	return i, err
+}
+
+const listDocumentTagLabels = `-- name: ListDocumentTagLabels :many
+SELECT t.label
+FROM document_tags dt
+JOIN tags t ON t.id = dt.tag_id
+WHERE dt.document_id = $1
+ORDER BY t.label
+`
+
+// Tag labels currently attached to a document (prefills the re-publish dialog).
+func (q *Queries) ListDocumentTagLabels(ctx context.Context, documentID pgtype.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDocumentTagLabels, documentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var label string
+		if err := rows.Scan(&label); err != nil {
+			return nil, err
+		}
+		items = append(items, label)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listDrafts = `-- name: ListDrafts :many
@@ -187,6 +337,79 @@ func (q *Queries) ListDrafts(ctx context.Context, authorID pgtype.UUID) ([]ListD
 	return items, nil
 }
 
+const listMyDocuments = `-- name: ListMyDocuments :many
+SELECT id, slug, status, title, updated_at
+FROM documents
+WHERE author_id = $1
+  AND deleted_at IS NULL
+ORDER BY (status = 'draft') DESC, updated_at DESC
+LIMIT 100
+`
+
+type ListMyDocumentsRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	Slug      string             `json:"slug"`
+	Status    DocumentStatus     `json:"status"`
+	Title     *string            `json:"title"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+// The caller's own entries for the history panel: drafts pinned first, then
+// everything else by most recent edit. Owner-scoped; never source/HTML.
+func (q *Queries) ListMyDocuments(ctx context.Context, authorID pgtype.UUID) ([]ListMyDocumentsRow, error) {
+	rows, err := q.db.Query(ctx, listMyDocuments, authorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListMyDocumentsRow
+	for rows.Next() {
+		var i ListMyDocumentsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Slug,
+			&i.Status,
+			&i.Title,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPublishedDocumentIDs = `-- name: ListPublishedDocumentIDs :many
+SELECT id
+FROM documents
+WHERE status = 'published'
+  AND deleted_at IS NULL
+`
+
+// Every published document id (search index bootstrap / rebuild).
+func (q *Queries) ListPublishedDocumentIDs(ctx context.Context) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listPublishedDocumentIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const publishDocument = `-- name: PublishDocument :one
 UPDATE documents
 SET status        = 'published',
@@ -199,7 +422,7 @@ SET status        = 'published',
 WHERE id = $5
   AND author_id = $6
   AND deleted_at IS NULL
-RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, current_version_id, search_tsv, deleted_at
+RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, search_tsv, deleted_at
 `
 
 type PublishDocumentParams struct {
@@ -244,7 +467,6 @@ func (q *Queries) PublishDocument(ctx context.Context, arg PublishDocumentParams
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PublishedAt,
-		&i.CurrentVersionID,
 		&i.SearchTsv,
 		&i.DeletedAt,
 	)
@@ -259,8 +481,8 @@ SET title       = $3,
     updated_at  = now()
 WHERE id = $1
   AND author_id = $2
-  AND status = 'draft'
-RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, current_version_id, search_tsv, deleted_at
+  AND deleted_at IS NULL
+RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, search_tsv, deleted_at
 `
 
 type SaveDraftParams struct {
@@ -271,8 +493,10 @@ type SaveDraftParams struct {
 	SourceMd    *string     `json:"source_md"`
 }
 
-// Overwrite the working copy in place (draft saves are not versioned). Scoped to
-// author_id so an author can only save their own draft.
+// Overwrite the working copy in place (saves are not versioned). Scoped to
+// author_id so an author can only save their own document. Any status: editing a
+// published entry changes only the working copy — rendered_html and the search
+// index change on the next (re-)publish.
 func (q *Queries) SaveDraft(ctx context.Context, arg SaveDraftParams) (Document, error) {
 	row := q.db.QueryRow(ctx, saveDraft,
 		arg.ID,
@@ -295,7 +519,6 @@ func (q *Queries) SaveDraft(ctx context.Context, arg SaveDraftParams) (Document,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PublishedAt,
-		&i.CurrentVersionID,
 		&i.SearchTsv,
 		&i.DeletedAt,
 	)
@@ -314,12 +537,11 @@ type SetRenderedHTMLParams struct {
 	RenderedHtml *string     `json:"rendered_html"`
 }
 
-// Cache the publish-time sanitized HTML into the current-version cache column.
+// Cache the publish-time sanitized HTML into the documents.rendered_html column.
 // This is the ONLY write path to documents.rendered_html, and the value MUST be
 // render.RenderAndSanitize output — no unsanitized HTML ever reaches this column
-// (06-security.md §2; LOO-16). Status / published_at / version-snapshot
-// transitions are the publish gate's job (LOO-14/LOO-17); this primitive only
-// caches the HTML so those tickets compose it into their publish transaction.
+// (06-security.md §2; LOO-16). Status / published_at transitions are the
+// publish gate's job (LOO-14); this primitive only caches the HTML.
 func (q *Queries) SetRenderedHTML(ctx context.Context, arg SetRenderedHTMLParams) error {
 	_, err := q.db.Exec(ctx, setRenderedHTML, arg.ID, arg.RenderedHtml)
 	return err
@@ -333,7 +555,7 @@ WHERE id = $1
   AND author_id = $2
   AND status = 'published'
   AND deleted_at IS NULL
-RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, current_version_id, search_tsv, deleted_at
+RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, search_tsv, deleted_at
 `
 
 type UnpublishDocumentParams struct {
@@ -344,9 +566,8 @@ type UnpublishDocumentParams struct {
 // Revert a published document to author-only 'unpublished' visibility (AC-5.6).
 // Only a currently-published doc can be unpublished (status='published' guard), so
 // a draft/already-unpublished/other-author id yields pgx.ErrNoRows → 404.
-// published_at, current_version_id and the document_versions history are all left
-// intact — unpublish removes the doc from the index-eligible state, it does not
-// erase its past.
+// published_at and rendered_html are left intact — unpublish removes the doc from
+// the index-eligible state, it does not erase its content.
 func (q *Queries) UnpublishDocument(ctx context.Context, arg UnpublishDocumentParams) (Document, error) {
 	row := q.db.QueryRow(ctx, unpublishDocument, arg.ID, arg.AuthorID)
 	var i Document
@@ -363,7 +584,6 @@ func (q *Queries) UnpublishDocument(ctx context.Context, arg UnpublishDocumentPa
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PublishedAt,
-		&i.CurrentVersionID,
 		&i.SearchTsv,
 		&i.DeletedAt,
 	)

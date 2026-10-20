@@ -10,27 +10,25 @@ organization is emergent, via metadata (tags) and search.
 > Product bet: *organization by search + metadata beats organization by hierarchy*
 > at scale, and **UX speed is the feature**.
 
-See [`docs/planning/`](docs/planning/) for the full specs (overview, architecture,
-tech stack, data model, security, roadmap).
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Security issues:
+see [SECURITY.md](SECURITY.md).
 
 ## Stack
 
 | Layer | Tech |
 |---|---|
-| Backend | Go 1.25 · [Fiber v2](https://gofiber.io) · `slog` · `caarlos0/env` |
+| Backend | Go 1.26 · [Fiber v2](https://gofiber.io) · `slog` · `caarlos0/env` |
 | Frontend | SvelteKit · TypeScript · Vite |
-| Edge | Caddy (auto-TLS, security headers) |
-| Data | PostgreSQL · Meilisearch · Garage (S3) · Kroki (diagrams) |
-| Identity | Authentik (OIDC) |
-| Telemetry | OpenTelemetry Collector |
+| Data | PostgreSQL · Meilisearch · Garage (S3) · Kroki (diagrams) · Valkey (rate limits) |
+| Identity | Built-in email + password (argon2id), open signup |
 
 ## Repository layout
 
 ```
 api/     Go + Fiber backend (cmd/api, internal/*)
 web/     SvelteKit frontend
-deploy/  docker-compose stack, Caddyfile, service configs
-docs/    planning & specifications
+deploy/  docker-compose stack, service configs
+docs/    deployment & auth guides
 ```
 
 ## Quickstart
@@ -39,29 +37,26 @@ Prerequisites: **Docker** + **Docker Compose v2**.
 
 ```bash
 cp .env.example .env      # then edit secrets (or `make env`)
-make up                   # build + start the core stack (detached)
+make up                   # build + start the stack (detached)
 make garage-init          # one-time: assign the Garage cluster layout
 ```
 
 Then:
 
-- App: <http://localhost> (SvelteKit SPA — shows live API health)
-- API liveness: <http://localhost/healthz>
-- API readiness: <http://localhost/readyz>
+- App: <http://localhost:3000> — create an account at `/signup`, then search from the
+  home page or press **+** to write an entry; your entries live in the panel on the left
+- API liveness: <http://127.0.0.1:8080/healthz>
+- API readiness: <http://127.0.0.1:8080/readyz>
 
 Stop it with `make down` (add `make clean` to also drop volumes).
 
-The default `make up` starts the **core stack** (Caddy, API, web, Postgres,
-Valkey, Meilisearch, Kroki, Garage, OTel Collector) with healthchecks gating an
-ordered start. Identity and the bundled telemetry backend are opt-in:
-
-```bash
-make auth-up      # + Authentik (--profile auth)
-make obs-up       # + Prometheus/Tempo/Loki/Grafana (Grafana at /grafana)
-```
+`make up` starts web, API, Postgres, Valkey, Meilisearch, Kroki and Garage with
+healthchecks gating an ordered start. No reverse proxy is bundled — put your own
+TLS proxy in front of `web` for anything deployed.
 
 See [`docs/deploy.md`](docs/deploy.md) for the full bring-up, health, network
-boundary, and configuration reference.
+boundary, and configuration reference, and [`docs/auth.md`](docs/auth.md) for
+accounts and sessions.
 
 ## Local development (without containers)
 
@@ -75,7 +70,9 @@ cd api && go run ./cmd/api
 cd web && pnpm install && pnpm dev
 ```
 
-Open <http://localhost:5173>.
+Open <http://localhost:5173>. Without `LOOKUPKB_AUTH_SECRET` (API) and
+`SESSION_COOKIE_SECRET` (web) auth is disabled and protected routes don't exist;
+with them (plus a database) you can sign up locally.
 
 ## Common tasks
 
@@ -88,36 +85,43 @@ make fmt      # format Go + web sources
 make config   # validate the compose file
 ```
 
-## Continuous integration
+## Continuous integration & releases
 
-Every push to `main` and every pull request runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
-as parallel jobs:
+Every pull request and every push to `develop`/`main` runs
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) as parallel jobs:
 
 | Job | What it checks |
 |---|---|
-| `api` | `go vet`, `golangci-lint` (govet/staticcheck/**gosec**), sqlc freshness, `go test -race`, testcontainers integration tests, build |
-| `vuln` | `govulncheck` — Go dependency/stdlib vulnerabilities |
-| `web` | Prettier, ESLint, `svelte-check`, Vitest, build |
-| `compose` | `docker compose config` validation (core + observability overlay) |
-| `trivy-config` | Trivy IaC/misconfiguration scan of Dockerfiles + compose |
-| `images` | Build the API & web images, then Trivy image scans |
+| `PR title` | Conventional Commits PR title (PRs are squash-merged; the title feeds the changelog) |
+| `API (Go)` | `go mod tidy`, `go vet`, `golangci-lint` (govet/staticcheck/**gosec**), sqlc freshness, `go test -race`, testcontainers integration tests, build |
+| `Govulncheck (Go)` | Go dependency/stdlib vulnerabilities |
+| `Web (SvelteKit)` | `pnpm audit`, Prettier, ESLint, `svelte-check`, Vitest, build |
+| `Compose config` | `docker compose config` validation |
+| `Trivy (IaC/config)` | Trivy misconfiguration scan of Dockerfiles + compose |
+| `Build images` | Build the API & web images, then Trivy image scans |
 
-Trivy and `govulncheck` **fail the build** on HIGH/CRITICAL findings (not just warn);
+`pnpm audit`, Trivy and `govulncheck` **fail the build** on HIGH/CRITICAL findings;
 accepted exceptions are documented in [`.trivyignore`](.trivyignore).
 
-> **Branch protection (repo-settings — action required by a repo admin).** Enabling
-> these jobs as *required status checks* on `main` (so a red pipeline blocks merge)
-> is a GitHub repository setting that CI itself cannot configure. A repo admin
-> should, under **Settings → Branches → Branch protection rules** for `main`,
-> require the checks `api`, `vuln`, `web`, `compose`, `trivy-config`, and `images`,
-> and require branches to be up to date before merging.
+**Releases** are cut by [release-please](https://github.com/googleapis/release-please)
+([`.github/workflows/release.yml`](.github/workflows/release.yml)): merging `develop`
+into `main` updates a release PR; merging that PR tags `vX.Y.Z` and publishes
+
+- multi-arch (`amd64`/`arm64`) images `ghcr.io/learistocats/lookupkb-{api,web}`,
+  cosign-signed with SBOM + provenance attestations;
+- a deploy bundle (`lookupkb-vX.Y.Z-deploy.tar.gz`: compose file pinned to the
+  release images, `.env.example`, service configs) attached to the GitHub Release.
+
+To run a release: download the bundle, `cp .env.example .env`, set the secrets, then
+`docker compose up -d`.
 
 ## Security & operations notes
 
 - The API image is a **distroless, non-root, read-only-filesystem** static
   binary with a self-probe healthcheck (no shell in the image).
-- Compose uses **network segmentation**: only Caddy is published; datastores
-  live on an `internal` network. `no-new-privileges`, dropped capabilities and
+- Passwords are stored as **argon2id** hashes only; login/signup are rate-limited.
+- Compose uses **network segmentation**: only `web` is published (the API binds to
+  loopback); datastores live on an `internal` network. `no-new-privileges`, dropped capabilities and
   per-container resource limits are set across the stack.
 - All third-party images are **pinned by digest**.
 - **No secrets in git**: `.env` is git-ignored; `.env.example` documents every

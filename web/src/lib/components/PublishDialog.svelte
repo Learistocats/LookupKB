@@ -21,6 +21,7 @@
 		tags = $bindable<string[]>([]),
 		fieldErrors = [],
 		busy = false,
+		confirmLabel = 'Publish',
 		onConfirm,
 		onCancel
 	}: {
@@ -30,6 +31,7 @@
 		tags?: string[];
 		fieldErrors?: FieldError[];
 		busy?: boolean;
+		confirmLabel?: string;
 		onConfirm: () => void;
 		onCancel: () => void;
 	} = $props();
@@ -55,145 +57,117 @@
 </script>
 
 <dialog bind:this={dialogEl} onclose={onCancel} aria-label="Publish document">
-	<h2>Publish document</h2>
-	<p class="hint">Review the metadata that will be published, then confirm.</p>
+	<header>
+		<h2>{confirmLabel === 'Update' ? 'Update published entry' : 'Publish entry'}</h2>
+		<p class="hint">
+			{confirmLabel === 'Update'
+				? 'Readers will see your latest changes once you confirm.'
+				: 'Check the details readers and search will see, then confirm.'}
+		</p>
+	</header>
 
 	{#each otherErrors as err (err.message)}
-		<p class="badge error">{err.message}</p>
+		<p class="error-text">{err.message}</p>
 	{/each}
 
-	<label>
-		Title
-		<input bind:value={title} placeholder="A clear, descriptive title" />
-	</label>
-	{#each errorsFor('title') as err (err)}
-		<span class="badge error">{err}</span>
-	{/each}
+	<div class="field">
+		<label class="field-label" for="publish-title">Title</label>
+		<input
+			id="publish-title"
+			class="input"
+			bind:value={title}
+			placeholder="A clear, descriptive title"
+		/>
+		{#each errorsFor('title') as err (err)}
+			<p class="error-text">{err}</p>
+		{/each}
+	</div>
 
-	<label>
-		Description
-		<textarea bind:value={description} rows="3" placeholder="A short summary of this document"
-		></textarea>
-	</label>
-	{#each errorsFor('description') as err (err)}
-		<span class="badge error">{err}</span>
-	{/each}
+	<div class="field">
+		<label class="field-label" for="publish-description">Description</label>
+		<textarea
+			id="publish-description"
+			class="input"
+			bind:value={description}
+			rows="3"
+			placeholder="One or two sentences on what this entry covers"></textarea>
+		{#each errorsFor('description') as err (err)}
+			<p class="error-text">{err}</p>
+		{/each}
+	</div>
 
-	<TagInput bind:tags />
-	{#each errorsFor('tags') as err (err)}
-		<span class="badge error">{err}</span>
-	{/each}
+	<div class="field">
+		<TagInput bind:tags />
+		{#each errorsFor('tags') as err (err)}
+			<p class="error-text">{err}</p>
+		{/each}
+	</div>
 
-	<p class="access">Access: <strong>Public</strong></p>
+	<p class="access">Visible to everyone signed in to this knowledge base.</p>
 
 	<div class="actions">
-		<button type="button" class="secondary" onclick={onCancel} disabled={busy}>Cancel</button>
-		<button type="button" class="primary" onclick={onConfirm} disabled={busy}>
-			{busy ? 'Publishing…' : 'Confirm publish'}
+		<button type="button" class="btn btn-ghost" onclick={onCancel} disabled={busy}>Cancel</button>
+		<button type="button" class="btn btn-primary" onclick={onConfirm} disabled={busy}>
+			{busy ? 'Working…' : `Confirm ${confirmLabel.toLowerCase()}`}
 		</button>
 	</div>
 </dialog>
 
 <style>
 	dialog {
-		width: min(32rem, 92vw);
-		border: 1px solid #2a2e35;
-		border-radius: 0.75rem;
-		background: #131519;
-		color: #e8eaed;
+		width: min(34rem, calc(100vw - 2rem));
+		max-height: calc(100dvh - 2rem);
+		margin: auto;
 		padding: 1.5rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-lg);
+		background: var(--surface);
+		color: var(--fg);
+		box-shadow: var(--shadow-md);
+	}
+
+	dialog[open] {
+		display: grid;
+		gap: 1rem;
 	}
 
 	dialog::backdrop {
-		background: rgba(0, 0, 0, 0.6);
+		background: var(--scrim);
+		backdrop-filter: blur(2px);
+	}
+
+	header {
+		display: grid;
+		gap: 0.25rem;
 	}
 
 	h2 {
 		margin: 0;
-		font-size: 1.25rem;
+		font-size: var(--text-lg);
+		font-weight: 650;
+		letter-spacing: -0.01em;
 	}
 
 	.hint {
-		color: #9aa0a6;
-		font-size: 0.9rem;
-		margin: 0.25rem 0 1rem;
+		margin: 0;
+		color: var(--fg-muted);
+		font-size: var(--text-sm);
 	}
 
-	label {
-		display: grid;
-		gap: 0.4rem;
-		margin-top: 0.75rem;
-		color: #9aa0a6;
-		font-size: 0.85rem;
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
-	}
-
-	input,
 	textarea {
-		width: 100%;
-		box-sizing: border-box;
-		padding: 0.6rem 0.75rem;
-		border: 1px solid #2a2e35;
-		border-radius: 0.5rem;
-		background: #0f1114;
-		color: #e8eaed;
-		font: inherit;
 		resize: vertical;
 	}
 
 	.access {
-		color: #9aa0a6;
-		font-size: 0.9rem;
-		margin: 1rem 0 0;
+		margin: 0;
+		color: var(--fg-subtle);
+		font-size: var(--text-sm);
 	}
 
 	.actions {
 		display: flex;
 		justify-content: flex-end;
-		gap: 0.75rem;
-		margin-top: 1.5rem;
-	}
-
-	button {
-		padding: 0.5rem 1.25rem;
-		border: 1px solid #2a2e35;
-		border-radius: 0.5rem;
-		background: #1a1d22;
-		color: #e8eaed;
-		cursor: pointer;
-		font: inherit;
-	}
-
-	button:hover:not(:disabled) {
-		background: #23272e;
-	}
-
-	button:disabled {
-		opacity: 0.6;
-		cursor: default;
-	}
-
-	.primary {
-		background: #1d3a5f;
-		border-color: #285285;
-	}
-
-	.primary:hover:not(:disabled) {
-		background: #24466f;
-	}
-
-	.badge {
-		display: inline-block;
-		padding: 0.25rem 0.6rem;
-		border-radius: 999px;
-		font-weight: 600;
-		font-size: 0.85rem;
-		margin-top: 0.35rem;
-	}
-
-	.badge.error {
-		background: #2e1113;
-		color: #f87171;
+		gap: 0.5rem;
+		margin-top: 0.25rem;
 	}
 </style>

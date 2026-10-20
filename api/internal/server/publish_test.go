@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -12,7 +11,6 @@ import (
 	"github.com/Learistocats/LookupKB/api/internal/config"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/Learistocats/LookupKB/api/internal/publish"
-	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/require"
@@ -68,10 +66,7 @@ func newPublishServer(t *testing.T, svc PublishService) *Server {
 	cfg, err := config.Load()
 	require.NoError(t, err)
 
-	ks := &oidc.StaticKeySet{PublicKeys: []crypto.PublicKey{testKey.Public()}}
-	verifier := auth.VerifierFrom(oidc.NewVerifier(testIssuer, ks, &oidc.Config{ClientID: testAudience}))
-	up := &fakeUpserter{userID: pgUUID(callerUUID)}
-	mw := auth.NewMiddleware(verifier, up, slogDiscard())
+	mw := auth.NewMiddleware(testTokens, nil, slogDiscard())
 
 	return New(cfg, slogDiscard(), "test", WithAuth(mw), WithPublish(svc))
 }
@@ -80,7 +75,7 @@ func newPublishServer(t *testing.T, svc PublishService) *Server {
 // forwarded to the service (docID from the path, author from the verified token).
 func TestPublish_ValidReturnsPublished(t *testing.T) {
 	id := uuid.New()
-	svc := &fakePublishService{publishRes: &publish.Result{Document: publishedDoc(id), VersionNo: 1}}
+	svc := &fakePublishService{publishRes: &publish.Result{Document: publishedDoc(id)}}
 	s := newPublishServer(t, svc)
 
 	body := `{"title":"How to deploy","description":"A short but sufficient description.","tags":["ops","deploy"]}`
@@ -95,7 +90,6 @@ func TestPublish_ValidReturnsPublished(t *testing.T) {
 	var got publishedResponse
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 	require.Equal(t, "published", got.Status)
-	require.Equal(t, int32(1), got.VersionNo)
 	require.Equal(t, "public", got.Access)
 }
 

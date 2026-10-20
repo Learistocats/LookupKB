@@ -7,29 +7,27 @@ control** as the UI: a caller only ever sees what its identity is allowed to see
 
 ## 1. Principles
 
-- **Read-only in v1.** Search, query/filter, list, retrieve (documents, versions, tags). Write (ingest/publish) is designed-for but deferred — see [09](09-open-questions.md).
+- **Read-only in v1.** Search, query/filter, list, retrieve (documents, tags). Write (ingest/publish) is designed-for but deferred — see [09](09-open-questions.md).
 - **Same authz, always.** No endpoint bypasses the access model; search results and document reads are access-filtered server-side ([03](03-data-model.md) §2, [05](05-search-and-indexing.md) §3).
 - **Stable & versioned.** Base path `/api/v1`; breaking changes go to `/api/v2`. Additive changes are non-breaking.
 - **Machine-friendly.** JSON by default, OpenAPI 3 spec, cursor pagination, RFC 7807 errors, content negotiation, predictable rate limits.
-- **Same surface as the app.** The SvelteKit UI consumes this same API (with OIDC session auth); programmatic clients use tokens. One implementation, one authz path.
+- **Same surface as the app.** The SvelteKit UI consumes this same API (with its session token, via the web BFF); programmatic clients use tokens. One implementation, one authz path.
 
 ## 2. Authentication
 
-Two credential types, both resolving to an identity whose **group memberships drive access**:
+One credential type, resolving to a user whose **group memberships drive access**:
 
 ### 2.1 Personal Access Tokens (PATs)
 - Issued by a user in the LookupKB UI (Settings → API Tokens). The token **acts as that user** and inherits their current group memberships.
 - Presented as `Authorization: Bearer lkb_pat_<...>`.
 - Properties: name/label, scopes, optional expiry, last-used timestamp, revocable at any time.
 - **Storage:** only a salted hash is stored (`api_tokens` table, [03](03-data-model.md)); the raw token is shown once at creation. A short non-secret prefix is stored for display/identification.
-- Group resolution: at request time from the cached `user_groups` projection (refreshed on login / periodic Authentik sync), so a PAT reflects the user's up-to-date access.
+- Group resolution: at request time from `group_members`, so a PAT reflects the user's up-to-date access.
 
-### 2.2 Service accounts (OAuth2 client-credentials via Authentik)
-- Machine identities are **Authentik service accounts**. The client obtains a token via the OAuth2 `client_credentials` grant from Authentik, then calls LookupKB with `Authorization: Bearer <oidc_access_token>`.
-- Groups come from the verified token claims (same JWKS verification as user OIDC).
-- Centrally managed, rotated, and revoked in Authentik. Preferred for system-to-system integrations.
+For system-to-system integrations, create a dedicated LookupKB user, add it to the groups
+it needs, and issue it a PAT.
 
-### 2.3 Scopes (read-only set for v1)
+### 2.2 Scopes (read-only set for v1)
 `search:read`, `documents:read`, `tags:read`. (Write scopes reserved for a future version.)
 Tokens are least-privilege: a token missing a scope gets `403`.
 
@@ -74,14 +72,8 @@ Metadata-driven listing/filtering (no free-text ranking). Returns document metad
 GET /api/v1/documents/{slug}
 GET /api/v1/documents/{slug}?format=markdown|html|text|json
 ```
-Returns the current published version: metadata + content in the requested format (see §5).
+Returns the published document: metadata + content in the requested format (see §5).
 `403`/`404` (indistinguishable to avoid existence leaks) if the caller lacks access.
-
-### Version history
-```
-GET /api/v1/documents/{slug}/versions              -> list version metadata
-GET /api/v1/documents/{slug}/versions/{version_no} -> retrieve a specific version (format-negotiable)
-```
 
 ### Tags
 ```
@@ -106,13 +98,13 @@ A retrieved document can be returned as (client chooses via `?format=` or `Accep
 | Plain text | `text` | `text/plain` | RAG / indexing / NLP (Markdown stripped) |
 
 The JSON envelope includes `id, slug, title, description, tags, author, created_at,
-published_at, version_no, access` plus the content in the requested representation(s).
+published_at, access` plus the content in the requested representation(s).
 `text` is the same `body_text` extraction used for search indexing ([05](05-search-and-indexing.md)).
 
 ## 6. Example
 
 ```bash
-# Search (service account)
+# Search (PAT)
 curl -H "Authorization: Bearer $TOKEN" \
   "https://kb.example.com/api/v1/search?q=kubernetes+runbook&tags=ops&limit=10"
 

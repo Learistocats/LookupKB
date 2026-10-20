@@ -11,6 +11,69 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimIndexOps = `-- name: ClaimIndexOps :many
+UPDATE index_outbox
+SET status = 'processing',
+    updated_at = now()
+WHERE id IN (
+    SELECT o.id
+    FROM index_outbox o
+    WHERE o.status = 'pending'
+    ORDER BY o.created_at
+    FOR UPDATE SKIP LOCKED
+    LIMIT $1
+)
+RETURNING id, document_id, op, attempts
+`
+
+type ClaimIndexOpsRow struct {
+	ID         int64       `json:"id"`
+	DocumentID pgtype.UUID `json:"document_id"`
+	Op         string      `json:"op"`
+	Attempts   int32       `json:"attempts"`
+}
+
+// Atomically claim the oldest pending ops for this worker. SKIP LOCKED lets
+// several workers run without double-processing a row.
+func (q *Queries) ClaimIndexOps(ctx context.Context, limit int32) ([]ClaimIndexOpsRow, error) {
+	rows, err := q.db.Query(ctx, claimIndexOps, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ClaimIndexOpsRow
+	for rows.Next() {
+		var i ClaimIndexOpsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.DocumentID,
+			&i.Op,
+			&i.Attempts,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const completeIndexOp = `-- name: CompleteIndexOp :exec
+UPDATE index_outbox
+SET status = 'done',
+    processed_at = now(),
+    updated_at = now(),
+    last_error = NULL
+WHERE id = $1
+`
+
+func (q *Queries) CompleteIndexOp(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, completeIndexOp, id)
+	return err
+}
+
 const enqueueIndexOp = `-- name: EnqueueIndexOp :exec
 
 INSERT INTO index_outbox (document_id, op)
@@ -26,11 +89,45 @@ type EnqueueIndexOpParams struct {
 // 00004_index_outbox.sql). The publish gate (LOO-14) enqueues a row in the SAME
 // transaction as the status flip, so a failed Meili write can be retried without
 // losing the DB commit and a rolled-back publish never leaves a stray index op.
-// Dequeue → Meili upsert/delete is M2's consumer; this ticket only enqueues.
+// The search worker (internal/search) claims, applies and completes them.
 // Enqueue an index operation for a document: 'upsert' on publish/re-publish,
 // 'delete' on unpublish. status defaults to 'pending' and attempts to 0 — the M2
 // worker scans (status,created_at) oldest-first.
 func (q *Queries) EnqueueIndexOp(ctx context.Context, arg EnqueueIndexOpParams) error {
 	_, err := q.db.Exec(ctx, enqueueIndexOp, arg.DocumentID, arg.Op)
+	return err
+}
+
+const failIndexOp = `-- name: FailIndexOp :exec
+UPDATE index_outbox
+SET attempts = attempts + 1,
+    last_error = $1,
+    status = CASE WHEN attempts + 1 >= $2::int THEN 'failed' ELSE 'pending' END,
+    updated_at = now()
+WHERE id = $3
+`
+
+type FailIndexOpParams struct {
+	LastError   *string `json:"last_error"`
+	MaxAttempts int32   `json:"max_attempts"`
+	ID          int64   `json:"id"`
+}
+
+// Record a failure: back to pending for a retry, or 'failed' once attempts run out.
+func (q *Queries) FailIndexOp(ctx context.Context, arg FailIndexOpParams) error {
+	_, err := q.db.Exec(ctx, failIndexOp, arg.LastError, arg.MaxAttempts, arg.ID)
+	return err
+}
+
+const requeueStaleIndexOps = `-- name: RequeueStaleIndexOps :exec
+UPDATE index_outbox
+SET status = 'pending',
+    updated_at = now()
+WHERE status = 'processing'
+`
+
+// Ops left 'processing' by a crashed worker go back to pending at startup.
+func (q *Queries) RequeueStaleIndexOps(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, requeueStaleIndexOps)
 	return err
 }

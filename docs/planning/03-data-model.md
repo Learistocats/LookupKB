@@ -1,34 +1,40 @@
 # 03 — Data Model & Access Control
 
-Authoritative store: **PostgreSQL**. Identity (users, groups) lives in **Authentik**;
-LookupKB references users by their stable OIDC `sub` and groups by name/ID from tokens,
-and keeps only lightweight projections needed for display and ACLs.
+Authoritative store: **PostgreSQL** — including identity. LookupKB owns its user accounts
+(email + argon2id password hash) and its groups + membership; there is no external IdP.
 
 ## 1. Entities
 
-### `users` (projection of Authentik identities)
+### `users` (local accounts)
 | Column | Type | Notes |
 |---|---|---|
-| `id` | uuid (PK) | LookupKB internal id |
-| `oidc_sub` | text (unique) | Stable subject from Authentik |
-| `email` | citext | For display/notifications |
-| `display_name` | text | Cached from token/userinfo |
-| `created_at` | timestamptz | First seen |
+| `id` | uuid (PK) | LookupKB internal id; the access token's `sub` |
+| `email` | citext (unique, not null) | Login identifier; case-insensitive |
+| `password_hash` | text (not null) | argon2id PHC string (`$argon2id$v=19$m=…,t=…,p=…$salt$key`) |
+| `display_name` | text null | Optional, set at signup |
+| `created_at` | timestamptz | Signup time |
 | `last_seen_at` | timestamptz | Updated on login |
 
-> No passwords, no auth secrets. This table is a cache/projection; Authentik is authoritative.
+> `password_hash` is the **only** persisted form of a password — never plaintext or
+> reversibly encrypted, never logged, never returned by any endpoint. Signup is open
+> (self-service).
 
-### `groups` (projection of Authentik groups)
+### `groups`
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid (PK) | Internal id |
-| `authentik_id` | text (unique) | Group id/name from Authentik |
-| `name` | text | Human-readable (e.g. `security`, `hr`) |
-| `synced_at` | timestamptz | Last sync |
+| `name` | text (unique) | Human-readable (e.g. `security`, `hr`) |
+| `created_at` | timestamptz | |
 
-Membership is **not** stored authoritatively here — it comes from the user's token
-`groups` claim at request time. A projection table `user_groups` may be kept for admin
-display, refreshed on login / via Authentik API, but access decisions use the token.
+### `group_members`
+| Column | Type | Notes |
+|---|---|---|
+| `group_id` | uuid (FK groups, cascade) | |
+| `user_id` | uuid (FK users, cascade) | |
+
+Membership is authoritative here. The API loads the caller's group ids from this table
+on **every** authenticated request (never baked into the token), so a membership change
+takes effect immediately.
 
 ### `documents`
 | Column | Type | Notes |
@@ -40,31 +46,15 @@ display, refreshed on login / via Authentik API, but access decisions use the to
 | `title` | text | Current title (nullable while draft) |
 | `description` | text | Short description (nullable while draft) |
 | `source_md` | text | Current Markdown source (working copy) |
-| `rendered_html` | text | Sanitized HTML of current published version (cache) |
+| `rendered_html` | text | Sanitized HTML of the published content (cache; overwritten on re-publish) |
 | `access` | enum(`public`,`restricted`) | Default `public` |
 | `created_at` | timestamptz | |
 | `updated_at` | timestamptz | |
 | `published_at` | timestamptz null | First publish |
-| `current_version_id` | uuid null (FK document_versions) | Points to latest published snapshot |
 | `search_tsv` | tsvector (optional) | Postgres FTS fallback / reindex source |
 
-### `document_versions` (published snapshots only)
-| Column | Type | Notes |
-|---|---|---|
-| `id` | uuid (PK) | |
-| `document_id` | uuid (FK documents) | |
-| `version_no` | int | Monotonic per document (1,2,3…) |
-| `title` | text | Snapshot |
-| `description` | text | Snapshot |
-| `source_md` | text | Snapshot of source at publish |
-| `rendered_html` | text | Sanitized HTML at publish |
-| `tags` | text[] | Snapshot of tags |
-| `access` | enum + `acl_group_ids uuid[]` | Snapshot of access scope |
-| `published_by` | uuid (FK users) | Who published |
-| `published_at` | timestamptz | |
-
-> Only **published** versions are snapshotted (per decision). Draft saves overwrite
-> `documents.source_md` in place and are **not** versioned.
+> **No version history.** Draft saves overwrite `documents.source_md` in place; a
+> (re-)publish overwrites `rendered_html` and the metadata. There is no snapshot table.
 
 ### `tags`
 | Column | Type | Notes |
@@ -128,26 +118,26 @@ Key/value (jsonb) for metadata limits: `title.min/max`, `description.min/max`,
 | `expires_at` | timestamptz null | Optional expiry |
 | `revoked_at` | timestamptz null | Soft-revoke |
 
-> Service-account (machine) identities are **not** stored here — they are Authentik service
-> accounts authenticated via OAuth2 client-credentials; their groups come from verified
-> token claims. See [10 — Public API](10-public-api.md) §2.
+> Programmatic clients authenticate with a PAT bound to a LookupKB user; there are no
+> separate service-account identities. See [10 — Public API](10-public-api.md) §2.
 
 ## 2. Access-control model
 
 **Default: every published document is `public`** (readable by any authenticated user).
-An Admin can create named groups (in Authentik) and an Author/Admin can mark a document
+An Admin can create named groups and manage their members (`group_members`), and an
+Author/Admin can mark a document
 `restricted` to one or more groups.
 
 **Decision rule for read access to a published doc:**
 ```
 allowed = (doc.access == 'public')
           OR (doc.access == 'restricted'
-              AND intersect(user.token.groups, doc.acl_group_ids) != ∅)
+              AND intersect(user.groups, doc.acl_group_ids) != ∅)   -- user.groups from group_members
           OR (user.id == doc.author_id)     -- authors always see their own
           OR (user.is_admin)                -- admins see all
 ```
 
-- **Multiple groups per user**: native — the token carries all of the user's groups; access is an intersection test.
+- **Multiple groups per user**: native — `group_members` holds all of the user's groups; access is an intersection test.
 - **Multiple groups per document**: `document_acl` allows OR-semantics across groups.
 - **Enforcement points** (defense in depth):
   1. API authorization middleware on every document read/write.
@@ -171,6 +161,5 @@ extraction (Markdown stripped) and `access`/`acl_group_ids` are filterable facet
 - `POST /admin/reindex` rebuilds the entire Meili index from Postgres (DR + schema changes).
 
 ## 5. Retention
-- Version snapshots retained indefinitely by default (admin-configurable cap / pruning later).
 - Audit log retained ≥ 1 year (configurable).
 - Deleted documents: soft-delete (status + `deleted_at`), purge job removes blobs & index entries after a grace period.

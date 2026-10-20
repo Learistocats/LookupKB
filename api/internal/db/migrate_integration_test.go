@@ -100,7 +100,7 @@ func assertTablesExist(t *testing.T, ctx context.Context, dsn string) {
 	defer func() { _ = conn.Close() }()
 
 	want := []string{
-		"users", "groups", "documents", "document_versions", "tags",
+		"users", "groups", "group_members", "documents", "tags",
 		"document_tags", "document_acl", "attachments", "audit_log",
 		"settings", "api_tokens", "index_outbox",
 	}
@@ -135,7 +135,7 @@ func assertAppRoleCannotDDL(t *testing.T, ctx context.Context, pgc *postgres.Pos
 
 	// DML is allowed (INSERT a user, then read it back).
 	_, err := conn.ExecContext(ctx,
-		"INSERT INTO users (oidc_sub, email) VALUES ('sub-1', 'a@example.com')")
+		"INSERT INTO users (email, password_hash) VALUES ('a@example.com', 'x')")
 	require.NoError(t, err, "app role should be able to INSERT")
 
 	// DDL must be refused.

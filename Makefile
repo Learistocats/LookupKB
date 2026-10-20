@@ -3,7 +3,6 @@
 
 SHELL := /bin/bash
 COMPOSE := docker compose -f deploy/docker-compose.yml --env-file .env
-COMPOSE_OBS := docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.observability.yml --env-file .env
 API_DIR := api
 WEB_DIR := web
 
@@ -23,47 +22,24 @@ env: ## Create .env from .env.example if missing
 ## ── Stack (Docker Compose) ───────────────────────────────────────────────────
 
 .PHONY: up
-up: env ## Build and start the core stack (detached)
+up: env ## Build and start the stack (detached)
 	$(COMPOSE) up -d --build
 
 .PHONY: dev
-dev: env ## Build and start the core stack in the foreground (logs attached)
+dev: env ## Build and start the stack in the foreground (logs attached)
 	$(COMPOSE) up --build
 
 .PHONY: down
-down: ## Stop EVERYTHING (core + auth profile + observability overlay)
-	# `down` respects active profiles/files: without --profile auth and the obs
-	# overlay in scope, those containers survive and keep the networks alive. Pass
-	# both files + the profile so a single `make down` always fully cleans up.
-	$(COMPOSE_OBS) --profile auth down --remove-orphans
+down: ## Stop the stack
+	$(COMPOSE) down --remove-orphans
 
 .PHONY: clean
-clean: ## Stop EVERYTHING and remove volumes (DESTRUCTIVE)
-	$(COMPOSE_OBS) --profile auth down -v --remove-orphans
+clean: ## Stop the stack and remove volumes (DESTRUCTIVE)
+	$(COMPOSE) down -v --remove-orphans
 
 .PHONY: logs
 logs: ## Tail stack logs
 	$(COMPOSE) logs -f
-
-.PHONY: auth-up
-auth-up: env ## Start the core stack + Authentik (--profile auth)
-	$(COMPOSE) --profile auth up -d --build
-
-.PHONY: auth-down
-auth-down: ## Stop the core stack + Authentik (profile-aware; `down` also covers it)
-	$(COMPOSE) --profile auth down --remove-orphans
-
-.PHONY: obs-up
-obs-up: env ## Start the core stack + observability overlay (Grafana at /grafana)
-	$(COMPOSE_OBS) up -d --build
-
-.PHONY: obs-down
-obs-down: ## Stop the core stack + observability overlay
-	$(COMPOSE_OBS) down --remove-orphans
-
-.PHONY: all-up
-all-up: env ## Start EVERYTHING: core + Authentik + observability overlay
-	$(COMPOSE_OBS) --profile auth up -d --build
 
 .PHONY: garage-init
 garage-init: ## Assign the initial Garage cluster layout (run once after `make up`)
@@ -77,9 +53,8 @@ garage-init: ## Assign the initial Garage cluster layout (run once after `make u
 	echo "  $(COMPOSE) exec garage /garage key create lookupkb-app   # paste keys into .env"
 
 .PHONY: config
-config: env ## Validate the core + observability Compose configs
-	$(COMPOSE) config -q && echo "core compose config OK"
-	$(COMPOSE_OBS) config -q && echo "observability overlay config OK"
+config: env ## Validate the Compose config
+	$(COMPOSE) config -q && echo "compose config OK"
 
 ## ── Build ────────────────────────────────────────────────────────────────────
 

@@ -33,7 +33,7 @@ Human-readable slug from title + short suffix vs opaque IDs.
 ## B. Can be decided during the relevant milestone
 
 ### Q7 — Redis/Valkey for LookupKB caching?
-Authentik needs Redis; should LookupKB also use it for read caching, or is in-process + Postgres enough?
+Valkey is already in the stack (login/signup rate-limit counters); should LookupKB also use it for read caching, or is in-process + Postgres enough?
 - **Recommendation:** Start with in-process cache + Postgres `rendered_html`; adopt Valkey only if perf budgets require it. (Valkey over Redis for licensing.)
 
 ### Q8 — Syntax highlighting at publish (Shiki) vs client (highlight.js)?
