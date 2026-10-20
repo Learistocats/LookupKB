@@ -17,6 +17,7 @@ import (
 	"github.com/Learistocats/LookupKB/api/internal/config"
 	"github.com/Learistocats/LookupKB/api/internal/db"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
+	"github.com/Learistocats/LookupKB/api/internal/drafts"
 	"github.com/Learistocats/LookupKB/api/internal/health"
 	"github.com/Learistocats/LookupKB/api/internal/logging"
 	"github.com/Learistocats/LookupKB/api/internal/publish"
@@ -225,6 +226,7 @@ func run(cfg config.Config, version string) error {
 	// routes are omitted (the skeleton still boots for bare `go run`).
 	if pool != nil {
 		opts = append(opts, server.WithDocuments(dbgen.New(pool)))
+		opts = append(opts, server.WithDraftDelete(drafts.NewService(pool)))
 		opts = append(opts, server.WithTags(tags.New(pool)))
 		// One process-wide renderer (concurrency-safe) drives the publish gate's
 		// server-side render+sanitize; the publish service composes it with the
