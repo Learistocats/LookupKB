@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Learistocats/LookupKB/api/internal/admin"
 	"github.com/Learistocats/LookupKB/api/internal/auth"
 	"github.com/Learistocats/LookupKB/api/internal/config"
 	"github.com/Learistocats/LookupKB/api/internal/db"
@@ -23,8 +25,13 @@ import (
 	"github.com/Learistocats/LookupKB/api/internal/server"
 	"github.com/Learistocats/LookupKB/api/internal/tags"
 	"github.com/Learistocats/LookupKB/api/internal/valkey"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// The auth middleware loads users.is_super_admin through this optional
+// capability of its group store; assert the real store keeps providing it.
+var _ auth.SuperAdminLoader = (*dbgen.Queries)(nil)
 
 // version is stamped at build time via -ldflags "-X main.version=...".
 var version = "dev"
@@ -52,6 +59,13 @@ func main() {
 	// one-shot migrate service, CI, and `make migrate`.
 	if len(os.Args) > 1 && os.Args[1] == "migrate" {
 		os.Exit(migrate(cfg, version))
+	}
+
+	// `api admin grant|revoke <email>` bootstraps the super-admin role (LOO-56):
+	// the first admin cannot be appointed through the API, and the shell-less
+	// image cannot run psql, so the binary does it.
+	if len(os.Args) > 1 && os.Args[1] == "admin" {
+		os.Exit(adminCommand(cfg, version, os.Args[2:]))
 	}
 
 	if err := run(cfg, version); err != nil {
@@ -94,6 +108,48 @@ func migrate(cfg config.Config, version string) int {
 		return 1
 	}
 	log.Info("migrations applied", "direction", direction)
+	return 0
+}
+
+// adminCommand implements `api admin grant|revoke <email>`: it sets or clears
+// users.is_super_admin and writes an audit_log row with a null actor. Exit codes:
+// 0 ok, 1 failure, 2 usage error.
+func adminCommand(cfg config.Config, version string, args []string) int {
+	log := logging.New(cfg.LogFormat, cfg.LogLevel, version)
+	if len(args) != 2 || (args[0] != "grant" && args[0] != "revoke") {
+		fmt.Fprintln(os.Stderr, "usage: api admin grant|revoke <email>")
+		return 2
+	}
+	if cfg.DatabaseURL == "" {
+		log.Error("LOOKUPKB_DATABASE_URL is required for `api admin`")
+		return 1
+	}
+	grant := args[0] == "grant"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	pool, err := db.NewPool(ctx, cfg)
+	if err != nil {
+		log.Error("connect to postgres failed", "error", err)
+		return 1
+	}
+	defer pool.Close()
+
+	row, err := admin.New(pool).SetSuperAdminByEmail(ctx, args[1], grant)
+	if errors.Is(err, admin.ErrNotFound) {
+		log.Error("no account with that email")
+		return 1
+	}
+	if err != nil {
+		log.Error("set super-admin failed", "error", err)
+		return 1
+	}
+	if !grant {
+		if n, err := dbgen.New(pool).CountSuperAdmins(ctx); err == nil && n == 0 {
+			log.Warn("no super-admin remains; grant one with `api admin grant <email>`")
+		}
+	}
+	log.Info("super-admin updated", "user_id", uuid.UUID(row.ID.Bytes).String(), "is_super_admin", row.IsSuperAdmin)
 	return 0
 }
 
@@ -166,6 +222,9 @@ func run(cfg config.Config, version string) error {
 		// tag/audit/outbox writes into one transaction.
 		renderer := render.New()
 		opts = append(opts, server.WithPublish(publish.NewService(pool, renderer, log)))
+		// Super-admin surface; its routes additionally need auth (registered only
+		// under the protected /api group).
+		opts = append(opts, server.WithAdmin(admin.New(pool)))
 	}
 
 	// Search needs both Postgres (the outbox + projections) and Meilisearch. The

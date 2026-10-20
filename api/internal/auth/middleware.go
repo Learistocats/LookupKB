@@ -24,6 +24,10 @@ type Identity struct {
 	Email  string
 	// Groups are the caller's group ids.
 	Groups []string
+	// IsSuperAdmin is users.is_super_admin, re-read from the database on every
+	// request (never a token claim) so a revoke is honored immediately. False when
+	// no database is wired (deny-by-default). See superadmin.go.
+	IsSuperAdmin bool
 }
 
 // GroupLister loads a user's group ids. *dbgen.Queries satisfies it; kept as an
@@ -78,6 +82,11 @@ func (m *Middleware) Handle(c *fiber.Ctx) error {
 		for _, g := range gids {
 			id.Groups = append(id.Groups, uuid.UUID(g.Bytes).String())
 		}
+	}
+
+	if id.IsSuperAdmin, err = m.loadSuperAdmin(c.UserContext(), uid); err != nil {
+		m.log.ErrorContext(c.UserContext(), "load caller super-admin flag failed", "error", err.Error())
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
 
 	// Attribute the request to the caller for the rest of the pipeline. Use the
