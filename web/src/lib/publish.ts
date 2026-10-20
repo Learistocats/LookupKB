@@ -13,7 +13,10 @@ export interface FieldError {
 	message: string;
 }
 
-/** The metadata a publish attempt carries. Access is public this milestone. */
+/**
+ * The metadata a publish attempt carries. There is no access field: who can read
+ * the entry follows from its tags and the group tag policy (LOO-33).
+ */
 export interface PublishRequest {
 	title: string;
 	description: string;
@@ -27,7 +30,6 @@ export interface PublishedDoc {
 	status: string;
 	title: string | null;
 	description: string | null;
-	access: string;
 	published_at: string;
 	updated_at: string;
 }
@@ -86,4 +88,14 @@ export function groupErrorsByField(errors: FieldError[]): Record<string, string[
 		(out[e.field] ??= []).push(e.message);
 	}
 	return out;
+}
+
+/**
+ * accessLine is the publish dialog's "who can see this" sentence (LOO-33): every
+ * signed-in user when no selected tag is protected, otherwise only members of
+ * groups granted those tags — plus the author, who always reads their own entry.
+ */
+export function accessLine(protectedTags: string[]): string {
+	if (protectedTags.length === 0) return 'Visible to everyone signed in to this knowledge base.';
+	return `Only members of groups with access to ${protectedTags.join(', ')} (and you) can see this entry.`;
 }

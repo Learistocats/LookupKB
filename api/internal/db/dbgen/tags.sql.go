@@ -128,16 +128,32 @@ func (q *Queries) RemoveDocumentTag(ctx context.Context, arg RemoveDocumentTagPa
 
 const searchTags = `-- name: SearchTags :many
 
-SELECT id, slug, label, usage_count, created_at
-FROM tags
-WHERE slug LIKE $1
-ORDER BY usage_count DESC, slug ASC
-LIMIT $2
+SELECT t.id,
+       t.slug,
+       t.label,
+       t.usage_count,
+       t.created_at,
+       EXISTS (SELECT 1 FROM group_tag_grants g WHERE g.tag_id = t.id) AS is_protected
+FROM tags t
+WHERE t.slug LIKE $1
+  AND NOT (t.id = ANY ($2::uuid[]))
+ORDER BY t.usage_count DESC, t.slug ASC
+LIMIT $3
 `
 
 type SearchTagsParams struct {
-	Slug  string `json:"slug"`
-	Limit int32  `json:"limit"`
+	Pattern     string        `json:"pattern"`
+	ExcludedIds []pgtype.UUID `json:"excluded_ids"`
+	MaxRows     int32         `json:"max_rows"`
+}
+
+type SearchTagsRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	Slug        string             `json:"slug"`
+	Label       string             `json:"label"`
+	UsageCount  int32              `json:"usage_count"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	IsProtected bool               `json:"is_protected"`
 }
 
 // Tag vocabulary queries (F6, 03-data-model.md `tags`/`document_tags`). Tag slugs
@@ -148,21 +164,25 @@ type SearchTagsParams struct {
 // Autocomplete: match tags whose slug contains the (already-normalized) pattern,
 // most-used first (AC-6.1). The pattern is built in Go as '%slug%'; Normalize
 // strips LIKE metacharacters (% _), so there is no injection risk.
-func (q *Queries) SearchTags(ctx context.Context, arg SearchTagsParams) ([]Tag, error) {
-	rows, err := q.db.Query(ctx, searchTags, arg.Slug, arg.Limit)
+// excluded_ids are the protected tags the caller lacks (access.Policy, LOO-33):
+// they are never suggested. is_protected lets the publish dialog tell the author
+// an entry carrying the tag will be restricted.
+func (q *Queries) SearchTags(ctx context.Context, arg SearchTagsParams) ([]SearchTagsRow, error) {
+	rows, err := q.db.Query(ctx, searchTags, arg.Pattern, arg.ExcludedIds, arg.MaxRows)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Tag
+	var items []SearchTagsRow
 	for rows.Next() {
-		var i Tag
+		var i SearchTagsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Slug,
 			&i.Label,
 			&i.UsageCount,
 			&i.CreatedAt,
+			&i.IsProtected,
 		); err != nil {
 			return nil, err
 		}

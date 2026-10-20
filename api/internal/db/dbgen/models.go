@@ -11,48 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-type DocumentAccess string
-
-const (
-	DocumentAccessPublic     DocumentAccess = "public"
-	DocumentAccessRestricted DocumentAccess = "restricted"
-)
-
-func (e *DocumentAccess) Scan(src interface{}) error {
-	switch s := src.(type) {
-	case []byte:
-		*e = DocumentAccess(s)
-	case string:
-		*e = DocumentAccess(s)
-	default:
-		return fmt.Errorf("unsupported scan type for DocumentAccess: %T", src)
-	}
-	return nil
-}
-
-type NullDocumentAccess struct {
-	DocumentAccess DocumentAccess `json:"document_access"`
-	Valid          bool           `json:"valid"` // Valid is true if DocumentAccess is not NULL
-}
-
-// Scan implements the Scanner interface.
-func (ns *NullDocumentAccess) Scan(value interface{}) error {
-	if value == nil {
-		ns.DocumentAccess, ns.Valid = "", false
-		return nil
-	}
-	ns.Valid = true
-	return ns.DocumentAccess.Scan(value)
-}
-
-// Value implements the driver Valuer interface.
-func (ns NullDocumentAccess) Value() (driver.Value, error) {
-	if !ns.Valid {
-		return nil, nil
-	}
-	return string(ns.DocumentAccess), nil
-}
-
 type DocumentStatus string
 
 const (
@@ -139,17 +97,11 @@ type Document struct {
 	Description  *string            `json:"description"`
 	SourceMd     *string            `json:"source_md"`
 	RenderedHtml *string            `json:"rendered_html"`
-	Access       DocumentAccess     `json:"access"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 	PublishedAt  pgtype.Timestamptz `json:"published_at"`
 	SearchTsv    interface{}        `json:"search_tsv"`
 	DeletedAt    pgtype.Timestamptz `json:"deleted_at"`
-}
-
-type DocumentAcl struct {
-	DocumentID pgtype.UUID `json:"document_id"`
-	GroupID    pgtype.UUID `json:"group_id"`
 }
 
 type DocumentTag struct {

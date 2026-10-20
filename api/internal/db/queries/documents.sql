@@ -1,5 +1,5 @@
--- Document queries: drafts, publish/unpublish and the read path. ACL and search
--- queries arrive with their own milestones — keep
+-- Document queries: drafts, publish/unpublish and the read path. Access-policy
+-- queries live in access.sql; keep
 -- queries close to the feature that needs them (03-data-model.md, ticket note).
 
 -- name: CreateDraft :one
@@ -63,19 +63,20 @@ WHERE id = $1
 -- content. Reads the cached rendered_html column — no render on this path.
 --   * JOIN users → author display name for the byline.
 --   * tags aggregated as labels for the metadata display.
--- author_id/access are selected only to feed the server-side access check (CanRead);
--- they are NOT projected to the client. One round trip keeps the path fast.
+-- author_id and tag_slugs are selected only to feed the server-side access check
+-- (access.Policy.CanRead: protected tags, LOO-33); they are NOT projected to the
+-- client. One round trip keeps the path fast.
 SELECT
     d.id,
     d.slug,
     d.title,
     d.description,
     d.rendered_html,
-    d.access,
     d.author_id,
     d.published_at,
     COALESCE(u.display_name, split_part(u.email::text, '@', 1))::text AS author_display_name,
-    COALESCE(array_remove(array_agg(t.label ORDER BY t.label), NULL), '{}')::text[] AS tags
+    COALESCE(array_remove(array_agg(t.label ORDER BY t.label), NULL), '{}')::text[] AS tags,
+    COALESCE(array_remove(array_agg(t.slug ORDER BY t.slug), NULL), '{}')::text[] AS tag_slugs
 FROM documents d
 JOIN users u ON u.id = d.author_id
 LEFT JOIN document_tags dt ON dt.document_id = d.id
@@ -156,21 +157,21 @@ ORDER BY t.label;
 
 -- name: GetIndexProjection :one
 -- Everything the search index stores for one PUBLISHED document. Built from the
--- published columns (rendered_html, not the working-copy source_md).
+-- published columns (rendered_html, not the working-copy source_md). No access
+-- attributes: read access is derived from `tags` + the group tag policy at query
+-- time (LOO-33), so a policy change never needs a reindex.
 SELECT
     d.id,
     d.slug,
     d.title,
     d.description,
     d.rendered_html,
-    d.access,
     d.author_id,
     d.created_at,
     d.published_at,
     -- Display name, else the email's local part: full emails are never indexed.
     COALESCE(u.display_name, split_part(u.email::text, '@', 1))::text AS author,
-    COALESCE(array_remove(array_agg(t.label ORDER BY t.label), NULL), '{}')::text[] AS tags,
-    COALESCE((SELECT array_agg(a.group_id) FROM document_acl a WHERE a.document_id = d.id), '{}')::uuid[] AS acl_group_ids
+    COALESCE(array_remove(array_agg(t.label ORDER BY t.label), NULL), '{}')::text[] AS tags
 FROM documents d
 JOIN users u ON u.id = d.author_id
 LEFT JOIN document_tags dt ON dt.document_id = d.id

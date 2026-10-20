@@ -61,16 +61,23 @@ type IndexDoc struct {
 	AuthorID    string   `json:"author_id"`
 	CreatedAt   int64    `json:"created_at"`
 	PublishedAt int64    `json:"published_at"`
-	Access      string   `json:"access"`
-	ACLGroupIDs []string `json:"acl_group_ids"`
 }
+
+// FilterableAttributes are the index's filterable (and facetable) attributes:
+// tags (access filter, client filter, facet), author_id (access + client filter)
+// and the date range fields.
+var FilterableAttributes = []string{"tags", "author_id", "created_at", "published_at"}
 
 type taskRef struct {
 	TaskUID int64 `json:"taskUid"`
 }
 
 // EnsureIndex creates the index (if missing) and applies its settings, waiting
-// for the settings task so filters are usable before the first query.
+// for the settings task so filters are usable before the first query. It runs on
+// every boot (Worker.prepare), so a settings change — e.g. LOO-33 dropping the
+// old access/acl_group_ids attributes — is re-applied to an existing index.
+// `tags` must stay filterable (access filter + client filter) and is also the
+// facet (filterable attributes are facetable in Meilisearch).
 func (c *Client) EnsureIndex(ctx context.Context) error {
 	var created taskRef
 	if err := c.do(ctx, http.MethodPost, "/indexes", map[string]string{"uid": IndexName, "primaryKey": "id"}, &created); err != nil {
@@ -81,7 +88,7 @@ func (c *Client) EnsureIndex(ctx context.Context) error {
 
 	settings := map[string]any{
 		"searchableAttributes": []string{"title", "description", "tags", "body_text"},
-		"filterableAttributes": []string{"tags", "author_id", "access", "acl_group_ids", "created_at", "published_at"},
+		"filterableAttributes": FilterableAttributes,
 		"sortableAttributes":   []string{"published_at", "created_at"},
 		"displayedAttributes":  []string{"id", "slug", "title", "description", "tags", "author", "author_id", "published_at", "body_text"},
 		"typoTolerance": map[string]any{
@@ -119,7 +126,8 @@ func (c *Client) DocumentCount(ctx context.Context) (int64, error) {
 
 type searchRequest struct {
 	Q                     string   `json:"q"`
-	Filter                string   `json:"filter,omitempty"`
+	Filter                []string `json:"filter,omitempty"`
+	Facets                []string `json:"facets,omitempty"`
 	Limit                 int      `json:"limit"`
 	Sort                  []string `json:"sort,omitempty"`
 	AttributesToRetrieve  []string `json:"attributesToRetrieve"`
@@ -145,8 +153,9 @@ type rawHit struct {
 }
 
 type searchResponse struct {
-	Hits             []rawHit `json:"hits"`
-	ProcessingTimeMs int64    `json:"processingTimeMs"`
+	Hits              []rawHit                    `json:"hits"`
+	ProcessingTimeMs  int64                       `json:"processingTimeMs"`
+	FacetDistribution map[string]map[string]int64 `json:"facetDistribution"`
 }
 
 func (c *Client) search(ctx context.Context, req searchRequest) (searchResponse, error) {

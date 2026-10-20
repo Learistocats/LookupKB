@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Learistocats/LookupKB/api/internal/auth"
+	"github.com/Learistocats/LookupKB/api/internal/config"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -13,10 +15,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// publishedRow builds a canned published-doc read row with the given access scope
-// and author. rendered_html/tags/author are all populated so a 200 exercises
-// the full projection.
-func publishedRow(access dbgen.DocumentAccess, authorID uuid.UUID) dbgen.GetPublishedBySlugRow {
+// publishedRow builds a canned published-doc read row by the given author, tagged
+// guide + kubernetes. rendered_html/tags/author are all populated so a 200
+// exercises the full projection.
+func publishedRow(authorID uuid.UUID) dbgen.GetPublishedBySlugRow {
 	title := "Kubernetes Guide"
 	desc := "How we run k8s"
 	html := "<h1>Kubernetes</h1><p>content</p>"
@@ -26,11 +28,11 @@ func publishedRow(access dbgen.DocumentAccess, authorID uuid.UUID) dbgen.GetPubl
 		Title:             &title,
 		Description:       &desc,
 		RenderedHtml:      &html,
-		Access:            access,
 		AuthorID:          pgUUID(authorID),
 		PublishedAt:       pgtype.Timestamptz{Time: time.Now(), Valid: true},
 		AuthorDisplayName: name,
 		Tags:              []string{"guide", "kubernetes"},
+		TagSlugs:          []string{"guide", "kubernetes"},
 	}
 }
 
@@ -38,7 +40,7 @@ func publishedRow(access dbgen.DocumentAccess, authorID uuid.UUID) dbgen.GetPubl
 // metadata (author, published date, tags). The handler passes the slug
 // through unchanged and never exposes source_md or author_id.
 func TestReadDocument_PublicReturnsRenderedHTMLAndMetadata(t *testing.T) {
-	store := &fakeDocStore{getBySlugRow: publishedRow(dbgen.DocumentAccessPublic, uuid.New())}
+	store := &fakeDocStore{getBySlugRow: publishedRow(uuid.New())}
 	s := newDraftServer(t, store)
 
 	resp := doReq(t, s, http.MethodGet, "/api/documents/kubernetes-guide-abcd1234", "")
@@ -59,7 +61,7 @@ func TestReadDocument_PublicReturnsRenderedHTMLAndMetadata(t *testing.T) {
 // The published-safe projection must NOT leak source_md or author_id, even though
 // the underlying query selects author_id for the access check.
 func TestReadDocument_DoesNotLeakSourceOrAuthorID(t *testing.T) {
-	store := &fakeDocStore{getBySlugRow: publishedRow(dbgen.DocumentAccessPublic, uuid.New())}
+	store := &fakeDocStore{getBySlugRow: publishedRow(uuid.New())}
 	s := newDraftServer(t, store)
 
 	resp := doReq(t, s, http.MethodGet, "/api/documents/kubernetes-guide-abcd1234", "")
@@ -78,7 +80,7 @@ func TestReadDocument_DoesNotLeakSourceOrAuthorID(t *testing.T) {
 
 // The author gets the document id so the reader can link to the editor.
 func TestReadDocument_AuthorGetsID(t *testing.T) {
-	row := publishedRow(dbgen.DocumentAccessPublic, callerUUID)
+	row := publishedRow(callerUUID)
 	docID := uuid.New()
 	row.ID = pgUUID(docID)
 	s := newDraftServer(t, &fakeDocStore{getBySlugRow: row})
@@ -102,11 +104,11 @@ func TestReadDocument_UnpublishedSlugIs404(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
-// AC-8.4: a restricted doc requested by a non-author is denied with the SAME 404
-// body as a missing doc — no title/existence leak, no way to distinguish the two.
-func TestReadDocument_RestrictedNonAuthorIs404(t *testing.T) {
-	restricted := &fakeDocStore{getBySlugRow: publishedRow(dbgen.DocumentAccessRestricted, uuid.New())}
-	sr := newDraftServer(t, restricted)
+// AC-8.4 / LOO-33: an entry carrying a protected tag the caller is not granted is
+// denied with the SAME 404 body as a missing doc — no title/existence leak.
+func TestReadDocument_ProtectedTagNotGrantedIs404(t *testing.T) {
+	denied := &fakeDocStore{getBySlugRow: publishedRow(uuid.New()), deniedSlugs: []string{"kubernetes"}}
+	sr := newDraftServer(t, denied)
 	respDenied := doReq(t, sr, http.MethodGet, "/api/documents/kubernetes-guide-abcd1234", "")
 	defer respDenied.Body.Close()
 
@@ -117,6 +119,7 @@ func TestReadDocument_RestrictedNonAuthorIs404(t *testing.T) {
 
 	require.Equal(t, http.StatusNotFound, respDenied.StatusCode)
 	require.Equal(t, http.StatusNotFound, respMissing.StatusCode)
+	require.Equal(t, 1, missing.deniedCalls, "the policy is loaded even for a missing slug (same work)")
 
 	// Bodies must be byte-identical so denied and missing are indistinguishable.
 	var deniedBody, missingBody map[string]any
@@ -125,21 +128,50 @@ func TestReadDocument_RestrictedNonAuthorIs404(t *testing.T) {
 	require.Equal(t, missingBody, deniedBody)
 }
 
-// An author always reads their own doc, even when it is restricted.
-func TestReadDocument_RestrictedAuthorReturns200(t *testing.T) {
-	store := &fakeDocStore{getBySlugRow: publishedRow(dbgen.DocumentAccessRestricted, callerUUID)}
-	s := newDraftServer(t, store)
+// A group member granted the protected tag (it is not in their denied set) reads.
+func TestReadDocument_GrantedMemberReturns200(t *testing.T) {
+	store := &fakeDocStore{getBySlugRow: publishedRow(uuid.New()), deniedSlugs: []string{"hr"}}
+	resp := doReq(t, newDraftServer(t, store), http.MethodGet, "/api/documents/kubernetes-guide-abcd1234", "")
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
 
+// The ALL rule: granted one protected tag but denied another on the same entry → 404.
+func TestReadDocument_AllProtectedTagsRequired(t *testing.T) {
+	row := publishedRow(uuid.New())
+	row.TagSlugs = []string{"hr", "reeflect"}
+	store := &fakeDocStore{getBySlugRow: row, deniedSlugs: []string{"reeflect"}}
+	resp := doReq(t, newDraftServer(t, store), http.MethodGet, "/api/documents/kubernetes-guide-abcd1234", "")
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// An author always reads their own entry, even one carrying a tag they lack.
+func TestReadDocument_AuthorWithDeniedTagReturns200(t *testing.T) {
+	store := &fakeDocStore{getBySlugRow: publishedRow(callerUUID), deniedSlugs: []string{"kubernetes"}}
+	resp := doReq(t, newDraftServer(t, store), http.MethodGet, "/api/documents/kubernetes-guide-abcd1234", "")
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// A super-admin reads every published entry; the policy query is skipped.
+func TestReadDocument_SuperAdminReturns200(t *testing.T) {
+	store := &fakeDocStore{getBySlugRow: publishedRow(uuid.New()), deniedSlugs: []string{"kubernetes"}}
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	s := New(cfg, slogDiscard(), "test",
+		WithAuth(auth.NewMiddleware(testTokens, &fakeDirectory{super: true}, slogDiscard())),
+		WithDocuments(store))
 	resp := doReq(t, s, http.MethodGet, "/api/documents/kubernetes-guide-abcd1234", "")
 	defer resp.Body.Close()
-
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Zero(t, store.deniedCalls)
 }
 
 // A published doc with no cached rendered_html is a data-integrity bug: surface it
 // as a 500, never fabricate a render-on-read fallback.
 func TestReadDocument_MissingRenderedHTMLIs500(t *testing.T) {
-	row := publishedRow(dbgen.DocumentAccessPublic, uuid.New())
+	row := publishedRow(uuid.New())
 	row.RenderedHtml = nil
 	store := &fakeDocStore{getBySlugRow: row}
 	s := newDraftServer(t, store)
@@ -148,28 +180,4 @@ func TestReadDocument_MissingRenderedHTMLIs500(t *testing.T) {
 	defer resp.Body.Close()
 
 	require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
-}
-
-// CanRead is the M1 public-or-author seam M3 extends. Verify each branch directly.
-func TestCanRead(t *testing.T) {
-	author := pgUUID(uuid.New())
-	other := pgUUID(uuid.New())
-
-	tests := []struct {
-		name     string
-		caller   pgtype.UUID
-		access   dbgen.DocumentAccess
-		authorID pgtype.UUID
-		want     bool
-	}{
-		{"public doc, any caller", other, dbgen.DocumentAccessPublic, author, true},
-		{"restricted doc, author caller", author, dbgen.DocumentAccessRestricted, author, true},
-		{"restricted doc, non-author caller", other, dbgen.DocumentAccessRestricted, author, false},
-		{"public doc, author caller", author, dbgen.DocumentAccessPublic, author, true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, CanRead(tc.caller, nil, tc.access, tc.authorID))
-		})
-	}
 }

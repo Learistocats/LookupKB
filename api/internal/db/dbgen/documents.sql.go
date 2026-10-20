@@ -15,7 +15,7 @@ const createDraft = `-- name: CreateDraft :one
 
 INSERT INTO documents (slug, author_id, title, description, source_md)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, search_tsv, deleted_at
+RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, created_at, updated_at, published_at, search_tsv, deleted_at
 `
 
 type CreateDraftParams struct {
@@ -26,8 +26,8 @@ type CreateDraftParams struct {
 	SourceMd    *string     `json:"source_md"`
 }
 
-// Document queries: drafts, publish/unpublish and the read path. ACL and search
-// queries arrive with their own milestones — keep
+// Document queries: drafts, publish/unpublish and the read path. Access-policy
+// queries live in access.sql; keep
 // queries close to the feature that needs them (03-data-model.md, ticket note).
 // Insert a new draft owned by the author. slug is caller-supplied (title + short
 // id, stable across edits); status defaults to 'draft'.
@@ -49,7 +49,6 @@ func (q *Queries) CreateDraft(ctx context.Context, arg CreateDraftParams) (Docum
 		&i.Description,
 		&i.SourceMd,
 		&i.RenderedHtml,
-		&i.Access,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PublishedAt,
@@ -60,7 +59,7 @@ func (q *Queries) CreateDraft(ctx context.Context, arg CreateDraftParams) (Docum
 }
 
 const getDraft = `-- name: GetDraft :one
-SELECT id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, search_tsv, deleted_at
+SELECT id, slug, author_id, status, title, description, source_md, rendered_html, created_at, updated_at, published_at, search_tsv, deleted_at
 FROM documents
 WHERE id = $1
   AND author_id = $2
@@ -86,7 +85,6 @@ func (q *Queries) GetDraft(ctx context.Context, arg GetDraftParams) (Document, e
 		&i.Description,
 		&i.SourceMd,
 		&i.RenderedHtml,
-		&i.Access,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PublishedAt,
@@ -103,14 +101,12 @@ SELECT
     d.title,
     d.description,
     d.rendered_html,
-    d.access,
     d.author_id,
     d.created_at,
     d.published_at,
     -- Display name, else the email's local part: full emails are never indexed.
     COALESCE(u.display_name, split_part(u.email::text, '@', 1))::text AS author,
-    COALESCE(array_remove(array_agg(t.label ORDER BY t.label), NULL), '{}')::text[] AS tags,
-    COALESCE((SELECT array_agg(a.group_id) FROM document_acl a WHERE a.document_id = d.id), '{}')::uuid[] AS acl_group_ids
+    COALESCE(array_remove(array_agg(t.label ORDER BY t.label), NULL), '{}')::text[] AS tags
 FROM documents d
 JOIN users u ON u.id = d.author_id
 LEFT JOIN document_tags dt ON dt.document_id = d.id
@@ -127,17 +123,17 @@ type GetIndexProjectionRow struct {
 	Title        *string            `json:"title"`
 	Description  *string            `json:"description"`
 	RenderedHtml *string            `json:"rendered_html"`
-	Access       DocumentAccess     `json:"access"`
 	AuthorID     pgtype.UUID        `json:"author_id"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	PublishedAt  pgtype.Timestamptz `json:"published_at"`
 	Author       string             `json:"author"`
 	Tags         []string           `json:"tags"`
-	AclGroupIds  []pgtype.UUID      `json:"acl_group_ids"`
 }
 
 // Everything the search index stores for one PUBLISHED document. Built from the
-// published columns (rendered_html, not the working-copy source_md).
+// published columns (rendered_html, not the working-copy source_md). No access
+// attributes: read access is derived from `tags` + the group tag policy at query
+// time (LOO-33), so a policy change never needs a reindex.
 func (q *Queries) GetIndexProjection(ctx context.Context, id pgtype.UUID) (GetIndexProjectionRow, error) {
 	row := q.db.QueryRow(ctx, getIndexProjection, id)
 	var i GetIndexProjectionRow
@@ -147,19 +143,17 @@ func (q *Queries) GetIndexProjection(ctx context.Context, id pgtype.UUID) (GetIn
 		&i.Title,
 		&i.Description,
 		&i.RenderedHtml,
-		&i.Access,
 		&i.AuthorID,
 		&i.CreatedAt,
 		&i.PublishedAt,
 		&i.Author,
 		&i.Tags,
-		&i.AclGroupIds,
 	)
 	return i, err
 }
 
 const getOwnedDocument = `-- name: GetOwnedDocument :one
-SELECT id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, search_tsv, deleted_at
+SELECT id, slug, author_id, status, title, description, source_md, rendered_html, created_at, updated_at, published_at, search_tsv, deleted_at
 FROM documents
 WHERE id = $1
   AND author_id = $2
@@ -188,7 +182,6 @@ func (q *Queries) GetOwnedDocument(ctx context.Context, arg GetOwnedDocumentPara
 		&i.Description,
 		&i.SourceMd,
 		&i.RenderedHtml,
-		&i.Access,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PublishedAt,
@@ -205,11 +198,11 @@ SELECT
     d.title,
     d.description,
     d.rendered_html,
-    d.access,
     d.author_id,
     d.published_at,
     COALESCE(u.display_name, split_part(u.email::text, '@', 1))::text AS author_display_name,
-    COALESCE(array_remove(array_agg(t.label ORDER BY t.label), NULL), '{}')::text[] AS tags
+    COALESCE(array_remove(array_agg(t.label ORDER BY t.label), NULL), '{}')::text[] AS tags,
+    COALESCE(array_remove(array_agg(t.slug ORDER BY t.slug), NULL), '{}')::text[] AS tag_slugs
 FROM documents d
 JOIN users u ON u.id = d.author_id
 LEFT JOIN document_tags dt ON dt.document_id = d.id
@@ -226,11 +219,11 @@ type GetPublishedBySlugRow struct {
 	Title             *string            `json:"title"`
 	Description       *string            `json:"description"`
 	RenderedHtml      *string            `json:"rendered_html"`
-	Access            DocumentAccess     `json:"access"`
 	AuthorID          pgtype.UUID        `json:"author_id"`
 	PublishedAt       pgtype.Timestamptz `json:"published_at"`
 	AuthorDisplayName string             `json:"author_display_name"`
 	Tags              []string           `json:"tags"`
+	TagSlugs          []string           `json:"tag_slugs"`
 }
 
 // The hot read path (F8, 01-architecture.md §3.2): fetch a PUBLISHED document by
@@ -240,8 +233,9 @@ type GetPublishedBySlugRow struct {
 //   - JOIN users → author display name for the byline.
 //   - tags aggregated as labels for the metadata display.
 //
-// author_id/access are selected only to feed the server-side access check (CanRead);
-// they are NOT projected to the client. One round trip keeps the path fast.
+// author_id and tag_slugs are selected only to feed the server-side access check
+// (access.Policy.CanRead: protected tags, LOO-33); they are NOT projected to the
+// client. One round trip keeps the path fast.
 func (q *Queries) GetPublishedBySlug(ctx context.Context, slug string) (GetPublishedBySlugRow, error) {
 	row := q.db.QueryRow(ctx, getPublishedBySlug, slug)
 	var i GetPublishedBySlugRow
@@ -251,11 +245,11 @@ func (q *Queries) GetPublishedBySlug(ctx context.Context, slug string) (GetPubli
 		&i.Title,
 		&i.Description,
 		&i.RenderedHtml,
-		&i.Access,
 		&i.AuthorID,
 		&i.PublishedAt,
 		&i.AuthorDisplayName,
 		&i.Tags,
+		&i.TagSlugs,
 	)
 	return i, err
 }
@@ -422,7 +416,7 @@ SET status        = 'published',
 WHERE id = $5
   AND author_id = $6
   AND deleted_at IS NULL
-RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, search_tsv, deleted_at
+RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, created_at, updated_at, published_at, search_tsv, deleted_at
 `
 
 type PublishDocumentParams struct {
@@ -463,7 +457,6 @@ func (q *Queries) PublishDocument(ctx context.Context, arg PublishDocumentParams
 		&i.Description,
 		&i.SourceMd,
 		&i.RenderedHtml,
-		&i.Access,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PublishedAt,
@@ -482,7 +475,7 @@ SET title       = $3,
 WHERE id = $1
   AND author_id = $2
   AND deleted_at IS NULL
-RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, search_tsv, deleted_at
+RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, created_at, updated_at, published_at, search_tsv, deleted_at
 `
 
 type SaveDraftParams struct {
@@ -515,7 +508,6 @@ func (q *Queries) SaveDraft(ctx context.Context, arg SaveDraftParams) (Document,
 		&i.Description,
 		&i.SourceMd,
 		&i.RenderedHtml,
-		&i.Access,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PublishedAt,
@@ -555,7 +547,7 @@ WHERE id = $1
   AND author_id = $2
   AND status = 'published'
   AND deleted_at IS NULL
-RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, search_tsv, deleted_at
+RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, created_at, updated_at, published_at, search_tsv, deleted_at
 `
 
 type UnpublishDocumentParams struct {
@@ -580,7 +572,6 @@ func (q *Queries) UnpublishDocument(ctx context.Context, arg UnpublishDocumentPa
 		&i.Description,
 		&i.SourceMd,
 		&i.RenderedHtml,
-		&i.Access,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PublishedAt,

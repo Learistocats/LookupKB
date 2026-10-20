@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/Learistocats/LookupKB/api/internal/access"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/Learistocats/LookupKB/api/internal/render"
 	"github.com/Learistocats/LookupKB/api/internal/tags"
@@ -45,11 +46,14 @@ func NewService(pool *pgxpool.Pool, renderer *render.Renderer, log *slog.Logger)
 // the metadata entered in the confirm flow. source_md is not here — it is the
 // server-held working copy read from the document row, never trusted from the client.
 type Input struct {
-	DocID       pgtype.UUID
-	AuthorID    pgtype.UUID
-	Title       string
-	Description string
-	Tags        []string
+	DocID    pgtype.UUID
+	AuthorID pgtype.UUID
+	// IsSuperAdmin is the caller's per-request users.is_super_admin. A super-admin
+	// may tag an entry with any protected tag (LOO-33).
+	IsSuperAdmin bool
+	Title        string
+	Description  string
+	Tags         []string
 }
 
 // Result is the outcome of a successful publish/unpublish: the updated document row.
@@ -93,6 +97,15 @@ func (s *Service) Publish(ctx context.Context, in Input) (*Result, []FieldError,
 		Description: in.Description,
 		Tags:        in.Tags,
 	})
+
+	// Protected tags (LOO-33): the author must be granted every protected tag they
+	// put on the entry. Checked on the normalized set, before the render.
+	caller := access.Caller{UserID: in.AuthorID, IsSuperAdmin: in.IsSuperAdmin}
+	protErrs, err := ProtectedTagErrors(ctx, s.q, caller, normalizedSet(in.Tags))
+	if err != nil {
+		return nil, nil, fmt.Errorf("check protected tags: %w", err)
+	}
+	fieldErrs = append(fieldErrs, protErrs...)
 
 	// Render before the transaction: goldmark+bluemonday now, Kroki later (M4). A
 	// too-large source is a per-field error; any other render error is a real fault.
@@ -143,6 +156,17 @@ func (s *Service) Publish(ctx context.Context, in Input) (*Result, []FieldError,
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("publish document: %w", err)
+	}
+
+	// Re-check the tag policy inside the transaction, right before the apply: an
+	// admin may have protected one of these tags since the pre-render check. A
+	// refusal here rolls the whole publish back (deferred Rollback).
+	protErrs, err = ProtectedTagErrors(ctx, qtx, caller, normTags)
+	if err != nil {
+		return nil, nil, fmt.Errorf("re-check protected tags: %w", err)
+	}
+	if len(protErrs) > 0 {
+		return nil, protErrs, nil
 	}
 
 	// Live tag membership + usage_count, composed into this same transaction so a
@@ -260,6 +284,18 @@ func truncateRunes(s string, max int) string {
 		return s
 	}
 	return string(r[:max])
+}
+
+// normalizedSet normalizes raw tags (dropping empties) for the protected-tag
+// check, independent of whether the tag-limit validation passed.
+func normalizedSet(raw []string) []string {
+	out := make([]string, 0, len(raw))
+	for _, r := range raw {
+		if slug := tags.Normalize(r); slug != "" {
+			out = append(out, slug)
+		}
+	}
+	return out
 }
 
 func deref(s *string) string {
