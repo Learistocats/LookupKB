@@ -30,13 +30,18 @@ type Result struct {
 	Hits   []Hit                       `json:"hits"`
 	TookMs int64                       `json:"took_ms"`
 	Facets map[string]map[string]int64 `json:"facets,omitempty"`
+	// NextOffset is the offset of the next page, present only when there is one
+	// (LOO-38 pagination).
+	NextOffset *int `json:"next_offset,omitempty"`
 }
 
 // Query is one search request: free text, page size, client filters and the
 // facets to compute.
 type Query struct {
-	Q       string
-	Limit   int
+	Q     string
+	Limit int
+	// Offset skips that many hits (pagination); 0..MaxOffset.
+	Offset  int
 	Filters Filters
 	// Facets to compute; only FacetTags is allowed.
 	Facets []string
@@ -58,6 +63,10 @@ func NewService(c *Client, policy access.Querier) *Service {
 // MaxLimit caps how many hits one query may return.
 const MaxLimit = 50
 
+// MaxOffset caps pagination depth. Meilisearch's default maxTotalHits is 1000,
+// so hits past it are unreachable anyway; a deeper offset is refused.
+const MaxOffset = 1000
+
 // Search returns hits the caller may open. An empty query lists the most
 // recently published documents. A refused filter/facet wraps ErrInvalidFilter.
 func (s *Service) Search(ctx context.Context, query Query, caller access.Caller) (Result, error) {
@@ -77,11 +86,16 @@ func (s *Service) Search(ctx context.Context, query Query, caller access.Caller)
 	if limit <= 0 || limit > MaxLimit {
 		limit = 20
 	}
+	if query.Offset < 0 || query.Offset > MaxOffset {
+		return Result{}, fmt.Errorf("%w: offset out of range", ErrInvalidFilter)
+	}
 	req := searchRequest{
-		Q:                     strings.TrimSpace(query.Q),
-		Filter:                filter,
-		Facets:                facets,
-		Limit:                 limit,
+		Q:      strings.TrimSpace(query.Q),
+		Filter: filter,
+		Facets: facets,
+		// One extra hit tells whether a next page exists; it is never returned.
+		Limit:                 limit + 1,
+		Offset:                query.Offset,
 		AttributesToRetrieve:  []string{"slug", "title", "description", "tags", "author", "published_at"},
 		AttributesToHighlight: []string{"title", "description", "body_text"},
 		AttributesToCrop:      []string{"body_text", "description"},
@@ -97,6 +111,12 @@ func (s *Service) Search(ctx context.Context, query Query, caller access.Caller)
 		return Result{}, err
 	}
 	out := Result{Hits: make([]Hit, 0, len(resp.Hits)), TookMs: resp.ProcessingTimeMs}
+	if len(resp.Hits) > limit {
+		resp.Hits = resp.Hits[:limit]
+		if next := query.Offset + limit; next <= MaxOffset {
+			out.NextOffset = &next
+		}
+	}
 	if len(facets) > 0 {
 		out.Facets = make(map[string]map[string]int64, len(facets))
 		for _, f := range facets {

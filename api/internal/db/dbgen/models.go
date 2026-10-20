@@ -102,6 +102,7 @@ type Document struct {
 	PublishedAt  pgtype.Timestamptz `json:"published_at"`
 	SearchTsv    interface{}        `json:"search_tsv"`
 	DeletedAt    pgtype.Timestamptz `json:"deleted_at"`
+	PublishedMd  *string            `json:"published_md"`
 }
 
 type DocumentTag struct {

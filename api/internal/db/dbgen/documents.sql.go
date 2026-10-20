@@ -15,7 +15,7 @@ const createDraft = `-- name: CreateDraft :one
 
 INSERT INTO documents (slug, author_id, title, description, source_md)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, created_at, updated_at, published_at, search_tsv, deleted_at
+RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, created_at, updated_at, published_at, search_tsv, deleted_at, published_md
 `
 
 type CreateDraftParams struct {
@@ -54,6 +54,7 @@ func (q *Queries) CreateDraft(ctx context.Context, arg CreateDraftParams) (Docum
 		&i.PublishedAt,
 		&i.SearchTsv,
 		&i.DeletedAt,
+		&i.PublishedMd,
 	)
 	return i, err
 }
@@ -91,7 +92,7 @@ func (q *Queries) DeleteDraft(ctx context.Context, arg DeleteDraftParams) (Delet
 }
 
 const getDraft = `-- name: GetDraft :one
-SELECT id, slug, author_id, status, title, description, source_md, rendered_html, created_at, updated_at, published_at, search_tsv, deleted_at
+SELECT id, slug, author_id, status, title, description, source_md, rendered_html, created_at, updated_at, published_at, search_tsv, deleted_at, published_md
 FROM documents
 WHERE id = $1
   AND author_id = $2
@@ -125,6 +126,7 @@ func (q *Queries) GetDraft(ctx context.Context, arg GetDraftParams) (Document, e
 		&i.PublishedAt,
 		&i.SearchTsv,
 		&i.DeletedAt,
+		&i.PublishedMd,
 	)
 	return i, err
 }
@@ -188,7 +190,7 @@ func (q *Queries) GetIndexProjection(ctx context.Context, id pgtype.UUID) (GetIn
 }
 
 const getOwnedDocument = `-- name: GetOwnedDocument :one
-SELECT id, slug, author_id, status, title, description, source_md, rendered_html, created_at, updated_at, published_at, search_tsv, deleted_at
+SELECT id, slug, author_id, status, title, description, source_md, rendered_html, created_at, updated_at, published_at, search_tsv, deleted_at, published_md
 FROM documents
 WHERE id = $1
   AND author_id = $2
@@ -222,6 +224,7 @@ func (q *Queries) GetOwnedDocument(ctx context.Context, arg GetOwnedDocumentPara
 		&i.PublishedAt,
 		&i.SearchTsv,
 		&i.DeletedAt,
+		&i.PublishedMd,
 	)
 	return i, err
 }
@@ -233,8 +236,10 @@ SELECT
     d.title,
     d.description,
     d.rendered_html,
+    d.published_md,
     d.author_id,
     d.published_at,
+    d.updated_at,
     COALESCE(u.display_name, split_part(u.email::text, '@', 1))::text AS author_display_name,
     COALESCE(array_remove(array_agg(t.label ORDER BY t.label), NULL), '{}')::text[] AS tags,
     COALESCE(array_remove(array_agg(t.slug ORDER BY t.slug), NULL), '{}')::text[] AS tag_slugs
@@ -254,8 +259,10 @@ type GetPublishedBySlugRow struct {
 	Title             *string            `json:"title"`
 	Description       *string            `json:"description"`
 	RenderedHtml      *string            `json:"rendered_html"`
+	PublishedMd       *string            `json:"published_md"`
 	AuthorID          pgtype.UUID        `json:"author_id"`
 	PublishedAt       pgtype.Timestamptz `json:"published_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 	AuthorDisplayName string             `json:"author_display_name"`
 	Tags              []string           `json:"tags"`
 	TagSlugs          []string           `json:"tag_slugs"`
@@ -270,7 +277,9 @@ type GetPublishedBySlugRow struct {
 //
 // author_id and tag_slugs are selected only to feed the server-side access check
 // (access.Policy.CanRead: protected tags, LOO-33); they are NOT projected to the
-// client. One round trip keeps the path fast.
+// client. published_md (the Markdown that produced rendered_html, LOO-38) feeds
+// the public API's ?format=markdown — never source_md, the working copy. One round
+// trip keeps the path fast.
 func (q *Queries) GetPublishedBySlug(ctx context.Context, slug string) (GetPublishedBySlugRow, error) {
 	row := q.db.QueryRow(ctx, getPublishedBySlug, slug)
 	var i GetPublishedBySlugRow
@@ -280,8 +289,10 @@ func (q *Queries) GetPublishedBySlug(ctx context.Context, slug string) (GetPubli
 		&i.Title,
 		&i.Description,
 		&i.RenderedHtml,
+		&i.PublishedMd,
 		&i.AuthorID,
 		&i.PublishedAt,
+		&i.UpdatedAt,
 		&i.AuthorDisplayName,
 		&i.Tags,
 		&i.TagSlugs,
@@ -439,25 +450,129 @@ func (q *Queries) ListPublishedDocumentIDs(ctx context.Context) ([]pgtype.UUID, 
 	return items, nil
 }
 
+const listPublishedDocuments = `-- name: ListPublishedDocuments :many
+SELECT
+    d.id,
+    d.slug,
+    d.title,
+    d.description,
+    d.published_at,
+    d.updated_at,
+    COALESCE(u.display_name, split_part(u.email::text, '@', 1))::text AS author_display_name,
+    COALESCE(
+        (SELECT array_agg(t.label ORDER BY t.label)
+         FROM document_tags dt
+         JOIN tags t ON t.id = dt.tag_id
+         WHERE dt.document_id = d.id),
+        '{}')::text[] AS tags
+FROM documents d
+JOIN users u ON u.id = d.author_id
+WHERE d.status = 'published'
+  AND d.deleted_at IS NULL
+  AND (
+      d.author_id = $1
+      OR NOT EXISTS (
+          SELECT 1
+          FROM document_tags dt
+          WHERE dt.document_id = d.id
+            AND dt.tag_id = ANY ($2::uuid[])
+      )
+  )
+  AND (
+      $3::timestamptz IS NULL
+      OR (d.published_at, d.id) < ($3::timestamptz, $4::uuid)
+  )
+ORDER BY d.published_at DESC, d.id DESC
+LIMIT $5
+`
+
+type ListPublishedDocumentsParams struct {
+	CallerID          pgtype.UUID        `json:"caller_id"`
+	DeniedIds         []pgtype.UUID      `json:"denied_ids"`
+	CursorPublishedAt pgtype.Timestamptz `json:"cursor_published_at"`
+	CursorID          pgtype.UUID        `json:"cursor_id"`
+	MaxRows           int32              `json:"max_rows"`
+}
+
+type ListPublishedDocumentsRow struct {
+	ID                pgtype.UUID        `json:"id"`
+	Slug              string             `json:"slug"`
+	Title             *string            `json:"title"`
+	Description       *string            `json:"description"`
+	PublishedAt       pgtype.Timestamptz `json:"published_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	AuthorDisplayName string             `json:"author_display_name"`
+	Tags              []string           `json:"tags"`
+}
+
+// One page of the public catalogue (GET /api/v1/documents, MCP list_documents;
+// LOO-38): PUBLISHED documents the caller may read, newest first, metadata only
+// (never source_md / published_md / rendered_html).
+//
+// The protected-tag rule (access.Policy, LOO-33) is applied HERE, before the
+// LIMIT, so a page is never short and never reveals a hidden entry: a row is kept
+// when the caller authored it or it carries none of the caller's denied tags
+// (denied_ids = access.Policy.DeniedIDs(); empty for an unrestricted caller).
+//
+// Keyset pagination on (published_at, id) DESC: the cursor is the last row of the
+// previous page; both NULL on the first page. published_at is set once at first
+// publish and never moves, so the order is stable across re-publishes.
+func (q *Queries) ListPublishedDocuments(ctx context.Context, arg ListPublishedDocumentsParams) ([]ListPublishedDocumentsRow, error) {
+	rows, err := q.db.Query(ctx, listPublishedDocuments,
+		arg.CallerID,
+		arg.DeniedIds,
+		arg.CursorPublishedAt,
+		arg.CursorID,
+		arg.MaxRows,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPublishedDocumentsRow
+	for rows.Next() {
+		var i ListPublishedDocumentsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Slug,
+			&i.Title,
+			&i.Description,
+			&i.PublishedAt,
+			&i.UpdatedAt,
+			&i.AuthorDisplayName,
+			&i.Tags,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const publishDocument = `-- name: PublishDocument :one
 UPDATE documents
 SET status        = 'published',
     title         = $1,
     description   = $2,
     rendered_html = $3,
-    slug          = CASE WHEN published_at IS NULL THEN $4 ELSE slug END,
+    published_md  = $4,
+    slug          = CASE WHEN published_at IS NULL THEN $5 ELSE slug END,
     published_at  = COALESCE(published_at, now()),
     updated_at    = now()
-WHERE id = $5
-  AND author_id = $6
+WHERE id = $6
+  AND author_id = $7
   AND deleted_at IS NULL
-RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, created_at, updated_at, published_at, search_tsv, deleted_at
+RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, created_at, updated_at, published_at, search_tsv, deleted_at, published_md
 `
 
 type PublishDocumentParams struct {
 	Title        *string     `json:"title"`
 	Description  *string     `json:"description"`
 	RenderedHtml *string     `json:"rendered_html"`
+	PublishedMd  *string     `json:"published_md"`
 	Slug         string      `json:"slug"`
 	ID           pgtype.UUID `json:"id"`
 	AuthorID     pgtype.UUID `json:"author_id"`
@@ -471,6 +586,8 @@ type PublishDocumentParams struct {
 //   - slug = CASE WHEN published_at IS NULL THEN @slug ELSE slug END — the ugly
 //     draft-<hex> placeholder is replaced with the title-derived slug on the FIRST
 //     publish only, then stays stable across edits (03-data-model.md §1 `slug`).
+//   - published_md is the exact source rendered_html was rendered from (LOO-38),
+//     so the published Markdown never drifts with later working-copy saves.
 //
 // Owner-scoped (author_id) so it can never publish another author's document.
 func (q *Queries) PublishDocument(ctx context.Context, arg PublishDocumentParams) (Document, error) {
@@ -478,6 +595,7 @@ func (q *Queries) PublishDocument(ctx context.Context, arg PublishDocumentParams
 		arg.Title,
 		arg.Description,
 		arg.RenderedHtml,
+		arg.PublishedMd,
 		arg.Slug,
 		arg.ID,
 		arg.AuthorID,
@@ -497,6 +615,7 @@ func (q *Queries) PublishDocument(ctx context.Context, arg PublishDocumentParams
 		&i.PublishedAt,
 		&i.SearchTsv,
 		&i.DeletedAt,
+		&i.PublishedMd,
 	)
 	return i, err
 }
@@ -510,7 +629,7 @@ SET title       = $3,
 WHERE id = $1
   AND author_id = $2
   AND deleted_at IS NULL
-RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, created_at, updated_at, published_at, search_tsv, deleted_at
+RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, created_at, updated_at, published_at, search_tsv, deleted_at, published_md
 `
 
 type SaveDraftParams struct {
@@ -548,6 +667,7 @@ func (q *Queries) SaveDraft(ctx context.Context, arg SaveDraftParams) (Document,
 		&i.PublishedAt,
 		&i.SearchTsv,
 		&i.DeletedAt,
+		&i.PublishedMd,
 	)
 	return i, err
 }
@@ -576,13 +696,14 @@ func (q *Queries) SetRenderedHTML(ctx context.Context, arg SetRenderedHTMLParams
 
 const unpublishDocument = `-- name: UnpublishDocument :one
 UPDATE documents
-SET status     = 'unpublished',
-    updated_at = now()
+SET status       = 'unpublished',
+    published_md = NULL,
+    updated_at   = now()
 WHERE id = $1
   AND author_id = $2
   AND status = 'published'
   AND deleted_at IS NULL
-RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, created_at, updated_at, published_at, search_tsv, deleted_at
+RETURNING id, slug, author_id, status, title, description, source_md, rendered_html, created_at, updated_at, published_at, search_tsv, deleted_at, published_md
 `
 
 type UnpublishDocumentParams struct {
@@ -594,7 +715,9 @@ type UnpublishDocumentParams struct {
 // Only a currently-published doc can be unpublished (status='published' guard), so
 // a draft/already-unpublished/other-author id yields pgx.ErrNoRows → 404.
 // published_at and rendered_html are left intact — unpublish removes the doc from
-// the index-eligible state, it does not erase its content.
+// the index-eligible state, it does not erase its content. published_md is cleared
+// (LOO-38): only a published entry has a published source; the next publish
+// writes it afresh.
 func (q *Queries) UnpublishDocument(ctx context.Context, arg UnpublishDocumentParams) (Document, error) {
 	row := q.db.QueryRow(ctx, unpublishDocument, arg.ID, arg.AuthorID)
 	var i Document
@@ -612,6 +735,7 @@ func (q *Queries) UnpublishDocument(ctx context.Context, arg UnpublishDocumentPa
 		&i.PublishedAt,
 		&i.SearchTsv,
 		&i.DeletedAt,
+		&i.PublishedMd,
 	)
 	return i, err
 }

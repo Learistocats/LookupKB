@@ -12,6 +12,17 @@ func TestTextFromHTML(t *testing.T) {
 	require.Equal(t, "Deploy Run make up & wait. one two end", TextFromHTML(src))
 }
 
+func TestReadableTextFromHTML(t *testing.T) {
+	src := `<h1>Deploy</h1><p>Run <code>make&nbsp;up</code> &amp; wait.</p><ul><li>one</li><li>two <em>three</em></li></ul>` +
+		"<pre><code>line 1\n  indented\n</code></pre>" +
+		`<script>alert(1)</script><svg><text>diagram</text></svg><table><tr><td>a</td><td>b</td></tr></table><p>end<br>next</p>`
+	want := "Deploy\n\nRun make up & wait.\n\n- one\n- two three\n\nline 1\n  indented\n\na b\n\nend\nnext"
+	require.Equal(t, want, ReadableTextFromHTML(src))
+	require.Equal(t, "", ReadableTextFromHTML(""))
+	require.Equal(t, "&lt;b&gt; is text", ReadableTextFromHTML(`<p>&amp;lt;b&amp;gt; is text</p>`),
+		"entities decode once: the output is plain text, not HTML")
+}
+
 func TestMarkHTML_EscapesEverythingButMarks(t *testing.T) {
 	in := `<img src=x onerror=alert(1)> found ` + markPre + `kube` + markPost + `rnetes <mark>`
 	out := markHTML(in)

@@ -37,6 +37,9 @@ type DocumentStore interface {
 	// owner-scoped (public reads), with author/version/tags joined. status guard
 	// makes a draft/unpublished slug indistinguishable from a missing one (404).
 	GetPublishedBySlug(ctx context.Context, slug string) (dbgen.GetPublishedBySlugRow, error)
+	// ListPublishedDocuments is the public catalogue page (LOO-38): published
+	// entries the caller may read, access-filtered in SQL before the LIMIT.
+	ListPublishedDocuments(ctx context.Context, arg dbgen.ListPublishedDocumentsParams) ([]dbgen.ListPublishedDocumentsRow, error)
 	// The protected-tag policy source for the read check (LOO-33).
 	access.Querier
 }

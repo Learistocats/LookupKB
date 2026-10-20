@@ -75,4 +75,18 @@ describe('downstreamHeaders', () => {
 		expect(h.get('set-cookie')).toBeNull();
 		expect(h.get('server')).toBeNull();
 	});
+
+	it('relays the public API negotiation and HTML boxing headers (LOO-38)', () => {
+		const h = downstreamHeaders(
+			new Headers({
+				'content-type': 'text/html; charset=utf-8',
+				vary: 'Accept',
+				'content-security-policy': "default-src 'none'; sandbox",
+				'x-content-type-options': 'nosniff'
+			})
+		);
+		expect(h.get('vary')).toBe('Accept');
+		expect(h.get('content-security-policy')).toContain('sandbox');
+		expect(h.get('x-content-type-options')).toBe('nosniff');
+	});
 });
