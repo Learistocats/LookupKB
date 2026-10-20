@@ -1,10 +1,10 @@
 import { sveltekit } from '@sveltejs/kit/vite';
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 
-// API target for the dev server proxy. In `docker compose` the browser reaches
-// the API through Caddy at /api and /healthz; during local `pnpm dev` we proxy
-// those same paths to the Go API so the placeholder page can call /healthz
-// same-origin (no CORS).
+// API target for the dev server proxy. During local `pnpm dev` we proxy /api,
+// /healthz and /readyz to the Go API so they stay same-origin (no CORS). In the
+// compose stack the browser only talks to the SvelteKit server (the BFF), which
+// calls the API server-side.
 const apiTarget = process.env.VITE_API_PROXY_TARGET ?? 'http://localhost:8080';
 
 export default defineConfig({

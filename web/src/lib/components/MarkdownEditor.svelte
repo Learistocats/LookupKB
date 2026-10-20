@@ -62,8 +62,7 @@
 		bind:value
 		{placeholder}
 		rows="16"
-		spellcheck="false"
-	></textarea>
+		spellcheck="false"></textarea>
 </div>
 
 <style>

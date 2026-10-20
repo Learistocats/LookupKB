@@ -90,8 +90,7 @@
 			class="input"
 			bind:value={description}
 			rows="3"
-			placeholder="One or two sentences on what this entry covers"
-		></textarea>
+			placeholder="One or two sentences on what this entry covers"></textarea>
 		{#each errorsFor('description') as err (err)}
 			<p class="error-text">{err}</p>
 		{/each}
