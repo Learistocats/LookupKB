@@ -7,8 +7,7 @@ const config = {
 	kit: {
 		// LookupKB web runs as a small Node server (the BFF): it signs users in
 		// against the Go API and holds the API token in an encrypted HttpOnly
-		// cookie, so tokens never reach client-side JS
-		// (docs/planning/01-architecture.md §3.1, 06-security.md §5).
+		// cookie, so tokens never reach client-side JS.
 		adapter: adapter()
 	}
 };

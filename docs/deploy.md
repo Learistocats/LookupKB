@@ -1,7 +1,6 @@
 # Deploying LookupKB
 
-Single-host **Docker Compose** deployment (see
-[`planning/01-architecture.md`](planning/01-architecture.md) §5): one compose file, no
+Single-host **Docker Compose** deployment: one compose file, no
 profiles or overlays.
 
 | Service | Role |
@@ -64,8 +63,7 @@ waits for a healthy `api`. `/readyz` gates on Postgres/Valkey/Meilisearch/Kroki/
 ## Network boundary
 
 Two bridge networks: `edge` (web ↔ api) and `data` (`internal: true`; datastores only).
-**Postgres, Valkey, Meilisearch, Kroki and Garage never publish a host port**
-([`planning/06-security.md`](planning/06-security.md) §1).
+**Postgres, Valkey, Meilisearch, Kroki and Garage never publish a host port**.
 
 ## Logs
 

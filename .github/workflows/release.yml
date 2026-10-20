@@ -1,0 +1,174 @@
+name: Release
+
+# release-please keeps a "chore(main): release X.Y.Z" PR up to date from the
+# Conventional Commits landing on main. Merging that PR tags vX.Y.Z and creates
+# the GitHub Release; the jobs below then publish signed multi-arch images to
+# GHCR, attach a deploy bundle, and open the main → develop back-merge PR.
+#
+# PRs/tags created with the default GITHUB_TOKEN do not trigger other workflows
+# (so CI won't run on the release PR). Set a RELEASE_PLEASE_TOKEN secret (a
+# fine-grained PAT: contents + pull requests read/write on this repo) to fix that.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: release-please
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      created: ${{ steps.rp.outputs.release_created }}
+      tag: ${{ steps.rp.outputs.tag_name }}
+      version: ${{ steps.rp.outputs.version }}
+    steps:
+      - id: rp
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          target-branch: main
+
+  images:
+    name: Publish image (${{ matrix.component }})
+    needs: release-please
+    if: needs.release-please.outputs.created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # cosign keyless signing
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [api, web]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag }}
+
+      - name: Image name
+        id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/lookupkb-${{ matrix.component }}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.name.outputs.image }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.release-please.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.release-please.outputs.tag }}
+          flavor: latest=true
+          labels: |
+            org.opencontainers.image.title=lookupkb-${{ matrix.component }}
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.component }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ needs.release-please.outputs.version }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (keyless)
+        env:
+          IMAGE: ${{ steps.name.outputs.image }}@${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "$IMAGE"
+
+      - name: Trivy scan published image
+        uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          image-ref: ${{ steps.name.outputs.image }}@${{ steps.build.outputs.digest }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+          trivyignores: .trivyignore
+
+  bundle:
+    name: Deploy bundle
+    needs: [release-please, images]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.release-please.outputs.tag }}
+      VERSION: ${{ needs.release-please.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag }}
+
+      # The bundle runs the published GHCR images: build contexts are dropped and
+      # the image prefix/version are preset in .env.example.
+      - name: Assemble bundle
+        run: |
+          set -euo pipefail
+          out="lookupkb-${TAG}"
+          mkdir -p "$out"
+          cp -r deploy/garage deploy/postgres "$out/"
+          yq 'del(.services[].build)' deploy/docker-compose.yml > "$out/docker-compose.yml"
+          prefix="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/"
+          sed -e "s|^LOOKUPKB_VERSION=.*|LOOKUPKB_VERSION=${VERSION}|" \
+              -e "s|^LOOKUPKB_IMAGE_PREFIX=.*|LOOKUPKB_IMAGE_PREFIX=${prefix}|" \
+              .env.example > "$out/.env.example"
+          cp LICENSE docs/deploy.md "$out/"
+          cp "$out/.env.example" "$out/.env"
+          docker compose -f "$out/docker-compose.yml" config -q
+          rm "$out/.env"
+          tar -czf "${out}-deploy.tar.gz" "$out"
+          sha256sum "${out}-deploy.tar.gz" > "${out}-deploy.tar.gz.sha256"
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$TAG" "lookupkb-${TAG}-deploy.tar.gz" "lookupkb-${TAG}-deploy.tar.gz.sha256" --clobber
+
+  back-merge:
+    name: Back-merge main → develop
+    needs: [release-please, bundle]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Open back-merge PR
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-please.outputs.tag }}
+        run: |
+          gh pr create --repo "$GITHUB_REPOSITORY" --base develop --head main \
+            --title "chore: back-merge ${TAG} into develop" \
+            --body "Brings the release commit (CHANGELOG, version bump) for ${TAG} back into develop. Merge with a **merge commit**." \
+            || echo "back-merge PR already open or nothing to merge"

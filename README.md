@@ -10,8 +10,8 @@ organization is emergent, via metadata (tags) and search.
 > Product bet: *organization by search + metadata beats organization by hierarchy*
 > at scale, and **UX speed is the feature**.
 
-See [`docs/planning/`](docs/planning/) for the full specs (overview, architecture,
-tech stack, data model, security, roadmap).
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Security issues:
+see [SECURITY.md](SECURITY.md).
 
 ## Stack
 
@@ -28,7 +28,7 @@ tech stack, data model, security, roadmap).
 api/     Go + Fiber backend (cmd/api, internal/*)
 web/     SvelteKit frontend
 deploy/  docker-compose stack, service configs
-docs/    planning & specifications
+docs/    deployment & auth guides
 ```
 
 ## Quickstart
@@ -85,29 +85,35 @@ make fmt      # format Go + web sources
 make config   # validate the compose file
 ```
 
-## Continuous integration
+## Continuous integration & releases
 
-Every push to `main` and every pull request runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
-as parallel jobs:
+Every pull request and every push to `develop`/`main` runs
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) as parallel jobs:
 
 | Job | What it checks |
 |---|---|
-| `api` | `go vet`, `golangci-lint` (govet/staticcheck/**gosec**), sqlc freshness, `go test -race`, testcontainers integration tests, build |
-| `vuln` | `govulncheck` — Go dependency/stdlib vulnerabilities |
-| `web` | Prettier, ESLint, `svelte-check`, Vitest, build |
-| `compose` | `docker compose config` validation |
-| `trivy-config` | Trivy IaC/misconfiguration scan of Dockerfiles + compose |
-| `images` | Build the API & web images, then Trivy image scans |
+| `PR title` | Conventional Commits PR title (PRs are squash-merged; the title feeds the changelog) |
+| `API (Go)` | `go mod tidy`, `go vet`, `golangci-lint` (govet/staticcheck/**gosec**), sqlc freshness, `go test -race`, testcontainers integration tests, build |
+| `Govulncheck (Go)` | Go dependency/stdlib vulnerabilities |
+| `Web (SvelteKit)` | `pnpm audit`, Prettier, ESLint, `svelte-check`, Vitest, build |
+| `Compose config` | `docker compose config` validation |
+| `Trivy (IaC/config)` | Trivy misconfiguration scan of Dockerfiles + compose |
+| `Build images` | Build the API & web images, then Trivy image scans |
 
-Trivy and `govulncheck` **fail the build** on HIGH/CRITICAL findings (not just warn);
+`pnpm audit`, Trivy and `govulncheck` **fail the build** on HIGH/CRITICAL findings;
 accepted exceptions are documented in [`.trivyignore`](.trivyignore).
 
-> **Branch protection (repo-settings — action required by a repo admin).** Enabling
-> these jobs as *required status checks* on `main` (so a red pipeline blocks merge)
-> is a GitHub repository setting that CI itself cannot configure. A repo admin
-> should, under **Settings → Branches → Branch protection rules** for `main`,
-> require the checks `api`, `vuln`, `web`, `compose`, `trivy-config`, and `images`,
-> and require branches to be up to date before merging.
+**Releases** are cut by [release-please](https://github.com/googleapis/release-please)
+([`.github/workflows/release.yml`](.github/workflows/release.yml)): merging `develop`
+into `main` updates a release PR; merging that PR tags `vX.Y.Z` and publishes
+
+- multi-arch (`amd64`/`arm64`) images `ghcr.io/learistocats/lookupkb-{api,web}`,
+  cosign-signed with SBOM + provenance attestations;
+- a deploy bundle (`lookupkb-vX.Y.Z-deploy.tar.gz`: compose file pinned to the
+  release images, `.env.example`, service configs) attached to the GitHub Release.
+
+To run a release: download the bundle, `cp .env.example .env`, set the secrets, then
+`docker compose up -d`.
 
 ## Security & operations notes
 

@@ -1,4 +1,4 @@
-# LookupKB single-host Docker Compose stack (see docs/planning/01-architecture.md §5).
+# LookupKB single-host Docker Compose stack.
 #
 #   web, api (+ one-shot migrate), postgres, valkey, meilisearch, kroki(+mermaid), garage
 #
@@ -18,7 +18,7 @@ services:
       context: ../api
       args:
         VERSION: ${LOOKUPKB_VERSION:-dev}
-    image: lookupkb-api:${LOOKUPKB_VERSION:-dev}
+    image: ${LOOKUPKB_IMAGE_PREFIX:-}lookupkb-api:${LOOKUPKB_VERSION:-dev}
     restart: unless-stopped
     environment:
       LOOKUPKB_ENV: ${LOOKUPKB_ENV:-development}
@@ -90,7 +90,7 @@ services:
   # embedded goose migrations) and connects as the migration role that owns DDL.
   # `api` waits for this to exit successfully (see its depends_on).
   migrate:
-    image: lookupkb-api:${LOOKUPKB_VERSION:-dev}
+    image: ${LOOKUPKB_IMAGE_PREFIX:-}lookupkb-api:${LOOKUPKB_VERSION:-dev}
     build:
       context: ../api
       args:
@@ -120,7 +120,7 @@ services:
   web:
     build:
       context: ../web
-    image: lookupkb-web:${LOOKUPKB_VERSION:-dev}
+    image: ${LOOKUPKB_IMAGE_PREFIX:-}lookupkb-web:${LOOKUPKB_VERSION:-dev}
     restart: unless-stopped
     environment:
       # Seals the API token into the session cookie. Empty disables auth (the

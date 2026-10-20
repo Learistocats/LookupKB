@@ -2,13 +2,32 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# A newer push to the same branch/PR supersedes the in-flight run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  pr-title:
+    name: PR title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      # PRs are squash-merged, so the title becomes the commit release-please
+      # reads: it must follow Conventional Commits (see CONTRIBUTING.md).
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   api:
     name: API (Go)
     runs-on: ubuntu-latest
@@ -25,6 +44,9 @@ jobs:
 
       - name: Verify modules
         run: go mod verify
+
+      - name: go.mod is tidy
+        run: go mod tidy -diff
 
       - name: Vet
         run: go vet ./...
@@ -94,6 +116,12 @@ jobs:
 
       - name: Install
         run: pnpm install --frozen-lockfile
+
+      # Fails on HIGH/CRITICAL advisories. Not --prod: SvelteKit apps bundle their
+      # framework from devDependencies, so those ship too. Transitive fixes go in
+      # pnpm-workspace.yaml `overrides`.
+      - name: Audit dependencies
+        run: pnpm audit --audit-level high
 
       - name: Lint
         run: pnpm run lint

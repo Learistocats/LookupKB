@@ -21,3 +21,7 @@ node_modules/
 
 # Build artifacts
 /dist/
+
+# Internal planning material (kept locally, not published)
+/CLAUDE.md
+/docs/planning/

@@ -1,5 +1,5 @@
 // Package search keeps the Meilisearch index in step with Postgres and serves
-// access-filtered queries (docs/planning/05-search-and-indexing.md).
+// access-filtered queries.
 //
 // The browser never talks to Meilisearch: the API holds the key, injects the
 // access filter server-side, and returns sanitized hits. Postgres stays the
