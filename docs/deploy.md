@@ -3,6 +3,17 @@
 Single-host **Docker Compose** deployment: one compose file, no
 profiles or overlays.
 
+There are two ways to run it:
+
+- **From a release bundle** (recommended for running LookupKB): download
+  `lookupkb-vX.Y.Z-deploy.tar.gz` from the
+  [GitHub Releases](https://github.com/Learistocats/LookupKB/releases), unpack it and
+  follow its `README.md`. It runs the published, signed GHCR images with plain
+  `docker compose` — no source checkout and no `make`.
+- **From a source checkout** (development / building your own images): the `make`
+  targets below wrap `docker compose -f deploy/docker-compose.yml --env-file .env` and
+  build the images locally.
+
 | Service | Role |
 |---|---|
 | `web` | SvelteKit BFF — the only browser-facing service (`LOOKUPKB_WEB_PORT`, default 3000) |
@@ -14,7 +25,7 @@ profiles or overlays.
 | `kroki` (+ `kroki-mermaid`) | Server-side diagram rendering |
 | `garage` | S3-compatible attachment storage |
 
-## Bring-up
+## Bring-up (source checkout)
 
 ```bash
 cp .env.example .env      # then edit the secrets (or: make env)
@@ -32,7 +43,7 @@ Garage boots healthy but has no storage layout until you assign one. Run once af
 `make up`:
 
 ```bash
-make garage-init
+make garage-init           # from a release bundle: ./garage-init.sh
 ```
 
 ## TLS / public exposure
@@ -67,17 +78,20 @@ Two bridge networks: `edge` (web ↔ api) and `data` (`internal: true`; datastor
 
 ## Logs
 
-Every service logs to stdout; read them with `make logs` or `docker compose logs <svc>`.
+Every service logs to stdout; read them with `make logs` (source checkout) or
+`docker compose logs <svc>`.
 The API emits JSON lines with `request_id` and `actor_id` (internal user id).
 
 ## Configuration reference
 
 `.env.example` documents every variable; the defaults there are **dev-only** — generate
 strong unique secrets (`openssl rand -hex 32`) for anything deployed. `.env` is
-git-ignored and must never be committed. Auth-specific settings: [auth.md](auth.md).
+git-ignored and must never be committed. Auth-specific settings:
+[auth.md](https://github.com/Learistocats/LookupKB/blob/main/docs/auth.md).
 
 ## Images
 
-All third-party images are **pinned by digest**, updated via Renovate and scanned by Trivy
-in CI. The API (distroless/static) and web (Node) images are built from multi-stage
-Dockerfiles. Validate the compose file with `make config`.
+All third-party images are **pinned by digest**, updated via Dependabot and scanned by
+Trivy in CI. The API (distroless/static) and web (Node) images are built from multi-stage
+Dockerfiles; releases publish them to GHCR. Validate the compose file with `make config`
+(or `docker compose config -q` in a release bundle).
