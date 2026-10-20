@@ -2,7 +2,9 @@
 
 # ---- build stage -------------------------------------------------------------
 # Pin the toolchain image by digest. Digests are kept fresh by Dependabot.
-FROM golang:1.26-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS build
+# Runs on the build host's platform and cross-compiles (GOARCH below), so
+# multi-arch release builds don't compile Go under QEMU emulation.
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS build
 
 WORKDIR /src
 
@@ -14,10 +16,12 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY . .
 
 ARG VERSION=dev
+ARG TARGETOS=linux
+ARG TARGETARCH
 # CGO disabled + static build so the binary runs on a scratch/distroless base.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux go build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
     -trimpath \
     -ldflags="-s -w -X main.version=${VERSION}" \
     -o /out/api ./cmd/api
