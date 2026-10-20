@@ -59,6 +59,38 @@ func (q *Queries) CreateDraft(ctx context.Context, arg CreateDraftParams) (Docum
 	return i, err
 }
 
+const deleteDraft = `-- name: DeleteDraft :one
+DELETE FROM documents
+WHERE id = $1
+  AND author_id = $2
+  AND status IN ('draft', 'unpublished')
+  AND deleted_at IS NULL
+RETURNING id, status
+`
+
+type DeleteDraftParams struct {
+	ID       pgtype.UUID `json:"id"`
+	AuthorID pgtype.UUID `json:"author_id"`
+}
+
+type DeleteDraftRow struct {
+	ID     pgtype.UUID    `json:"id"`
+	Status DocumentStatus `json:"status"`
+}
+
+// Hard-delete one of the author's own never-public documents (LOO-58): only a
+// 'draft' or 'unpublished' row may go — a published doc must be unpublished first,
+// so it yields pgx.ErrNoRows → the identical 404, like a missing or other-author
+// id. document_tags/document_acl cascade; index_outbox rows survive (no FK since
+// 00008). RETURNING status lets the caller enqueue a defensive index delete for a
+// previously-published (unpublished) doc.
+func (q *Queries) DeleteDraft(ctx context.Context, arg DeleteDraftParams) (DeleteDraftRow, error) {
+	row := q.db.QueryRow(ctx, deleteDraft, arg.ID, arg.AuthorID)
+	var i DeleteDraftRow
+	err := row.Scan(&i.ID, &i.Status)
+	return i, err
+}
+
 const getDraft = `-- name: GetDraft :one
 SELECT id, slug, author_id, status, title, description, source_md, rendered_html, access, created_at, updated_at, published_at, search_tsv, deleted_at
 FROM documents
@@ -72,8 +104,11 @@ type GetDraftParams struct {
 	AuthorID pgtype.UUID `json:"author_id"`
 }
 
-// Read a single draft owned by the author (drafts are private to their author,
-// 03-data-model.md §2). deleted_at IS NULL excludes soft-deleted rows.
+// Read one of the author's own documents for the editor, in ANY status (draft/
+// published/unpublished — there is no status filter despite the name; editing a
+// published entry loads its working copy). Owner-scoped so a cross-author or
+// missing id yields pgx.ErrNoRows → 404 (03-data-model.md §2). deleted_at IS NULL
+// excludes soft-deleted rows.
 func (q *Queries) GetDraft(ctx context.Context, arg GetDraftParams) (Document, error) {
 	row := q.db.QueryRow(ctx, getDraft, arg.ID, arg.AuthorID)
 	var i Document
@@ -173,8 +208,8 @@ type GetOwnedDocumentParams struct {
 
 // Read one of the caller's own documents in ANY status (draft/published/
 // unpublished) — the publish gate (LOO-14) needs the working copy of an
-// already-published doc for a re-publish, which GetDraft (status='draft' only)
-// cannot return. Owner-scoped so a cross-author or missing id yields pgx.ErrNoRows
+// already-published doc for a re-publish. (Same filter as GetDraft today; kept as
+// its own query so the editor read and the publish read can diverge.) Owner-scoped so a cross-author or missing id yields pgx.ErrNoRows
 // → an identical 404 that never leaks existence (03-data-model.md §2).
 func (q *Queries) GetOwnedDocument(ctx context.Context, arg GetOwnedDocumentParams) (Document, error) {
 	row := q.db.QueryRow(ctx, getOwnedDocument, arg.ID, arg.AuthorID)

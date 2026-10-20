@@ -3,11 +3,14 @@
   marked as such, then everything else by last edit. Collapsed by default and
   toggled by the handle centered on the left edge (or ⌘/Ctrl + \). On narrow
   screens it overlays the page with a scrim and closes after navigating.
+  Draft and unpublished items carry a delete action (LOO-58) behind a confirm.
 -->
 <script lang="ts">
 	import { page } from '$app/state';
-	import { afterNavigate } from '$app/navigation';
+	import { afterNavigate, goto, invalidate } from '$app/navigation';
 	import Icon from './Icon.svelte';
+	import ConfirmDialog from './ConfirmDialog.svelte';
+	import { canDeleteEntry, deleteEntry, DELETE_CONFIRM_MESSAGE } from '$lib/drafts';
 	import { relativeTime } from '$lib/time';
 	import { applyTheme, nextTheme, type ThemePref } from '$lib/theme';
 	import type { EntrySummary } from '$lib/entries';
@@ -59,11 +62,53 @@
 		return p === `/entries/${e.id}` || p === `/docs/${e.slug}`;
 	}
 
+	// Delete (LOO-58): the entry awaiting confirmation, if any.
+	let pendingDelete = $state<EntrySummary | null>(null);
+	let confirmOpen = $state(false);
+	let deleting = $state(false);
+	let deleteError = $state('');
+
+	function askDelete(e: EntrySummary) {
+		pendingDelete = e;
+		deleteError = '';
+		confirmOpen = true;
+	}
+
+	function cancelDelete() {
+		if (deleting) return;
+		confirmOpen = false;
+		pendingDelete = null;
+	}
+
+	async function confirmDelete() {
+		const target = pendingDelete;
+		if (!target) return;
+		deleting = true;
+		deleteError = '';
+		try {
+			await deleteEntry(target.id);
+			const wasOpen = isActive(target);
+			confirmOpen = false;
+			pendingDelete = null;
+			void invalidate('app:entries');
+			if (wasOpen) await goto('/');
+		} catch (err) {
+			deleteError = err instanceof Error ? err.message : 'Deleting failed. Try again.';
+		} finally {
+			deleting = false;
+		}
+	}
+
 	function onKeydown(ev: KeyboardEvent) {
 		if ((ev.metaKey || ev.ctrlKey) && ev.key === '\\') {
 			ev.preventDefault();
 			setOpen(!open);
-		} else if (ev.key === 'Escape' && open && window.matchMedia('(max-width: 899px)').matches) {
+		} else if (
+			ev.key === 'Escape' &&
+			open &&
+			!confirmOpen &&
+			window.matchMedia('(max-width: 899px)').matches
+		) {
 			setOpen(false);
 		}
 	}
@@ -75,6 +120,20 @@
 </script>
 
 <svelte:window onkeydown={onKeydown} />
+
+{#snippet deleteButton(e: EntrySummary)}
+	{#if canDeleteEntry(e.id, e.status)}
+		<button
+			class="icon-btn item-delete"
+			type="button"
+			title="Delete"
+			aria-label={`Delete ${e.title || 'Untitled'}`}
+			onclick={() => askDelete(e)}
+		>
+			<Icon name="trash" size={15} />
+		</button>
+	{/if}
+{/snippet}
 
 {#if open}
 	<button class="scrim" type="button" aria-label="Close panel" onclick={() => setOpen(false)}
@@ -108,6 +167,7 @@
 								<span class="title" class:untitled={!e.title}>{e.title || 'Untitled'}</span>
 								<span class="chip chip-draft">Draft</span>
 							</a>
+							{@render deleteButton(e)}
 						</li>
 					{/each}
 				</ul>
@@ -135,6 +195,7 @@
 									>
 								{/if}
 							</a>
+							{@render deleteButton(e)}
 						</li>
 					{/each}
 				</ul>
@@ -160,6 +221,21 @@
 		</form>
 	</div>
 </aside>
+
+<ConfirmDialog
+	bind:open={confirmOpen}
+	title="Delete draft"
+	message={DELETE_CONFIRM_MESSAGE}
+	confirmLabel="Delete"
+	danger
+	busy={deleting}
+	onConfirm={confirmDelete}
+	onCancel={cancelDelete}
+>
+	{#if deleteError}
+		<p class="error-text">{deleteError}</p>
+	{/if}
+</ConfirmDialog>
 
 <button
 	class="handle"
@@ -243,6 +319,10 @@
 		gap: 1px;
 	}
 
+	li {
+		position: relative;
+	}
+
 	li a {
 		display: flex;
 		align-items: center;
@@ -261,6 +341,39 @@
 
 	li a.active {
 		background: var(--accent-soft);
+	}
+
+	/* Per-item delete: revealed on hover/focus, overlaying the row's right edge. */
+	.item-delete {
+		position: absolute;
+		top: 50%;
+		right: 0.25rem;
+		width: 1.75rem;
+		height: 1.75rem;
+		background: var(--surface);
+		opacity: 0;
+		transform: translateY(-50%);
+		transition: opacity 120ms var(--ease);
+	}
+
+	li:hover .item-delete,
+	.item-delete:focus-visible {
+		opacity: 1;
+	}
+
+	.item-delete:hover {
+		color: var(--danger);
+		background: var(--danger-soft);
+	}
+
+	@media (hover: none) {
+		.item-delete {
+			opacity: 1;
+		}
+
+		li:has(.item-delete) a {
+			padding-right: 2.25rem;
+		}
 	}
 
 	.title {
