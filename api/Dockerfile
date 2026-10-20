@@ -29,7 +29,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # ---- runtime stage -----------------------------------------------------------
 # distroless/static: no shell, no package manager, minimal attack surface.
 # nonroot variant runs as uid 65532. Pinned by digest.
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:aef9602f8710ec12bde19d593fed1f76c708531bb7aba205110f1029786ead7b
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 # OCI labels for provenance.
 LABEL org.opencontainers.image.title="lookupkb-api" \
