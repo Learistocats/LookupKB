@@ -16,21 +16,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/microcosm-cc/bluemonday"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/renderer/html"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/metric"
 )
-
-// scopeName is the instrumentation scope for this package's spans, matching the
-// convention used across the codebase (metrics.scopeName / logging.scopeName).
-const scopeName = "github.com/Learistocats/LookupKB/api"
 
 // DefaultMaxBytes bounds Markdown source size when no cap is configured (1 MiB).
 // The publish gate injects the admin-tunable limit via WithMaxBytes; this default
@@ -42,10 +33,6 @@ const DefaultMaxBytes = 1 << 20
 // it to a 422 field error. errors.Is against it to detect the condition.
 var ErrSourceTooLarge = errors.New("markdown source exceeds size limit")
 
-// tracer emits the explicit publish-render span. The global provider delegates,
-// so this is wired to the real TracerProvider once telemetry.Init installs it.
-var tracer = otel.Tracer(scopeName)
-
 // Renderer holds the configured goldmark markdown engine and bluemonday policy.
 // It is safe for concurrent use (both underlying values are read-only after
 // construction) so a single Renderer is shared process-wide. Construct with New.
@@ -53,7 +40,6 @@ type Renderer struct {
 	md       goldmark.Markdown
 	policy   *bluemonday.Policy
 	maxBytes int
-	hist     metric.Float64Histogram
 	diagrams DiagramRenderer
 }
 
@@ -68,12 +54,6 @@ func WithMaxBytes(n int) Option {
 			r.maxBytes = n
 		}
 	}
-}
-
-// WithRenderDuration wires the render_duration histogram (internal/metrics) so
-// each render records its latency in seconds. Nil is tolerated (no recording).
-func WithRenderDuration(h metric.Float64Histogram) Option {
-	return func(r *Renderer) { r.hist = h }
 }
 
 // WithDiagramRenderer supplies the diagram engine (Kroki, LOO-19). When omitted
@@ -141,30 +121,16 @@ func (r *Renderer) DiagramRenderer() DiagramRenderer { return r.diagrams }
 // Order is load-bearing: the size cap is checked BEFORE any parsing so an
 // oversized document cannot drive render cost, and sanitization runs on the FINAL
 // HTML string that will actually be stored (goldmark output is never trusted).
-func (r *Renderer) RenderAndSanitize(ctx context.Context, sourceMD string) (string, error) {
+func (r *Renderer) RenderAndSanitize(_ context.Context, sourceMD string) (string, error) {
 	if len(sourceMD) > r.maxBytes {
 		return "", fmt.Errorf("%w: %d bytes (limit %d)", ErrSourceTooLarge, len(sourceMD), r.maxBytes)
 	}
 
-	ctx, span := tracer.Start(ctx, "render.RenderAndSanitize")
-	defer span.End()
-	start := time.Now()
-
 	var buf bytes.Buffer
 	if err := r.md.Convert([]byte(sourceMD), &buf); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "goldmark convert failed")
 		return "", fmt.Errorf("render markdown: %w", err)
 	}
 
 	safe := r.policy.SanitizeBytes(buf.Bytes())
-
-	if r.hist != nil {
-		r.hist.Record(ctx, time.Since(start).Seconds())
-	}
-	span.SetAttributes(
-		attribute.Int("render.source_bytes", len(sourceMD)),
-		attribute.Int("render.output_bytes", len(safe)),
-	)
 	return string(safe), nil
 }

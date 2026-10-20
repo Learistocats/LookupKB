@@ -29,7 +29,7 @@ type publishRequest struct {
 
 // publishedResponse projects a published/unpublished document back to the caller.
 // It extends draftResponse's fields with the publish-time metadata the UI shows:
-// access scope, published_at, and (on publish) the new version number.
+// access scope and published_at.
 type publishedResponse struct {
 	ID          string  `json:"id"`
 	Slug        string  `json:"slug"`
@@ -39,10 +39,9 @@ type publishedResponse struct {
 	Access      string  `json:"access"`
 	PublishedAt string  `json:"published_at"`
 	UpdatedAt   string  `json:"updated_at"`
-	VersionNo   int32   `json:"version_no,omitempty"`
 }
 
-func toPublishedResponse(d dbgen.Document, versionNo int32) publishedResponse {
+func toPublishedResponse(d dbgen.Document) publishedResponse {
 	return publishedResponse{
 		ID:          formatUUID(d.ID),
 		Slug:        d.Slug,
@@ -52,14 +51,13 @@ func toPublishedResponse(d dbgen.Document, versionNo int32) publishedResponse {
 		Access:      string(d.Access),
 		PublishedAt: formatTime(d.PublishedAt),
 		UpdatedAt:   formatTime(d.UpdatedAt),
-		VersionNo:   versionNo,
 	}
 }
 
 // handlePublish is the metadata-gated publish action (F5, AC-5.1–5.5). It validates
 // server-side regardless of any client checks (06-security.md §6): on a metadata
 // violation it returns 422 with per-field errors and the document stays a draft; on
-// success the document is published (snapshot created, index op enqueued) atomically.
+// success the document is published (index op enqueued) atomically.
 func (s *Server) handlePublish(c *fiber.Ctx) error {
 	docID, ok := parseDocID(c)
 	if !ok {
@@ -95,7 +93,7 @@ func (s *Server) handlePublish(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"errors": fieldErrs})
 	}
 
-	return c.JSON(toPublishedResponse(result.Document, result.VersionNo))
+	return c.JSON(toPublishedResponse(result.Document))
 }
 
 // handleUnpublish reverts a published document to author-only visibility (AC-5.6).
@@ -120,5 +118,5 @@ func (s *Server) handleUnpublish(c *fiber.Ctx) error {
 		return internalError(c)
 	}
 
-	return c.JSON(toPublishedResponse(result.Document, 0))
+	return c.JSON(toPublishedResponse(result.Document))
 }

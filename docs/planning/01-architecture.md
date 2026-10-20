@@ -3,33 +3,32 @@
 ## 1. Component overview
 
 ```
-                                   ┌──────────────────────────────────────────┐
-                                   │                Browser                    │
-                                   │  SvelteKit SPA + CodeMirror 6 editor      │
-                                   │  KaTeX/mhchem · SmilesDrawer (client)     │
-                                   └───────────────┬──────────────────────────┘
-                                                   │ HTTPS
-                                          ┌────────▼─────────┐
-                                          │      Caddy       │  auto-TLS, security headers,
-                                          │  (reverse proxy) │  rate-limit edge
-                                          └───┬──────────┬───┘
-                              /auth/*, OIDC   │          │  /api/*, /app/*
-                                     ┌────────▼──┐   ┌───▼────────────────────────┐
-                                     │ Authentik │   │      LookupKB API (Go)      │
-                                     │  (OIDC)   │◄──┤  authz · publish workflow · │
-                                     │ users,    │   │  render pipeline · search   │
-                                     │ groups    │   │  proxy · uploads            │
-                                     └───────────┘   └──┬─────┬───────┬────────┬───┘
-                                                        │     │       │        │
-                                          ┌─────────────▼┐ ┌──▼────┐ ┌▼──────┐ ┌▼────────┐
-                                          │  PostgreSQL  │ │ Meili │ │ Kroki │ │ Garage  │
-                                          │ documents,   │ │search │ │diagram│ │ S3 blobs│
-                                          │ versions,    │ │ index │ │render │ │(uploads)│
-                                          │ acl, audit   │ │       │ │       │ │         │
-                                          └──────────────┘ └───────┘ └───────┘ └─────────┘
+                         ┌──────────────────────────────────────────┐
+                         │                Browser                    │
+                         │  SvelteKit UI + CodeMirror 6 editor       │
+                         │  KaTeX/mhchem · SmilesDrawer (client)     │
+                         └───────────────┬──────────────────────────┘
+                                         │ HTTP(S) (TLS by the host's own proxy)
+                              ┌──────────▼───────────┐
+                              │  LookupKB web (BFF)  │  login/signup forms, encrypted
+                              │  SvelteKit, Node     │  session cookie, security headers
+                              └──────────┬───────────┘
+                                         │ Bearer token (server-side only)
+                         ┌───────────────▼─────────────────────────┐
+                         │          LookupKB API (Go)               │
+                         │  accounts · authz · publish workflow ·   │
+                         │  render pipeline · search proxy · uploads│
+                         └──┬────────┬─────────┬────────┬────────┬──┘
+                            │        │         │        │        │
+                  ┌─────────▼──┐ ┌───▼───┐ ┌───▼───┐ ┌──▼────┐ ┌─▼──────┐
+                  │ PostgreSQL │ │ Meili │ │ Kroki │ │Garage │ │ Valkey │
+                  │ users, docs│ │search │ │diagram│ │S3 blob│ │ rate-  │
+                  │ acl, audit │ │ index │ │render │ │uploads│ │ limits │
+                  └────────────┘ └───────┘ └───────┘ └───────┘ └────────┘
 ```
 
-All boxes are containers in one `docker-compose.yml`. The only component that persists
+All boxes are containers in one `docker-compose.yml` — no identity provider, no
+telemetry backend, no bundled reverse proxy. The only component that persists
 authoritative state is **PostgreSQL** (+ **Garage** for blobs). Meilisearch is a
 **derived index** that can be fully rebuilt from Postgres.
 
@@ -37,21 +36,30 @@ authoritative state is **PostgreSQL** (+ **Garage** for blobs). Meilisearch is a
 
 | Component | Responsibility | Source of truth? |
 |---|---|---|
-| **SvelteKit SPA** | UI, editor, client-side preview rendering, calls API only | No |
-| **Caddy** | TLS termination, HSTS/security headers, gzip/zstd, edge rate limiting, static asset serving | No |
-| **LookupKB API (Go)** | AuthZ enforcement, publish/unpublish workflow, metadata validation, server-side sanitized render at publish, search proxy w/ access filters, upload brokering, audit logging, index sync, **versioned public read API** (`/api/v1`) for programmatic clients — same access-filtered path as the UI ([10](10-public-api.md)) | No (orchestrator) |
-| **Authentik** | Authentication, users, groups, MFA, sessions/OIDC tokens | Yes (identity) |
-| **PostgreSQL** | Documents, drafts, published versions, tags, ACL, audit log | **Yes** |
+| **SvelteKit web (BFF)** | UI, editor, client-side preview rendering, login/signup forms; holds the API token in an encrypted HttpOnly session cookie and proxies API calls server-side; sets security headers | No |
+| **LookupKB API (Go)** | Email/password accounts (argon2id) + HS256 access tokens, AuthZ enforcement, publish/unpublish workflow, metadata validation, server-side sanitized render at publish, search proxy w/ access filters, upload brokering, audit logging, index sync, **versioned public read API** (`/api/v1`) for programmatic clients — same access-filtered path as the UI ([10](10-public-api.md)) | No (orchestrator) |
+| **PostgreSQL** | Users (email + password hash), groups + membership, documents, drafts, tags, ACL, audit log | **Yes** |
 | **Meilisearch** | Full-text + faceted search index | No (rebuildable) |
 | **Kroki** | Server-side diagram rendering (Mermaid/PlantUML/GraphViz/etc.) → SVG | No |
 | **Garage** | S3-compatible object storage for images/attachments | Yes (blobs) |
+| **Valkey** | Shared login/signup rate-limit counters | No (ephemeral) |
 
 ## 3. Key request flows
 
 ### 3.1 Authentication
-Browser → Caddy → Authentik (OIDC Authorization Code + PKCE). API validates the JWT
-(issuer, audience, signature via Authentik JWKS), extracts `sub`, `email`, and `groups`.
-No password ever touches LookupKB. Sessions are short-lived access tokens + refresh.
+Local email/password accounts; there is no external identity provider.
+1. **Signup** (open): the web `/signup` form posts to the BFF, which calls
+   `POST /api/v1/auth/signup`. The API validates the email and password (≥ 12 chars),
+   stores an **argon2id** hash, and returns an access token.
+2. **Login**: `/login` → `POST /api/v1/auth/login`. Unknown email and wrong password return
+   an identical 401 after identical argon2 work (no account enumeration via the response).
+   Both routes are rate-limited per client IP (counters in Valkey).
+3. The API's access token is an **HS256 JWT signed with `LOOKUPKB_AUTH_SECRET`** (`sub` =
+   internal user id, `email`, `exp`; default TTL 7 days, no refresh). The BFF seals it into
+   an encrypted HttpOnly cookie; the browser never sees it.
+4. On each protected request the API verifies the token and loads the caller's **group
+   membership from Postgres** (`group_members`), so ACL decisions always reflect current
+   membership. Logout = the BFF drops the cookie (the API is stateless).
 
 ### 3.2 Read a published document (hot path — must be fast)
 1. Browser requests `/api/documents/{slug}`.
@@ -64,7 +72,8 @@ No password ever touches LookupKB. Sessions are short-lived access tokens + refr
 > extremely fast. No Markdown parsing or diagram rendering on the read path.
 
 ### 3.3 Search (hot path)
-1. Browser sends query to `/api/search` (never directly to Meilisearch).
+1. Browser sends the query to the web BFF (`/search`), which forwards it with the
+   caller's token to `GET /api/search` (never directly to Meilisearch).
 2. API injects an **access filter** derived from the caller's groups
    (`access = 'public' OR acl_groups IN [user's groups]`) and forwards to Meilisearch
    with a scoped, read-only key.
@@ -81,10 +90,10 @@ validation gate. Private to author. Not indexed.
 1. `POST /api/documents/{id}/publish`.
 2. API validates metadata (title/description/tags per limits). On failure → 422 with field errors.
 3. API renders Markdown → sanitized HTML server-side (goldmark + bluemonday), sends diagram blocks to Kroki, inlines sanitized SVG.
-4. Creates an immutable **version snapshot** (source + rendered HTML + metadata).
-5. Upserts the document into Meilisearch with its ACL facets.
-6. Writes an audit-log entry.
-7. Returns the published document.
+4. In one transaction: flips status, caches `rendered_html` (a re-publish overwrites it —
+   there is no version history), applies tags, writes an audit-log entry and enqueues the
+   Meilisearch upsert (outbox).
+5. Returns the published document.
 
 ### 3.6 Upload attachment
 `POST /api/uploads` (multipart) → API validates type/size, scans, stores in Garage under
@@ -110,23 +119,20 @@ in the reader's browser.
 ## 5. Deployment
 
 ### 5.1 Topology
-Single-host **Docker Compose** for v1. Services:
-`caddy`, `lookupkb-api`, `lookupkb-web` (or served by Caddy as static), `authentik-server`,
-`authentik-worker`, `postgres`, `redis` (Authentik dependency; optionally LookupKB cache),
-`meilisearch`, `kroki` (+ `kroki-mermaid`, `kroki-bpmn` companions as needed), `garage`,
-`otel-collector` (receives OTLP from the API, fans out to the telemetry backend).
-An **opt-in** `docker-compose.observability.yml` overlay adds Prometheus + Tempo/Jaeger +
-Loki + Grafana for a batteries-included local backend; production deployments point the
-collector at their existing telemetry backend instead.
+Single-host **Docker Compose**, one file, no profiles or overlays. Services:
+`web`, `api` (+ one-shot `migrate`), `postgres`, `valkey`, `meilisearch`, `kroki`
+(+ `kroki-mermaid`), `garage`. Only `web` is published to the network; the API port is
+bound to loopback by default and is exposed only when the operator's own reverse proxy
+routes the public `/api/v1` surface to it. TLS termination is the host proxy's job.
 
 ### 5.2 Images
-- LookupKB API: multi-stage Go build → **distroless/static** or `scratch` final image, non-root, read-only FS, no shell.
-- LookupKB web: built static assets served by Caddy.
+- LookupKB API: multi-stage Go build → **distroless/static** final image, non-root, read-only FS, no shell.
+- LookupKB web: SvelteKit `adapter-node` server, non-root.
 - All third-party images pinned by digest; scanned with Trivy in CI.
 
 ### 5.3 Configuration
 12-factor via env vars + a documented `.env.example`. Secrets via Docker secrets / env,
-never baked into images. TLS via Caddy automatic HTTPS (Let's Encrypt) or provided certs.
+never baked into images.
 
 ### 5.4 Backups & DR
 - **PostgreSQL**: nightly `pg_dump` / WAL archiving (authoritative).
@@ -135,36 +141,17 @@ never baked into images. TLS via Caddy automatic HTTPS (Let's Encrypt) or provid
 - Documented restore runbook; restore drill in CI is a stretch goal.
 
 ### 5.5 Scaling path (post-v1)
-- LookupKB API is stateless → horizontal scale behind Caddy.
+- LookupKB API is stateless → horizontal scale behind any load balancer (rate-limit
+  counters are already shared through Valkey).
 - Meilisearch single-node handles millions of docs; cluster if needed.
 - Garage & Postgres scale via their own replication.
 
-## 6. Observability (OpenTelemetry-first)
+## 6. Operations
 
-LookupKB is instrumented with **OpenTelemetry** end-to-end so it is cloud-native by default
-and so the performance acceptance criteria in [04](04-functional-spec.md)/[07](07-test-book.md)
-are validated against real telemetry. The app emits **OTLP** (traces + metrics + logs) to a
-local **OTel Collector**, which fans out to whatever backend the operator chooses
-(vendor-neutral — no lock-in).
-
-```
-lookupkb-api ──OTLP (traces/metrics/logs)──► otel-collector ──► [ Prometheus | Tempo/Jaeger | Loki | vendor ]
-                                                                         │
-                                                                    Grafana (dashboards w/ AC budgets)
-```
-
-- **Traces:** every request produces an end-to-end trace; `otelfiber` instruments HTTP,
-  `otelpgx` instruments DB, and hot-path operations (publish, server-render, Kroki call,
-  Meilisearch query, Garage I/O) get explicit spans so latency is attributable per stage.
-- **Metrics:** RED metrics per route plus the exact AC-tied instruments —
-  `search_latency`, `read_latency`, `publish_total`, `index_lag_seconds`, `render_duration`.
-  Grafana dashboards are preloaded with the p95 budgets from the test book so acceptance is
-  a dashboard check, not a manual measurement.
-- **Logs:** a single coherent structured logger for the whole image — `slog` JSON bridged
-  to OTel (`otelslog`), so every log line is **trace-correlated** (`trace_id`/`span_id`) and
-  shares one schema (`service`, `version`, `request_id`, `actor_id`, redacted PII). See
-  [02](02-tech-stack.md) §6 for the whole-stack logging coherence approach.
-- **Health:** `/healthz` (liveness) and `/readyz` (checks Postgres/Meili/Kroki/Garage/
-  collector) endpoints. A Prometheus scrape endpoint remains available for non-OTLP setups.
-- **Audit:** business-level audit log persisted in Postgres (see [03](03-data-model.md)),
-  distinct from operational telemetry.
+Deliberately minimal: no telemetry SDK or backend ships with LookupKB.
+- **Logs:** one structured `slog` logger (JSON by default) on stdout, collected by the
+  container runtime. Every line carries `service`, `version`, `request_id` and `actor_id`
+  (internal user id, never the email). See [02](02-tech-stack.md) §6.
+- **Health:** `/healthz` (liveness, never touches dependencies) and `/readyz` (gated on
+  Postgres/Valkey/Meili/Kroki/Garage; 503 if any fail; the body only says `ok`/`unavailable`).
+- **Audit:** business-level audit log persisted in Postgres (see [03](03-data-model.md)).

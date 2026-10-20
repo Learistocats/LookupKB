@@ -73,10 +73,11 @@ export const linkSelection: Command = (view) => {
 };
 
 // Conventional shortcuts (Mod = Cmd on macOS, Ctrl elsewhere). preventDefault so the
-// browser's own Ctrl-B/I/K don't also fire.
+// browser's own Ctrl-B/I don't also fire. Links use Mod-Shift-k because Mod-k is the
+// app-wide "open search" shortcut (routes/(app)/+layout.svelte).
 export const markdownKeymap: readonly KeyBinding[] = [
 	{ key: 'Mod-b', run: toggleBold, preventDefault: true },
 	{ key: 'Mod-i', run: toggleItalic, preventDefault: true },
 	{ key: 'Mod-e', run: toggleInlineCode, preventDefault: true },
-	{ key: 'Mod-k', run: linkSelection, preventDefault: true }
+	{ key: 'Mod-Shift-k', run: linkSelection, preventDefault: true }
 ];

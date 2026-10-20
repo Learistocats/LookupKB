@@ -31,6 +31,7 @@
 			parent: host,
 			extensions: createEditorExtensions({
 				ariaLabel: label,
+				placeholder,
 				onChange: (doc) => {
 					value = doc;
 				}
@@ -51,7 +52,7 @@
 </script>
 
 <div class="editor">
-	<label for={name}>{label}</label>
+	<label class="visually-hidden" for={name}>{label}</label>
 	<div class="host" class:hidden={!ready} bind:this={host}></div>
 	<textarea
 		id={name}
@@ -61,25 +62,16 @@
 		bind:value
 		{placeholder}
 		rows="16"
-		spellcheck="false"
-	></textarea>
+		spellcheck="false"></textarea>
 </div>
 
 <style>
 	.editor {
 		display: grid;
-		gap: 0.4rem;
-	}
-
-	label {
-		color: #9aa0a6;
-		font-size: 0.85rem;
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
 	}
 
 	.host {
-		min-height: 20rem;
+		min-height: 50vh;
 	}
 
 	.hidden {
@@ -88,15 +80,15 @@
 
 	.fallback {
 		width: 100%;
-		box-sizing: border-box;
-		padding: 0.6rem 0.75rem;
-		border: 1px solid #2a2e35;
-		border-radius: 0.5rem;
-		background: #131519;
-		color: #e8eaed;
-		font-family: ui-monospace, 'SF Mono', Menlo, monospace;
-		font-size: 0.9rem;
-		line-height: 1.5;
+		min-height: 50vh;
+		padding: 0;
+		border: none;
+		background: transparent;
+		color: var(--fg);
+		font-family: var(--font-mono);
+		font-size: var(--text-base);
+		line-height: 1.7;
 		resize: vertical;
+		outline: none;
 	}
 </style>

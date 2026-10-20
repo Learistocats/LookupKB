@@ -1,5 +1,5 @@
 // Package health provides lightweight, bounded-timeout readiness probes for the
-// API's downstream dependencies (Meilisearch, Kroki, Garage, the OTel collector).
+// API's downstream dependencies (Meilisearch, Kroki, Garage).
 //
 // Each probe is a plain func() error — the same shape the server's /readyz
 // consults (see internal/server) and that db.ReadinessCheck already produces for

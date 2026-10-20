@@ -1,10 +1,10 @@
-// Server-only session handling. The session (access + refresh tokens plus the
-// projected identity) is sealed into an encrypted JWE and stored in an HttpOnly
-// cookie, so the browser never sees a token in JS (06-security.md §5). AES-GCM
-// (dir/A256GCM) gives confidentiality + integrity in one primitive.
+// Server-only session handling. The session (the API access token plus the
+// signed-in user's identity) is sealed into an encrypted JWE and stored in an
+// HttpOnly cookie, so the browser never sees a token in JS (06-security.md §5).
+// AES-GCM (dir/A256GCM) gives confidentiality + integrity in one primitive.
 //
 // This module is pure (crypto + encoding) so it is unit-testable without a
-// running Authentik.
+// running API.
 import type { Cookies } from '@sveltejs/kit';
 import { EncryptJWT, jwtDecrypt, base64url } from 'jose';
 import { createHash } from 'node:crypto';
@@ -12,29 +12,14 @@ import { createHash } from 'node:crypto';
 /** Cookie holding the sealed session for an authenticated user. */
 export const SESSION_COOKIE = 'lkb_session';
 
-/** Short-lived cookie holding the in-flight OIDC handshake (PKCE/state/nonce). */
-export const TX_COOKIE = 'lkb_oidc_tx';
-
 /** The authenticated session persisted (encrypted) across requests. */
 export interface Session {
+	/** The API-issued access token, forwarded as a Bearer token server-side. */
 	accessToken: string;
-	refreshToken?: string;
-	/** Kept only as a logout (RP-initiated end-session) hint. */
-	idToken?: string;
 	/** Absolute access-token expiry, epoch milliseconds. */
 	expiresAt: number;
-	sub: string;
+	userId: string;
 	email: string;
-	groups: string[];
-}
-
-/** In-flight handshake state stashed between /auth/login and /auth/callback. */
-export interface OidcTransaction {
-	state: string;
-	nonce: string;
-	codeVerifier: string;
-	/** Where to send the user once login completes. */
-	returnTo: string;
 }
 
 const ENC = 'A256GCM';
@@ -80,27 +65,14 @@ export function openSession(token: string, secret: string): Promise<Session | nu
 	return open<Session>(token, secret);
 }
 
-export function sealTransaction(
-	tx: OidcTransaction,
-	secret: string,
-	ttlSeconds: number
-): Promise<string> {
-	return seal({ ...tx }, secret, ttlSeconds);
-}
-
-export function openTransaction(token: string, secret: string): Promise<OidcTransaction | null> {
-	return open<OidcTransaction>(token, secret);
-}
-
 /** isExpired reports whether the access token is at/past its expiry (with a small skew). */
 export function isExpired(session: Session, skewSeconds = 30): boolean {
 	return Date.now() >= session.expiresAt - skewSeconds * 1000;
 }
 
 // ── Session cookie chunking ──────────────────────────────────────────────────
-// A sealed session packs the access + refresh + id tokens into one JWE, which for
-// real Authentik tokens exceeds the browser's ~4096-byte per-cookie limit — the
-// browser then silently drops it and the user loops through login forever. So the
+// A sealed session can approach the browser's ~4096-byte per-cookie limit (the
+// browser then silently drops it and the user loops through login forever). So the
 // sealed value is split across numbered cookies (`lkb_session.0`, `.1`, …), each
 // safely under the limit, and rejoined on read. Callers use these helpers instead
 // of touching SESSION_COOKIE directly.

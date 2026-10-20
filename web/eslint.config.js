@@ -24,6 +24,11 @@ export default ts.config(
 			parserOptions: {
 				parser: ts.parser
 			}
+		},
+		rules: {
+			// The app is served from the root (no kit.paths.base), so wrapping every
+			// internal href/goto in resolve() would be pure noise.
+			'svelte/no-navigation-without-resolve': 'off'
 		}
 	},
 	{

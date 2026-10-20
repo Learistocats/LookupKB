@@ -36,9 +36,9 @@ func TestDraftRoundTrip(t *testing.T) {
 	q := dbgen.New(pool)
 
 	// documents.author_id FKs users(id): the author must exist first.
-	author, err := q.UpsertUser(ctx, dbgen.UpsertUserParams{OidcSub: "author-sub"})
+	author, err := q.CreateUser(ctx, dbgen.CreateUserParams{Email: "author-sub@example.com", PasswordHash: "x"})
 	require.NoError(t, err)
-	other, err := q.UpsertUser(ctx, dbgen.UpsertUserParams{OidcSub: "other-sub"})
+	other, err := q.CreateUser(ctx, dbgen.CreateUserParams{Email: "other-sub@example.com", PasswordHash: "x"})
 	require.NoError(t, err)
 
 	// --- create: a bare draft with no metadata (AC-2.1) ---
@@ -83,13 +83,10 @@ func TestDraftRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, body, *stillOurs.SourceMd)
 
-	// Exactly one documents row exists (no accidental version/duplicate rows).
+	// Exactly one documents row exists (no accidental duplicate rows).
 	var count int
 	require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM documents").Scan(&count))
 	require.Equal(t, 1, count)
-	var versions int
-	require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM document_versions").Scan(&versions))
-	require.Zero(t, versions, "draft saves must not create version snapshots")
 
 	// AC-2.4 / T-2.3: a draft save must NEVER enqueue a search-index write. Indexing
 	// is publish-only (05-search-and-indexing.md §4) — there is no draft-save outbox
@@ -130,7 +127,7 @@ func TestSetRenderedHTMLCachesSanitized(t *testing.T) {
 	t.Cleanup(pool.Close)
 	q := dbgen.New(pool)
 
-	author, err := q.UpsertUser(ctx, dbgen.UpsertUserParams{OidcSub: "author-sub"})
+	author, err := q.CreateUser(ctx, dbgen.CreateUserParams{Email: "author-sub@example.com", PasswordHash: "x"})
 	require.NoError(t, err)
 
 	created, err := q.CreateDraft(ctx, dbgen.CreateDraftParams{Slug: "draft-render", AuthorID: author.ID})

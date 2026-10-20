@@ -1,4 +1,4 @@
-# golangci-lint v2 configuration for the Go API (see docs/planning/02-tech-stack.md §5).
+# golangci-lint v2 configuration for the Go API.
 version: "2"
 
 run:

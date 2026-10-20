@@ -9,19 +9,21 @@ Priority: **P0** = MVP, **P1** = fast-follow, **P2** = later.
 
 ## F1 — Authentication & session (P0)
 
-**Story:** As a user, I sign in with my org identity so I can access the KB.
+**Story:** As a user, I create an account with my email and a password and sign in so I can access the KB.
 
-- **AC-1.1** Given an unauthenticated user, when they open any app route, then they are redirected to Authentik and back via OIDC Authorization Code + PKCE.
-- **AC-1.2** Given a valid OIDC token, when the API receives a request, then it verifies signature/issuer/audience/expiry against Authentik JWKS before processing.
-- **AC-1.3** Given an expired access token, when a request is made, then the client silently refreshes; if refresh fails, the user is redirected to re-auth.
-- **AC-1.4** Given a signed-in user, when their token includes `groups`, then those groups are used for all access decisions in that request.
-- **AC-1.5** No credential/password is ever sent to or stored by LookupKB.
+- **AC-1.1** Given an unauthenticated user, when they open any app route, then they are redirected to `/login` (and back to the original route after signing in).
+- **AC-1.2** Given an access token, when the API receives a request, then it verifies the HS256 signature, issuer, subject and expiry before processing; any failure is a bare 401.
+- **AC-1.3** Given an expired access token, when a request is made, then the session is dropped and the user is redirected to `/login` (no silent refresh).
+- **AC-1.4** Given a signed-in user, when a request is processed, then the user's current group memberships (from `group_members`) are used for all access decisions in that request.
+- **AC-1.5** Passwords are stored only as argon2id hashes; they are never logged, returned, or stored in plaintext. Login failures for an unknown email and a wrong password are indistinguishable (same status, body and work).
+- **AC-1.6** Given anyone reaching `/signup`, when they submit a valid email and a password of ≥ 12 characters, then an account is created and they are signed in; a duplicate email (any casing) is rejected.
+- **AC-1.7** Signup and login are rate-limited per client IP.
 
 ## F2 — Draft creation & private workspace (P0)
 
 **Story:** As an author, I can create and save a document privately, even without metadata.
 
-- **AC-2.1** Given an author, when they create a new document, then a `draft` is created owned by them with no metadata required.
+- **AC-2.1** Given an author, when they create a new document, then a `draft` is created owned by them with no metadata required. The row is created on the first non-blank save (any of title, description or body): opening a new entry and leaving it untouched persists nothing.
 - **AC-2.2** Given a draft with empty/partial metadata, when the author saves, then the save succeeds and no validation error is shown.
 - **AC-2.3** Given a draft, when any other non-admin user queries or searches, then the draft is never returned or visible.
 - **AC-2.4** Given a draft, when saved, then it is **not** added to the search index.
@@ -53,9 +55,9 @@ Priority: **P0** = MVP, **P1** = fast-follow, **P2** = later.
 
 - **AC-5.1** Given a draft, when the author clicks Publish, then a confirmation step shows the metadata to be published and requires explicit confirmation.
 - **AC-5.2** Given missing/invalid metadata (title, description, or ≥1 tag, or a limit violated), when the author confirms publish, then publish is blocked with per-field errors and the document stays a draft.
-- **AC-5.3** Given valid metadata, when the author confirms, then the document becomes `published`, `published_at` is set, a version snapshot is created, and it is indexed.
+- **AC-5.3** Given valid metadata, when the author confirms, then the document becomes `published`, `published_at` is set, and it is indexed.
 - **AC-5.4** Title/description/tag counts and lengths are enforced per configurable limits (defaults in [00](00-overview.md) §6).
-- **AC-5.5** Given a published doc, when the author edits and re-publishes, then a **new version snapshot** is created and the index is updated.
+- **AC-5.5** Given a published doc, when the author edits and re-publishes, then the published content is overwritten (no version history) and the index is updated.
 - **AC-5.6** Given a published doc, when the author or an admin unpublishes it, then it is removed from the index, becomes author-only visible, and history is retained.
 
 ## F6 — Tags (P0)
@@ -87,21 +89,18 @@ Priority: **P0** = MVP, **P1** = fast-follow, **P2** = later.
 - **AC-8.2** Given diagrams, when the page loads, then they appear as inlined sanitized SVG (no client-side diagram engine).
 - **AC-8.3** Given math/chemistry, when the page loads, then KaTeX/SmilesDrawer render them.
 - **AC-8.4** Given a restricted doc the user cannot access, when they request it by slug/URL, then they get 403/404 (no content leak).
-- **AC-8.5** Given a document, when viewed, then metadata (author, published date, tags, version) is shown minimally.
+- **AC-8.5** Given a document, when viewed, then metadata (author, published date, tags) is shown minimally.
 
-## F9 — Version history (P1)
+## F9 — Version history (removed)
 
-**Story:** As an author/admin, I see and restore previous published versions.
-
-- **AC-9.1** Given a published doc with ≥2 versions, when I open history, then I see each version (no., date, publisher).
-- **AC-9.2** Given two versions, when I diff them, then source-level differences are shown.
-- **AC-9.3** Given an older version, when I restore it, then it becomes a new current version (new snapshot), preserving forward history.
+Dropped in the lightweight revamp: there are no published-version snapshots; a re-publish
+overwrites the document. AC-9.x are retired (a post-v1 candidate, see [08](08-roadmap.md)).
 
 ## F10 — Access groups & administration (P0 core / P1 UI)
 
 **Story:** As an admin, I restrict documents to named groups and manage the taxonomy.
 
-- **AC-10.1** Given an admin, when they create a group in Authentik and assign members, then those groups are usable as document ACLs in LookupKB (synced).
+- **AC-10.1** Given an admin, when they create a group in LookupKB and assign members, then the group is immediately usable as a document ACL.
 - **AC-10.2** Given an author of a doc (or admin), when they set access to restricted + select groups, then only members of those groups (plus author/admin) can read or find it.
 - **AC-10.3** Given an admin, when they change a document's ACL, then the search index and read access reflect it immediately and the change is audited.
 - **AC-10.4** Given an admin, when they adjust metadata limits (title/desc/tag counts), then new publishes enforce the updated limits.
@@ -118,13 +117,13 @@ Priority: **P0** = MVP, **P1** = fast-follow, **P2** = later.
 **Story:** As an integrator, I search, query, and retrieve documents programmatically with the same access rules as the UI. Full spec: [10](10-public-api.md).
 
 - **AC-12.1** Given a valid PAT (`lkb_pat_…`), when a request is made, then it authenticates as the issuing user and inherits that user's group access.
-- **AC-12.2** Given an Authentik service-account token (client-credentials), when a request is made, then it authenticates and its group claims drive access.
+- **AC-12.2** *(retired — no external service accounts; integrations use PATs.)*
 - **AC-12.3** Given an invalid/expired/revoked token or a missing required scope, when a request is made, then it returns `401`/`403` and no data.
 - **AC-12.4** `GET /api/v1/search` returns typo-tolerant ranked hits **filtered to the caller's accessible corpus** — a restricted doc the caller can't access never appears.
 - **AC-12.5** `GET /api/v1/documents` returns metadata-filtered listings (tags/author/date), cursor-paginated (`limit`≤100, `next_cursor`).
 - **AC-12.6** `GET /api/v1/documents/{slug}` returns the current published version; `?format=`/`Accept` selects Markdown, sanitized HTML, plain text, or JSON envelope.
 - **AC-12.7** Given a restricted document the caller can't access, when retrieved by slug, then it returns `403`/`404` with no content or existence leak; drafts are never retrievable via the public API.
-- **AC-12.8** `GET /api/v1/documents/{slug}/versions[/{n}]` returns version metadata / a specific version (access-checked).
+- **AC-12.8** *(retired with version history.)*
 - **AC-12.9** `GET /api/v1/tags` returns tags with usage counts for discovery.
 - **AC-12.10** Per-token rate limiting is enforced; exceeding it returns `429` with `X-RateLimit-*`/`Retry-After` headers.
 - **AC-12.11** `GET /api/v1/openapi.json` returns a valid OpenAPI 3 spec matching the live API; interactive docs are served at `/api/docs`.

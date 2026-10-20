@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -10,7 +9,6 @@ import (
 	"github.com/Learistocats/LookupKB/api/internal/auth"
 	"github.com/Learistocats/LookupKB/api/internal/config"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
-	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/stretchr/testify/require"
 )
 
@@ -36,10 +34,7 @@ func newTagServer(t *testing.T, store TagStore) *Server {
 	cfg, err := config.Load()
 	require.NoError(t, err)
 
-	ks := &oidc.StaticKeySet{PublicKeys: []crypto.PublicKey{testKey.Public()}}
-	verifier := auth.VerifierFrom(oidc.NewVerifier(testIssuer, ks, &oidc.Config{ClientID: testAudience}))
-	up := &fakeUpserter{userID: pgUUID(callerUUID)}
-	mw := auth.NewMiddleware(verifier, up, slogDiscard())
+	mw := auth.NewMiddleware(testTokens, nil, slogDiscard())
 
 	return New(cfg, slogDiscard(), "test", WithAuth(mw), WithTags(store))
 }

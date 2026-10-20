@@ -32,11 +32,11 @@ scale, and **UX speed is the feature**. Every interaction should feel instantane
 |---|---|
 | **Reader** | Search & read all documents visible to their group memberships. |
 | **Author** | Everything a Reader can, plus create/edit their own drafts and publish them into the KB. |
-| **Group** | A named access scope (managed in Authentik). A document may be public (default) or restricted to one or more groups. |
-| **Admin** | Manage groups & group membership (in Authentik), moderate/unpublish any document, manage tag taxonomy limits, view audit log. |
-| **Integrator** | A machine/script client of the read-only [public API](10-public-api.md), authenticated via a Personal Access Token or Authentik service account; sees exactly what its identity's groups allow. |
+| **Group** | A named access scope (managed in LookupKB). A document may be public (default) or restricted to one or more groups. |
+| **Admin** | Manage groups & group membership, moderate/unpublish any document, manage tag taxonomy limits, view audit log. |
+| **Integrator** | A machine/script client of the read-only [public API](10-public-api.md), authenticated via a Personal Access Token; sees exactly what its identity's groups allow. |
 
-> Roles map to Authentik groups/roles; LookupKB reads them from the OIDC token. See [06](06-security.md).
+> Users sign up with email + password; roles and groups are stored in LookupKB. See [06](06-security.md).
 
 ## 5. Document lifecycle
 
@@ -48,16 +48,14 @@ scale, and **UX speed is the feature**. Every interaction should feel instantane
                                                           │ publish (requires valid metadata + explicit confirm)
                                                           ▼
                                                     ┌──────────┐
-                     unpublish (author/admin)  ◄──► │ PUBLISHED │  (visible per access scope, indexed, versioned)
+                     unpublish (author/admin)  ◄──► │ PUBLISHED │  (visible per access scope, indexed)
                                                     └────┬─────┘
-                                                          │ edit → new draft revision → re-publish (new version snapshot)
-                                                          ▼
-                                                    (version history retained)
+                                                          │ edit → re-publish (overwrites the published content)
 ```
 
 - **Draft**: exists in the author's private workspace. No metadata requirements. Not indexed in the public KB index. Not visible to anyone else.
-- **Published**: has valid metadata, is indexed, is visible per its access scope, and each publish creates an immutable **version snapshot**.
-- **Unpublished**: reverts to draft-like visibility (author only) and is removed from the search index; version history is retained.
+- **Published**: has valid metadata, is indexed, is visible per its access scope, and a re-publish overwrites its published content (no version history).
+- **Unpublished**: reverts to draft-like visibility (author only) and is removed from the search index.
 
 ## 6. Metadata rules (KB entry requirements)
 
@@ -92,11 +90,11 @@ Rendering approach and security posture: [01](01-architecture.md) §Rendering pi
 
 - ❌ Folder hierarchy / file tree.
 - ❌ Real-time multiplayer editing (single-author drafts only; a Yjs-friendly data model is a *possible* later add — see [09](09-open-questions.md)).
-- ❌ Full per-save draft history (only **published** versions are snapshotted).
+- ❌ Version history (neither per-save drafts nor published versions are snapshotted).
 - ❌ Public internet-scale multi-tenant SaaS (v1 targets single-org self-host; multi-tenant is a later consideration).
 - ❌ Rich page-builder / non-Markdown WYSIWYG blocks.
 - ❌ Comments / discussion threads (candidate for later).
-- ❌ Built-in identity store (delegated to Authentik).
+- ❌ External identity provider / SSO / MFA (built-in email + password accounts only).
 
 ## 9. Success metrics
 

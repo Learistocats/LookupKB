@@ -2,9 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -15,28 +12,22 @@ import (
 	"github.com/Learistocats/LookupKB/api/internal/auth"
 	"github.com/Learistocats/LookupKB/api/internal/config"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
-	"github.com/coreos/go-oidc/v3/oidc"
-	jose "github.com/go-jose/go-jose/v4"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/require"
 )
 
-const (
-	testIssuer   = "https://authentik.example.com/application/o/lookupkb/"
-	testAudience = "lookupkb-client-id"
-	testSub      = "ak-sub-123"
-)
+// testTokens signs and verifies the tokens the handler tests send; the real auth
+// middleware verifies them, so requests exercise the full authenticated path.
+var testTokens = mustTokens()
 
-var testKey = mustRSAKey()
-
-func mustRSAKey() *rsa.PrivateKey {
-	k, err := rsa.GenerateKey(rand.Reader, 2048)
+func mustTokens() *auth.Tokens {
+	tk, err := auth.NewTokens("0123456789abcdef0123456789abcdef", time.Hour)
 	if err != nil {
 		panic(err)
 	}
-	return k
+	return tk
 }
 
 // fakeDocStore records the params it is called with and returns canned rows, so
@@ -59,6 +50,13 @@ type fakeDocStore struct {
 
 	setRenderedArg dbgen.SetRenderedHTMLParams
 	setRenderedErr error
+
+	mineRows  []dbgen.ListMyDocumentsRow
+	tagLabels []string
+
+	getBySlugArg string
+	getBySlugRow dbgen.GetPublishedBySlugRow
+	getBySlugErr error
 }
 
 func (f *fakeDocStore) CreateDraft(_ context.Context, arg dbgen.CreateDraftParams) (dbgen.Document, error) {
@@ -88,8 +86,24 @@ func (f *fakeDocStore) SetRenderedHTML(_ context.Context, arg dbgen.SetRenderedH
 	return f.setRenderedErr
 }
 
-// callerUUID is the internal user id the fake upserter returns for the verified
-// caller; handlers must use it (not the email/sub) as author_id.
+func (f *fakeDocStore) ListMyDocuments(_ context.Context, authorID pgtype.UUID) ([]dbgen.ListMyDocumentsRow, error) {
+	f.listArg = authorID
+	return f.mineRows, f.listErr
+}
+
+func (f *fakeDocStore) ListDocumentTagLabels(_ context.Context, _ pgtype.UUID) ([]string, error) {
+	return f.tagLabels, nil
+}
+
+// GetPublishedBySlug satisfies DocumentStore for the read-path handler tests. It
+// records the slug it was asked for and returns the canned row/error.
+func (f *fakeDocStore) GetPublishedBySlug(_ context.Context, slug string) (dbgen.GetPublishedBySlugRow, error) {
+	f.getBySlugArg = slug
+	return f.getBySlugRow, f.getBySlugErr
+}
+
+// callerUUID is the internal user id carried by the test token's sub; handlers
+// must use it (not the email) as author_id.
 var callerUUID = uuid.New()
 
 func pgUUID(u uuid.UUID) pgtype.UUID { return pgtype.UUID{Bytes: u, Valid: true} }
@@ -108,18 +122,14 @@ func draftDoc(id uuid.UUID, source string) dbgen.Document {
 	}
 }
 
-// newDraftServer wires a Server with the real auth middleware (static-key
-// verifier) and the given documents store, so requests exercise the full
+// newDraftServer wires a Server with the real auth middleware and the given documents store, so requests exercise the full
 // authenticated route path.
 func newDraftServer(t *testing.T, store DocumentStore) *Server {
 	t.Helper()
 	cfg, err := config.Load()
 	require.NoError(t, err)
 
-	ks := &oidc.StaticKeySet{PublicKeys: []crypto.PublicKey{testKey.Public()}}
-	verifier := auth.VerifierFrom(oidc.NewVerifier(testIssuer, ks, &oidc.Config{ClientID: testAudience}))
-	up := &fakeUpserter{userID: pgUUID(callerUUID)}
-	mw := auth.NewMiddleware(verifier, up, slogDiscard())
+	mw := auth.NewMiddleware(testTokens, nil, slogDiscard())
 
 	opts := []Option{WithAuth(mw)}
 	if store != nil {
@@ -128,32 +138,9 @@ func newDraftServer(t *testing.T, store DocumentStore) *Server {
 	return New(cfg, slogDiscard(), "test", opts...)
 }
 
-// fakeUpserter returns a fixed internal user id for any verified caller.
-type fakeUpserter struct{ userID pgtype.UUID }
-
-func (f *fakeUpserter) UpsertUser(_ context.Context, _ dbgen.UpsertUserParams) (dbgen.User, error) {
-	return dbgen.User{ID: f.userID}, nil
-}
-
 func bearer(t *testing.T) string {
 	t.Helper()
-	claims := map[string]any{
-		"iss": testIssuer,
-		"aud": testAudience,
-		"sub": testSub,
-		"exp": time.Now().Add(time.Hour).Unix(),
-		"iat": time.Now().Add(-time.Minute).Unix(),
-	}
-	payload, err := json.Marshal(claims)
-	require.NoError(t, err)
-	signer, err := jose.NewSigner(
-		jose.SigningKey{Algorithm: jose.RS256, Key: testKey},
-		(&jose.SignerOptions{}).WithType("JWT"),
-	)
-	require.NoError(t, err)
-	jws, err := signer.Sign(payload)
-	require.NoError(t, err)
-	raw, err := jws.CompactSerialize()
+	raw, _, err := testTokens.Issue(callerUUID.String(), "user@example.com")
 	require.NoError(t, err)
 	return "Bearer " + raw
 }
