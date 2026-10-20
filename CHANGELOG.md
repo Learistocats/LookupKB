@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.1](https://github.com/Learistocats/LookupKB/compare/v1.0.0...v1.0.1) (2026-10-20)
+
+
+### Bug Fixes
+
+* make the release bundle self-contained ([7e0a566](https://github.com/Learistocats/LookupKB/commit/7e0a566eadd96130366c931d07b80c940ff01f0b))
+* make the release bundle self-contained ([843d06c](https://github.com/Learistocats/LookupKB/commit/843d06ca8689595c9ae1e4eefae634bd39006349))
+
 ## 1.0.0 (2026-10-20)
 
 
