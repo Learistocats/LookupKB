@@ -24,7 +24,7 @@ jobs:
     steps:
       # PRs are squash-merged, so the title becomes the commit release-please
       # reads: it must follow Conventional Commits (see CONTRIBUTING.md).
-      - uses: amannn/action-semantic-pull-request@v5
+      - uses: amannn/action-semantic-pull-request@v6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -35,9 +35,9 @@ jobs:
       run:
         working-directory: api
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
           cache-dependency-path: api/go.sum
@@ -52,7 +52,7 @@ jobs:
         run: go vet ./...
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
           working-directory: api
@@ -82,9 +82,9 @@ jobs:
       run:
         working-directory: api
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
           cache-dependency-path: api/go.sum
@@ -102,13 +102,13 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: pnpm
@@ -139,7 +139,7 @@ jobs:
     name: Compose config
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Validate compose config
         run: |
@@ -151,7 +151,7 @@ jobs:
     name: Trivy (IaC/config)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Scans Dockerfiles + docker-compose for misconfigurations. Fails the build
       # on HIGH/CRITICAL; accepted findings go in .trivyignore (documented there).
@@ -168,7 +168,7 @@ jobs:
     name: Build images
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build API image
         run: docker build -t lookupkb-api:ci ./api
