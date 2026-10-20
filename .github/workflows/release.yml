@@ -143,7 +143,8 @@ jobs:
           sed -e "s|^LOOKUPKB_VERSION=.*|LOOKUPKB_VERSION=${VERSION}|" \
               -e "s|^LOOKUPKB_IMAGE_PREFIX=.*|LOOKUPKB_IMAGE_PREFIX=${prefix}|" \
               .env.example > "$out/.env.example"
-          cp LICENSE docs/deploy.md "$out/"
+          cp deploy/INSTALL.md "$out/README.md"
+          cp deploy/garage-init.sh LICENSE docs/deploy.md "$out/"
           cp "$out/.env.example" "$out/.env"
           docker compose -f "$out/docker-compose.yml" config -q
           rm "$out/.env"
@@ -168,7 +169,16 @@ jobs:
           GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.release-please.outputs.tag }}
         run: |
+          set -euo pipefail
+          ahead=$(gh api "repos/${GITHUB_REPOSITORY}/compare/develop...main" --jq .ahead_by)
+          if [ "$ahead" = "0" ]; then
+            echo "develop already contains main — nothing to back-merge"
+            exit 0
+          fi
+          if [ -n "$(gh pr list --repo "$GITHUB_REPOSITORY" --base develop --head main --json number --jq '.[].number')" ]; then
+            echo "back-merge PR already open"
+            exit 0
+          fi
           gh pr create --repo "$GITHUB_REPOSITORY" --base develop --head main \
             --title "chore: back-merge ${TAG} into develop" \
-            --body "Brings the release commit (CHANGELOG, version bump) for ${TAG} back into develop. Merge with a **merge commit**." \
-            || echo "back-merge PR already open or nothing to merge"
+            --body "Brings the release commit (CHANGELOG, version bump) for ${TAG} back into develop. Merge with a **merge commit**."

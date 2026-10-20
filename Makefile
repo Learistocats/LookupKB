@@ -43,14 +43,7 @@ logs: ## Tail stack logs
 
 .PHONY: garage-init
 garage-init: ## Assign the initial Garage cluster layout (run once after `make up`)
-	@NODE_ID=$$($(COMPOSE) exec -T garage /garage node id -q 2>/dev/null | head -n1 | cut -d@ -f1); \
-	test -n "$$NODE_ID" || { echo "Could not read Garage node id — is the garage service up?"; exit 1; }; \
-	echo "Assigning layout to node $$NODE_ID"; \
-	$(COMPOSE) exec -T garage /garage layout assign "$$NODE_ID" -z dc1 -c 1G; \
-	$(COMPOSE) exec -T garage /garage layout apply --version 1; \
-	echo "Garage layout applied. Create the attachments bucket + an app key with:"; \
-	echo "  $(COMPOSE) exec garage /garage bucket create attachments"; \
-	echo "  $(COMPOSE) exec garage /garage key create lookupkb-app   # paste keys into .env"
+	@COMPOSE="$(COMPOSE)" deploy/garage-init.sh
 
 .PHONY: config
 config: env ## Validate the Compose config
