@@ -152,9 +152,9 @@ func assertDocumentACLDropped(t *testing.T, ctx context.Context, dsn string, dro
 }
 
 // assertPublishedMDBackfill seeds documents with 00012 rolled back, runs up, and
-// checks the best-effort backfill: published rows take their working copy (NULL
-// source becomes ''), drafts and unpublished rows stay NULL. The seed rows are
-// removed afterwards.
+// checks the best-effort backfill: published rows take their working copy (a
+// NULL source becomes the empty string), drafts and unpublished rows stay NULL.
+// The seed rows are removed afterwards.
 func assertPublishedMDBackfill(t *testing.T, ctx context.Context, dsn string, up func()) {
 	t.Helper()
 	conn := open(t, dsn)
