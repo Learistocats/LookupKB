@@ -46,8 +46,8 @@ type Server struct {
 	publish     PublishService
 	draftDelete DraftDeleter
 	search      SearchService
-	admin       AdminService
 	apiTokens   TokenStore
+	admin       AdminService
 }
 
 // Option configures a Server at construction. Later tickets add their own.
@@ -293,12 +293,6 @@ func (s *Server) registerRoutes() {
 			api.Post("/documents/:id/unpublish", s.handleUnpublish)
 		}
 
-		// Super-admin surface (LOO-56): groups, membership, tag policy, the role
-		// itself. Internal (unversioned) and gated per request by RequireSuperAdmin.
-		if s.admin != nil {
-			s.registerAdminRoutes(api.Group("/admin", auth.RequireSuperAdmin))
-		}
-
 		// MCP server for agents (LOO-59): Streamable HTTP, stateless, JSON-only,
 		// read-only tools over the same catalog/search/tag services as /api/v1.
 		// Outside /api, so it gets the auth middleware and the PAT limiter itself.
@@ -313,6 +307,12 @@ func (s *Server) registerRoutes() {
 			api.Get("/tokens", s.handleListTokens)
 			api.Post("/tokens", s.handleCreateToken)
 			api.Delete("/tokens/:id", s.handleRevokeToken)
+		}
+
+		// Super-admin surface (LOO-56): groups, membership, tag policy, the role
+		// itself. Internal (unversioned) and gated per request by RequireSuperAdmin.
+		if s.admin != nil {
+			s.registerAdminRoutes(api.Group("/admin", auth.RequireSuperAdmin))
 		}
 	}
 }

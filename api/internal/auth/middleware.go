@@ -26,10 +26,6 @@ type Identity struct {
 	Email  string
 	// Groups are the caller's group ids.
 	Groups []string
-	// IsSuperAdmin is users.is_super_admin, re-read from the database on every
-	// request (never a token claim) so a revoke is honored immediately. False when
-	// no database is wired (deny-by-default). See superadmin.go.
-	IsSuperAdmin bool
 	// Method is how the caller authenticated: MethodSession (the BFF's JWT) or
 	// MethodPAT (a Personal Access Token). Both resolve to the same user and the
 	// same per-request group loading; a PAT is additionally confined to the read
@@ -38,6 +34,10 @@ type Identity struct {
 	// TokenID is the api_tokens.id of the PAT used (empty for sessions). It keys
 	// the per-token rate limit.
 	TokenID string
+	// IsSuperAdmin is users.is_super_admin, re-read from the database on every
+	// request (never a token claim) so a revoke is honored immediately. False when
+	// no database is wired (deny-by-default). See superadmin.go.
+	IsSuperAdmin bool
 }
 
 // Authentication methods recorded on Identity.Method.
