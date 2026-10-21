@@ -8,7 +8,7 @@
 // here so they are unit-testable with a fake Queries (no database).
 //
 // Protected-tag ENFORCEMENT (who may read/publish an entry carrying a granted tag)
-// is LOO-33; this package only maintains the policy.
+// lives in internal/access (LOO-33); this package only maintains the policy.
 package admin
 
 import (

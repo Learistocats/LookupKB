@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/Learistocats/LookupKB/api/internal/access"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -39,7 +40,12 @@ const (
 // first, for the autocomplete dropdown (AC-6.1). The query is normalized with the
 // same rule as tag creation so a partial "My T" matches "my-tag"; an empty query
 // returns the most-used tags. limit is clamped to [1, maxSearchLimit].
-func (s *Store) SearchTags(ctx context.Context, rawQuery string, limit int32) ([]dbgen.Tag, error) {
+//
+// Protected tags the caller is not granted are never suggested (LOO-33): the
+// caller's access.Policy supplies their ids and the query excludes them BEFORE
+// the LIMIT, so hiding them never shortens the list. Each row carries
+// IsProtected so the publish dialog can say the entry will be restricted.
+func (s *Store) SearchTags(ctx context.Context, rawQuery string, limit int32, caller access.Caller) ([]dbgen.SearchTagsRow, error) {
 	if limit <= 0 {
 		limit = defaultSearchLimit
 	}
@@ -48,7 +54,11 @@ func (s *Store) SearchTags(ctx context.Context, rawQuery string, limit int32) ([
 	}
 	// Normalize strips LIKE metacharacters, so wrapping in % is injection-safe.
 	pattern := "%" + Normalize(rawQuery) + "%"
-	return s.q.SearchTags(ctx, dbgen.SearchTagsParams{Slug: pattern, Limit: limit})
+	policy, err := access.Load(ctx, s.q, caller)
+	if err != nil {
+		return nil, err
+	}
+	return s.q.SearchTags(ctx, dbgen.SearchTagsParams{Pattern: pattern, ExcludedIds: policy.DeniedIDs(), MaxRows: limit})
 }
 
 // TagWriter is the narrow, transaction-bound query surface ApplyDocumentTags needs

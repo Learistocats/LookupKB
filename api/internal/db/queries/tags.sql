@@ -8,11 +8,20 @@
 -- Autocomplete: match tags whose slug contains the (already-normalized) pattern,
 -- most-used first (AC-6.1). The pattern is built in Go as '%slug%'; Normalize
 -- strips LIKE metacharacters (% _), so there is no injection risk.
-SELECT id, slug, label, usage_count, created_at
-FROM tags
-WHERE slug LIKE $1
-ORDER BY usage_count DESC, slug ASC
-LIMIT $2;
+-- excluded_ids are the protected tags the caller lacks (access.Policy, LOO-33):
+-- they are never suggested. is_protected lets the publish dialog tell the author
+-- an entry carrying the tag will be restricted.
+SELECT t.id,
+       t.slug,
+       t.label,
+       t.usage_count,
+       t.created_at,
+       EXISTS (SELECT 1 FROM group_tag_grants g WHERE g.tag_id = t.id) AS is_protected
+FROM tags t
+WHERE t.slug LIKE @pattern
+  AND NOT (t.id = ANY (@excluded_ids::uuid[]))
+ORDER BY t.usage_count DESC, t.slug ASC
+LIMIT @max_rows;
 
 -- name: UpsertTag :one
 -- Get-or-create a tag by its canonical slug. ON CONFLICT DO UPDATE (not DO

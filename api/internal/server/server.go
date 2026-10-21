@@ -253,7 +253,7 @@ func (s *Server) registerRoutes() {
 			// Hot read path (F8, LOO-18): serve a published document's cached,
 			// sanitized HTML by slug. Distinct method (GET) + shape (:slug, not an
 			// id) from POST /documents and POST /documents/:id/publish → no conflict.
-			// Access is public-or-author here; group ACLs extend CanRead in M3.
+			// Access: super-admin, author, or granted every protected tag (LOO-33).
 			api.Get("/documents/:slug", s.handleReadDocument)
 		}
 

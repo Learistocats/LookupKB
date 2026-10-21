@@ -60,13 +60,19 @@ break-glass path and is not limited by that guard.
 
 ## Groups
 
-Groups (`groups`) and memberships (`group_members`) live in Postgres and drive document
-ACLs. Super-admins manage them at `/admin/groups`: create, rename and delete groups,
+Groups (`groups`) and memberships (`group_members`) live in Postgres and drive access to
+protected tags. Super-admins manage them at `/admin/groups`: create, rename and delete groups,
 and add members by email or remove them.
 
 Each group also has an **authorized tag policy** (`group_tag_grants`). A tag granted to
 at least one group is a *protected* tag; adding the first grant (or removing the last)
-asks for confirmation because it changes who can see entries carrying that tag. Access
-enforcement for protected tags arrives in a follow-up; today the policy is stored only.
+asks for confirmation because it changes who can see entries carrying that tag.
+
+A published entry is readable by a caller who is a super-admin, its author, or a member
+of groups granting **every** protected tag on it. Anyone else gets the same 404 as for a
+missing entry, no search hit, no autocomplete suggestion for the tag, and a 422 when
+publishing with it. The rule lives in `api/internal/access`; the policy is read from the
+database on each request, so grants and memberships apply at once with no reindex.
+Drafts stay author-only (super-admins included).
 
 Every admin change is recorded in `audit_log` (`group.*`, `user.super_admin_set`).

@@ -165,10 +165,6 @@ func (w *Worker) apply(ctx context.Context, op dbgen.ClaimIndexOpsRow) error {
 
 // Projection maps a published document row to its index document.
 func Projection(r dbgen.GetIndexProjectionRow) IndexDoc {
-	groups := make([]string, 0, len(r.AclGroupIds))
-	for _, g := range r.AclGroupIds {
-		groups = append(groups, uuid.UUID(g.Bytes).String())
-	}
 	tags := r.Tags
 	if tags == nil {
 		tags = []string{}
@@ -184,8 +180,6 @@ func Projection(r dbgen.GetIndexProjectionRow) IndexDoc {
 		AuthorID:    uuid.UUID(r.AuthorID.Bytes).String(),
 		CreatedAt:   r.CreatedAt.Time.Unix(),
 		PublishedAt: r.PublishedAt.Time.Unix(),
-		Access:      string(r.Access),
-		ACLGroupIDs: groups,
 	}
 }
 

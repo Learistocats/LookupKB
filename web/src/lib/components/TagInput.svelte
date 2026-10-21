@@ -6,6 +6,10 @@
 
   All tag logic (normalize/validate/search/debounce) lives in $lib/tags so it is
   unit-tested independently and this component stays presentational.
+
+  `protectedTags` (bindable, read-only for the parent) reports which selected tags
+  are protected (LOO-33), learned from the suggestions and, for tags added without
+  one (prefilled or typed), resolved through the autocomplete endpoint.
 -->
 <script lang="ts">
 	import Icon from './Icon.svelte';
@@ -13,6 +17,7 @@
 		normalizeTag,
 		validateTags,
 		searchTags,
+		resolveProtected,
 		debounce,
 		defaultTagLimits,
 		type TagLimits,
@@ -21,12 +26,41 @@
 
 	let {
 		tags = $bindable([]),
+		protectedTags = $bindable([]),
 		limits = defaultTagLimits,
 		label = 'Tags'
-	}: { tags?: string[]; limits?: TagLimits; label?: string } = $props();
+	}: {
+		tags?: string[];
+		protectedTags?: string[];
+		limits?: TagLimits;
+		label?: string;
+	} = $props();
 
 	let draft = $state('');
 	let suggestions = $state<TagSuggestion[]>([]);
+
+	// slug → protected, learned from suggestions and resolved for other tags.
+	let known = $state<Record<string, boolean>>({});
+
+	$effect(() => {
+		const missing = tags.filter((t) => !(t in known));
+		if (missing.length === 0) return;
+		let cancelled = false;
+		resolveProtected(missing)
+			.then((found) => {
+				if (!cancelled) known = { ...known, ...found };
+			})
+			.catch(() => {
+				// Best-effort hint only; the publish gate is authoritative.
+			});
+		return () => {
+			cancelled = true;
+		};
+	});
+
+	$effect(() => {
+		protectedTags = tags.filter((t) => known[t]);
+	});
 
 	// Live validation of the current set drives the inline error feedback.
 	let errors = $derived(validateTags(tags, limits).errors);
@@ -38,6 +72,7 @@
 		}
 		try {
 			const hits = await searchTags(q);
+			known = { ...known, ...Object.fromEntries(hits.map((h) => [h.slug, h.protected])) };
 			// Hide tags already chosen so the dropdown only offers new ones.
 			suggestions = hits.filter((h) => !tags.includes(h.slug));
 		} catch {
@@ -79,8 +114,9 @@
 	{#if tags.length > 0}
 		<ul class="chips">
 			{#each tags as tag (tag)}
-				<li class="chip tag">
+				<li class="chip tag" class:chip-protected={known[tag]}>
 					<span>{tag}</span>
+					{#if known[tag]}<span class="visually-hidden">(protected)</span>{/if}
 					<button type="button" aria-label={`Remove ${tag}`} onclick={() => removeTag(tag)}>
 						<Icon name="x" size={12} />
 					</button>
@@ -105,7 +141,10 @@
 			{#each suggestions as s (s.slug)}
 				<li>
 					<button type="button" onclick={() => addTag(s.slug)}>
-						<span class="slug">{s.slug}</span>
+						<span class="slug">
+							{s.slug}
+							{#if s.protected}<span class="chip chip-protected">Protected</span>{/if}
+						</span>
 						<span class="count">{s.usage_count}</span>
 					</button>
 				</li>
@@ -157,6 +196,17 @@
 
 	.tag button:hover {
 		background: var(--surface);
+	}
+
+	.tag.chip-protected {
+		background: var(--protected-soft);
+		color: var(--protected);
+	}
+
+	.slug {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
 	}
 
 	.suggestions {

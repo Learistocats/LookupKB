@@ -7,6 +7,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/Learistocats/LookupKB/api/internal/access"
 	"github.com/Learistocats/LookupKB/api/internal/auth"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/gofiber/fiber/v2"
@@ -36,6 +37,8 @@ type DocumentStore interface {
 	// owner-scoped (public reads), with author/version/tags joined. status guard
 	// makes a draft/unpublished slug indistinguishable from a missing one (404).
 	GetPublishedBySlug(ctx context.Context, slug string) (dbgen.GetPublishedBySlugRow, error)
+	// The protected-tag policy source for the read check (LOO-33).
+	access.Querier
 }
 
 // draftResponse is the JSON projection returned to the caller. Only the fields

@@ -2,7 +2,7 @@
   PublishDialog — the F5 publish confirm step (AC-5.1/5.2). The repo's first modal.
   It is the SECOND click of a genuinely two-step flow: the editor's "Publish" button
   opens this dialog showing the metadata about to be published (title, description,
-  tags, access scope); the author reviews/edits it and must click "Confirm publish"
+  tags, who can see it — derived from protected tags, LOO-33); the author reviews/edits it and must click "Confirm publish"
   — a distinct action — before the document changes state.
 
   Presentational: it binds the metadata and renders any server per-field errors
@@ -14,7 +14,7 @@
 <script lang="ts">
 	import ConfirmDialog from './ConfirmDialog.svelte';
 	import TagInput from './TagInput.svelte';
-	import type { FieldError } from '$lib/publish';
+	import { accessLine, type FieldError } from '$lib/publish';
 
 	let {
 		open = $bindable(false),
@@ -37,6 +37,9 @@
 		onConfirm: () => void;
 		onCancel: () => void;
 	} = $props();
+
+	// Which selected tags are protected (LOO-33), reported by TagInput.
+	let protectedTags = $state<string[]>([]);
 
 	// Per-field lookup for inline errors beside the offending input.
 	function errorsFor(field: string): string[] {
@@ -92,13 +95,13 @@
 	</div>
 
 	<div class="field">
-		<TagInput bind:tags />
+		<TagInput bind:tags bind:protectedTags />
 		{#each errorsFor('tags') as err (err)}
 			<p class="error-text">{err}</p>
 		{/each}
 	</div>
 
-	<p class="access">Visible to everyone signed in to this knowledge base.</p>
+	<p class="access" class:restricted={protectedTags.length > 0}>{accessLine(protectedTags)}</p>
 </ConfirmDialog>
 
 <style>
@@ -110,5 +113,9 @@
 		margin: 0;
 		color: var(--fg-subtle);
 		font-size: var(--text-sm);
+	}
+
+	.access.restricted {
+		color: var(--protected);
 	}
 </style>

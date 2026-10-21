@@ -244,7 +244,7 @@ func run(cfg config.Config, version string) error {
 	defer stopWorker()
 	if pool != nil && cfg.MeiliURL != "" {
 		meili := search.NewClient(cfg.MeiliURL, cfg.MeiliKey)
-		opts = append(opts, server.WithSearch(search.NewService(meili)))
+		opts = append(opts, server.WithSearch(search.NewService(meili, dbgen.New(pool))))
 		go search.NewWorker(dbgen.New(pool), meili, log).Run(workerCtx)
 	} else {
 		log.Warn("search disabled (needs LOOKUPKB_DATABASE_URL and LOOKUPKB_MEILI_URL)")

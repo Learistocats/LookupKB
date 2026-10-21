@@ -3,7 +3,6 @@ package search
 import (
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,26 +21,6 @@ func TestMarkHTML_EscapesEverythingButMarks(t *testing.T) {
 func TestMarkHTML_ClosesUnbalanced(t *testing.T) {
 	require.Equal(t, "<mark>open</mark>", markHTML(markPre+"open"))
 	require.Equal(t, "stray", markHTML("stray"+markPost))
-}
-
-func TestAccessFilter(t *testing.T) {
-	me, g1, g2 := uuid.NewString(), uuid.NewString(), uuid.NewString()
-
-	f, err := AccessFilter(Caller{UserID: me})
-	require.NoError(t, err)
-	require.Equal(t, `access = "public" OR author_id = "`+me+`"`, f)
-
-	f, err = AccessFilter(Caller{UserID: me, Groups: []string{g1, g2}})
-	require.NoError(t, err)
-	require.Equal(t, `access = "public" OR author_id = "`+me+`" OR acl_group_ids IN ["`+g1+`", "`+g2+`"]`, f)
-}
-
-// Nothing that isn't a UUID can reach the filter expression.
-func TestAccessFilter_RejectsInjection(t *testing.T) {
-	_, err := AccessFilter(Caller{UserID: `x" OR access = "restricted`})
-	require.Error(t, err)
-	_, err = AccessFilter(Caller{UserID: uuid.NewString(), Groups: []string{`"] OR access EXISTS`}})
-	require.Error(t, err)
 }
 
 func TestPickSnippet(t *testing.T) {

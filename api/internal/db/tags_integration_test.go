@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
+	"github.com/Learistocats/LookupKB/api/internal/access"
 	appdb "github.com/Learistocats/LookupKB/api/internal/db"
 )
 
@@ -116,7 +117,7 @@ func TestSearchTags_AutocompleteRanking(t *testing.T) {
 	require.NoError(t, store.SetDocumentTags(ctx, d2.ID, []string{"api", "api-gateway"}))
 	require.NoError(t, store.SetDocumentTags(ctx, d3.ID, []string{"unrelated"}))
 
-	got, err := store.SearchTags(ctx, "api", 10)
+	got, err := store.SearchTags(ctx, "api", 10, access.Caller{UserID: author.ID})
 	require.NoError(t, err)
 	require.Len(t, got, 2, "substring match on 'api'")
 	require.Equal(t, "api", got[0].Slug, "most-used first")
@@ -124,13 +125,13 @@ func TestSearchTags_AutocompleteRanking(t *testing.T) {
 	require.Equal(t, "api-gateway", got[1].Slug)
 
 	// Partial typing normalizes ("api gate" → "api-gate") and still matches.
-	got, err = store.SearchTags(ctx, "api gate", 10)
+	got, err = store.SearchTags(ctx, "api gate", 10, access.Caller{UserID: author.ID})
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	require.Equal(t, "api-gateway", got[0].Slug)
 
 	// Empty query returns the most-used tags overall.
-	got, err = store.SearchTags(ctx, "", 10)
+	got, err = store.SearchTags(ctx, "", 10, access.Caller{UserID: author.ID})
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, len(got), 3)
 	require.Equal(t, "api", got[0].Slug, "popularity-ordered default")

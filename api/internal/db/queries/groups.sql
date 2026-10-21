@@ -26,7 +26,7 @@ WHERE id = $1
 RETURNING id, name, created_at;
 
 -- name: DeleteGroup :execrows
--- Cascades to group_members, group_tag_grants and document_acl.
+-- Cascades to group_members and group_tag_grants.
 DELETE FROM groups
 WHERE id = $1;
 
@@ -64,8 +64,8 @@ WHERE group_id = $1
   AND user_id = $2;
 
 -- ── Group tag policy (group_tag_grants) ──────────────────────────────────────
--- A tag with >= 1 grant is a protected tag. Enforcement is LOO-33; these queries
--- only maintain the policy.
+-- A tag with >= 1 grant is a protected tag. These queries maintain the policy;
+-- enforcement reads it through access.sql (LOO-33).
 
 -- name: ListGroupTagGrants :many
 SELECT t.id AS tag_id, t.slug, t.label, gt.created_at

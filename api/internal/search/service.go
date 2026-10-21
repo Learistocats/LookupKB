@@ -3,18 +3,11 @@ package search
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/Learistocats/LookupKB/api/internal/access"
 )
-
-// Caller identifies who is searching; it drives the access filter.
-type Caller struct {
-	UserID string
-	Groups []string
-}
 
 // Hit is one sanitized search result. TitleHTML and Snippet contain only escaped
 // text plus <mark> elements, so the UI may render them as HTML.
@@ -29,36 +22,65 @@ type Hit struct {
 	PublishedAt string   `json:"published_at"`
 }
 
-// Result is a page of hits.
+// Result is a page of hits. Facets is present only when requested
+// (?facets=tags): facet value → count, computed by Meilisearch under the same
+// access filter as the hits, so a count never reveals an entry the caller cannot
+// open.
 type Result struct {
-	Hits   []Hit `json:"hits"`
-	TookMs int64 `json:"took_ms"`
+	Hits   []Hit                       `json:"hits"`
+	TookMs int64                       `json:"took_ms"`
+	Facets map[string]map[string]int64 `json:"facets,omitempty"`
 }
 
-// Service runs access-filtered queries against the index.
+// Query is one search request: free text, page size, client filters and the
+// facets to compute.
+type Query struct {
+	Q       string
+	Limit   int
+	Filters Filters
+	// Facets to compute; only FacetTags is allowed.
+	Facets []string
+}
+
+// Service runs access-filtered queries against the index. It reads the caller's
+// protected-tag policy from Postgres on every query (internal/access).
 type Service struct {
 	client *Client
+	policy access.Querier
 }
 
-// NewService builds the query service over a Meilisearch client.
-func NewService(c *Client) *Service { return &Service{client: c} }
+// NewService builds the query service over a Meilisearch client and the access
+// policy source (*dbgen.Queries).
+func NewService(c *Client, policy access.Querier) *Service {
+	return &Service{client: c, policy: policy}
+}
 
 // MaxLimit caps how many hits one query may return.
 const MaxLimit = 50
 
 // Search returns hits the caller may open. An empty query lists the most
-// recently published documents.
-func (s *Service) Search(ctx context.Context, q string, limit int, caller Caller) (Result, error) {
-	filter, err := AccessFilter(caller)
+// recently published documents. A refused filter/facet wraps ErrInvalidFilter.
+func (s *Service) Search(ctx context.Context, query Query, caller access.Caller) (Result, error) {
+	facets, err := allowedFacets(query.Facets)
 	if err != nil {
 		return Result{}, err
 	}
+	policy, err := access.Load(ctx, s.policy, caller)
+	if err != nil {
+		return Result{}, err
+	}
+	filter, err := buildFilter(policy, query.Filters)
+	if err != nil {
+		return Result{}, err
+	}
+	limit := query.Limit
 	if limit <= 0 || limit > MaxLimit {
 		limit = 20
 	}
 	req := searchRequest{
-		Q:                     strings.TrimSpace(q),
+		Q:                     strings.TrimSpace(query.Q),
 		Filter:                filter,
+		Facets:                facets,
 		Limit:                 limit,
 		AttributesToRetrieve:  []string{"slug", "title", "description", "tags", "author", "published_at"},
 		AttributesToHighlight: []string{"title", "description", "body_text"},
@@ -75,6 +97,16 @@ func (s *Service) Search(ctx context.Context, q string, limit int, caller Caller
 		return Result{}, err
 	}
 	out := Result{Hits: make([]Hit, 0, len(resp.Hits)), TookMs: resp.ProcessingTimeMs}
+	if len(facets) > 0 {
+		out.Facets = make(map[string]map[string]int64, len(facets))
+		for _, f := range facets {
+			dist := resp.FacetDistribution[f]
+			if dist == nil {
+				dist = map[string]int64{}
+			}
+			out.Facets[f] = dist
+		}
+	}
 	for _, h := range resp.Hits {
 		tags := h.Tags
 		if tags == nil {
@@ -107,28 +139,23 @@ func pickSnippet(h rawHit, hasQuery bool) string {
 	return body
 }
 
-// AccessFilter builds the Meilisearch filter a caller's queries always carry:
-// public documents, the caller's own, and restricted ones shared with one of the
-// caller's groups. Ids are validated as UUIDs so nothing user-controlled is ever
-// spliced into the filter expression.
-func AccessFilter(c Caller) (string, error) {
-	uid, err := uuid.Parse(c.UserID)
-	if err != nil {
-		return "", fmt.Errorf("invalid caller id: %w", err)
-	}
-	parts := []string{`access = "public"`, `author_id = ` + strconv.Quote(uid.String())}
-	if len(c.Groups) > 0 {
-		quoted := make([]string, 0, len(c.Groups))
-		for _, g := range c.Groups {
-			gid, err := uuid.Parse(g)
-			if err != nil {
-				return "", fmt.Errorf("invalid group id: %w", err)
+// allowedFacets validates the requested facets against the allowlist.
+func allowedFacets(in []string) ([]string, error) {
+	var out []string
+	for _, f := range in {
+		f = strings.TrimSpace(f)
+		switch f {
+		case "":
+			continue
+		case FacetTags:
+			if len(out) == 0 {
+				out = append(out, f)
 			}
-			quoted = append(quoted, strconv.Quote(gid.String()))
+		default:
+			return nil, fmt.Errorf("%w: facet %q", ErrInvalidFilter, f)
 		}
-		parts = append(parts, `acl_group_ids IN [`+strings.Join(quoted, ", ")+`]`)
 	}
-	return strings.Join(parts, " OR "), nil
+	return out, nil
 }
 
 func orDefault(s, def string) string {

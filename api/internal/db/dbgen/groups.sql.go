@@ -90,7 +90,7 @@ DELETE FROM groups
 WHERE id = $1
 `
 
-// Cascades to group_members, group_tag_grants and document_acl.
+// Cascades to group_members and group_tag_grants.
 func (q *Queries) DeleteGroup(ctx context.Context, id pgtype.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteGroup, id)
 	if err != nil {
@@ -169,8 +169,8 @@ type ListGroupTagGrantsRow struct {
 }
 
 // ── Group tag policy (group_tag_grants) ──────────────────────────────────────
-// A tag with >= 1 grant is a protected tag. Enforcement is LOO-33; these queries
-// only maintain the policy.
+// A tag with >= 1 grant is a protected tag. These queries maintain the policy;
+// enforcement reads it through access.sql (LOO-33).
 func (q *Queries) ListGroupTagGrants(ctx context.Context, groupID pgtype.UUID) ([]ListGroupTagGrantsRow, error) {
 	rows, err := q.db.Query(ctx, listGroupTagGrants, groupID)
 	if err != nil {

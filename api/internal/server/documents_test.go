@@ -57,6 +57,10 @@ type fakeDocStore struct {
 	getBySlugArg string
 	getBySlugRow dbgen.GetPublishedBySlugRow
 	getBySlugErr error
+
+	// deniedSlugs are the protected tags the caller lacks (access policy).
+	deniedSlugs []string
+	deniedCalls int
 }
 
 func (f *fakeDocStore) CreateDraft(_ context.Context, arg dbgen.CreateDraftParams) (dbgen.Document, error) {
@@ -100,6 +104,16 @@ func (f *fakeDocStore) ListDocumentTagLabels(_ context.Context, _ pgtype.UUID) (
 func (f *fakeDocStore) GetPublishedBySlug(_ context.Context, slug string) (dbgen.GetPublishedBySlugRow, error) {
 	f.getBySlugArg = slug
 	return f.getBySlugRow, f.getBySlugErr
+}
+
+// ListDeniedProtectedTags satisfies access.Querier for the read check.
+func (f *fakeDocStore) ListDeniedProtectedTags(_ context.Context, _ pgtype.UUID) ([]dbgen.ListDeniedProtectedTagsRow, error) {
+	f.deniedCalls++
+	rows := make([]dbgen.ListDeniedProtectedTagsRow, 0, len(f.deniedSlugs))
+	for _, s := range f.deniedSlugs {
+		rows = append(rows, dbgen.ListDeniedProtectedTagsRow{ID: pgUUID(uuid.New()), Slug: s, Label: s})
+	}
+	return rows, nil
 }
 
 // callerUUID is the internal user id carried by the test token's sub; handlers

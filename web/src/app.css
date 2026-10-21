@@ -30,6 +30,9 @@
 	/* Semantic (separate from the accent). */
 	--draft: #8a5a00;
 	--draft-soft: #fbf0d9;
+	/* Protected tags (LOO-33) share the draft's caution hue, in every theme. */
+	--protected: var(--draft);
+	--protected-soft: var(--draft-soft);
 	--ok: #1d7347;
 	--ok-soft: #e1f2e8;
 	--danger: #b8352b;
@@ -326,6 +329,11 @@ select {
 .chip-draft {
 	background: var(--draft-soft);
 	color: var(--draft);
+}
+
+.chip-protected {
+	background: var(--protected-soft);
+	color: var(--protected);
 }
 
 .chip-ok {

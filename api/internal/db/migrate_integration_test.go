@@ -66,7 +66,19 @@ func TestMigrations(t *testing.T) {
 	// --- up ---
 	require.NoError(t, appdb.RunMigrations(ctx, migratorDSN, "up"), "goose up must apply cleanly")
 	assertTablesExist(t, ctx, superDSN)
+	assertDocumentACLDropped(t, ctx, superDSN, true)
 	assertAppRoleCannotDDL(t, ctx, pgc)
+
+	// --- 00011 (LOO-33) down then up: the document ACL comes back empty, and is
+	// usable by the app role, then goes again ---
+	require.NoError(t, appdb.RunMigrations(ctx, migratorDSN, "down"), "00011 down must apply")
+	assertDocumentACLDropped(t, ctx, superDSN, false)
+	appConn := open(t, roleDSN(t, ctx, pgc, "lookupkb_app", appPassword))
+	_, err = appConn.ExecContext(ctx, "SELECT count(*) FROM document_acl")
+	require.NoError(t, err, "the recreated document_acl is granted to the app role")
+	_ = appConn.Close()
+	require.NoError(t, appdb.RunMigrations(ctx, migratorDSN, "up"), "00011 re-applies")
+	assertDocumentACLDropped(t, ctx, superDSN, true)
 
 	// --- down (full reset) then up again: proves every migration reverses ---
 	require.NoError(t, appdb.RunMigrations(ctx, migratorDSN, "reset"), "goose down/reset must reverse cleanly")
@@ -101,7 +113,7 @@ func assertTablesExist(t *testing.T, ctx context.Context, dsn string) {
 
 	want := []string{
 		"users", "groups", "group_members", "documents", "tags",
-		"document_tags", "document_acl", "attachments", "audit_log",
+		"document_tags", "attachments", "audit_log",
 		"settings", "api_tokens", "index_outbox", "group_tag_grants",
 	}
 	for _, tbl := range want {
@@ -111,6 +123,24 @@ func assertTablesExist(t *testing.T, ctx context.Context, dsn string) {
 		require.NoError(t, err)
 		require.True(t, exists, "table %q should exist after up", tbl)
 	}
+}
+
+// assertDocumentACLDropped checks the LOO-33 schema cleanup: document_acl,
+// documents.access and the document_access enum are gone (dropped=true) or back
+// (dropped=false, after 00011 down).
+func assertDocumentACLDropped(t *testing.T, ctx context.Context, dsn string, dropped bool) {
+	t.Helper()
+	conn := open(t, dsn)
+	defer func() { _ = conn.Close() }()
+
+	var table, column, enum bool
+	require.NoError(t, conn.QueryRowContext(ctx, "SELECT to_regclass('public.document_acl') IS NOT NULL").Scan(&table))
+	require.NoError(t, conn.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns
+		WHERE table_schema='public' AND table_name='documents' AND column_name='access')`).Scan(&column))
+	require.NoError(t, conn.QueryRowContext(ctx, "SELECT to_regtype('public.document_access') IS NOT NULL").Scan(&enum))
+	require.Equal(t, !dropped, table, "document_acl")
+	require.Equal(t, !dropped, column, "documents.access")
+	require.Equal(t, !dropped, enum, "document_access enum")
 }
 
 func assertNoAppTables(t *testing.T, ctx context.Context, dsn string) {

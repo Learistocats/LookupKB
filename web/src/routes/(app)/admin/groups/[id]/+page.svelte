@@ -170,7 +170,7 @@
 		/>
 		<datalist id="policy-tag-suggestions">
 			{#each suggestions as s (s.slug)}
-				<option value={s.slug}></option>
+				<option value={s.slug}>{s.protected ? `${s.slug} (protected)` : s.slug}</option>
 			{/each}
 		</datalist>
 		<button class="btn btn-primary" type="submit" disabled={tagBusy || !tagDraft.trim()}
@@ -184,7 +184,10 @@
 		<ul class="rows">
 			{#each group.tags as t (t.tag_id)}
 				<li>
-					<span class="grow"><span class="chip">{t.label}</span></span>
+					<span class="grow">
+						<span class="chip">{t.label}</span>
+						<span class="chip chip-protected">Protected</span>
+					</span>
 					<button
 						class="btn btn-ghost"
 						type="button"
