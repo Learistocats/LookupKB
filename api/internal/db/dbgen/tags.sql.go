@@ -43,6 +43,26 @@ func (q *Queries) DecrementTagUsage(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
+const getTagByID = `-- name: GetTagByID :one
+SELECT id, slug, label, usage_count, created_at
+FROM tags
+WHERE id = $1
+`
+
+// Resolve a tag id (admin tag-policy revoke) to its label for the confirm prompt.
+func (q *Queries) GetTagByID(ctx context.Context, id pgtype.UUID) (Tag, error) {
+	row := q.db.QueryRow(ctx, getTagByID, id)
+	var i Tag
+	err := row.Scan(
+		&i.ID,
+		&i.Slug,
+		&i.Label,
+		&i.UsageCount,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const incrementTagUsage = `-- name: IncrementTagUsage :exec
 UPDATE tags
 SET usage_count = usage_count + 1

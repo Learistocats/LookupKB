@@ -58,3 +58,9 @@ WHERE id = $1;
 UPDATE tags
 SET usage_count = GREATEST(0, usage_count - 1)
 WHERE id = $1;
+
+-- name: GetTagByID :one
+-- Resolve a tag id (admin tag-policy revoke) to its label for the confirm prompt.
+SELECT id, slug, label, usage_count, created_at
+FROM tags
+WHERE id = $1;

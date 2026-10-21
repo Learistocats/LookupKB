@@ -102,7 +102,7 @@ func assertTablesExist(t *testing.T, ctx context.Context, dsn string) {
 	want := []string{
 		"users", "groups", "group_members", "documents", "tags",
 		"document_tags", "document_acl", "attachments", "audit_log",
-		"settings", "api_tokens", "index_outbox",
+		"settings", "api_tokens", "index_outbox", "group_tag_grants",
 	}
 	for _, tbl := range want {
 		var exists bool
@@ -137,6 +137,18 @@ func assertAppRoleCannotDDL(t *testing.T, ctx context.Context, pgc *postgres.Pos
 	_, err := conn.ExecContext(ctx,
 		"INSERT INTO users (email, password_hash) VALUES ('a@example.com', 'x')")
 	require.NoError(t, err, "app role should be able to INSERT")
+
+	// LOO-56: the migrator-created group_tag_grants table is usable by the app
+	// role (explicit GRANT in 00009), and users.is_super_admin is writable.
+	_, err = conn.ExecContext(ctx, "SELECT count(*) FROM group_tag_grants")
+	require.NoError(t, err, "app role should be able to read group_tag_grants")
+	_, err = conn.ExecContext(ctx, `
+		WITH g AS (INSERT INTO groups (name) VALUES ('ops') RETURNING id),
+		     t AS (INSERT INTO tags (slug, label) VALUES ('secret', 'secret') RETURNING id)
+		INSERT INTO group_tag_grants (group_id, tag_id) SELECT g.id, t.id FROM g, t`)
+	require.NoError(t, err, "app role should be able to INSERT into group_tag_grants")
+	_, err = conn.ExecContext(ctx, "UPDATE users SET is_super_admin = true WHERE email = 'a@example.com'")
+	require.NoError(t, err, "app role should be able to set is_super_admin")
 
 	// DDL must be refused.
 	_, err = conn.ExecContext(ctx, "DROP TABLE users")

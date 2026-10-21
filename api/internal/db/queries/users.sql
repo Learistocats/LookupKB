@@ -24,3 +24,46 @@ WHERE id = $1;
 UPDATE users
 SET last_seen_at = now()
 WHERE id = $1;
+
+-- ── Super-admin role (LOO-56) ────────────────────────────────────────────────
+
+-- name: GetUserIsSuperAdmin :one
+-- Loaded by the auth middleware on every request (never a token claim), so a
+-- revoke takes effect on the caller's next request.
+SELECT is_super_admin
+FROM users
+WHERE id = $1;
+
+-- name: ListUsers :many
+-- The admin user list. Never selects password_hash.
+SELECT id, email, display_name, is_super_admin, created_at
+FROM users
+ORDER BY email ASC;
+
+-- name: SetUserSuperAdmin :one
+UPDATE users
+SET is_super_admin = $2
+WHERE id = $1
+RETURNING id, email, display_name, is_super_admin, created_at;
+
+-- name: SetUserSuperAdminByEmail :one
+-- CLI bootstrap (`api admin grant|revoke <email>`). citext: case-insensitive.
+UPDATE users
+SET is_super_admin = $2
+WHERE email = $1
+RETURNING id, email, display_name, is_super_admin, created_at;
+
+-- name: CountSuperAdmins :one
+SELECT count(*)::bigint
+FROM users
+WHERE is_super_admin;
+
+-- name: LockSuperAdmins :many
+-- Row-locks every current super-admin inside the demotion transaction so two
+-- concurrent demotions serialize: the second re-evaluates after the first commits
+-- and sees one fewer admin, so the last-super-admin guard cannot be raced.
+SELECT id
+FROM users
+WHERE is_super_admin
+ORDER BY id
+FOR UPDATE;

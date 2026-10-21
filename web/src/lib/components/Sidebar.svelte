@@ -18,11 +18,13 @@
 	let {
 		entries,
 		email,
+		isSuperAdmin = false,
 		theme = $bindable<ThemePref>('system'),
 		open = $bindable(false)
 	}: {
 		entries: EntrySummary[];
 		email: string | null;
+		isSuperAdmin?: boolean;
 		theme?: ThemePref;
 		open?: boolean;
 	} = $props();
@@ -202,6 +204,12 @@
 			{/if}
 		</section>
 	</nav>
+
+	{#if isSuperAdmin}
+		<div class="admin-link">
+			<a href="/admin" class:active={page.url.pathname.startsWith('/admin')}>Admin</a>
+		</div>
+	{/if}
 
 	<div class="panel-foot">
 		<span class="email" title={email ?? ''}>{email ?? 'Not signed in'}</span>
@@ -410,6 +418,31 @@
 		padding: 0 0.5rem;
 		color: var(--fg-subtle);
 		font-size: var(--text-sm);
+	}
+
+	.admin-link {
+		padding: 0 0.5rem 0.5rem;
+	}
+
+	.admin-link a {
+		display: flex;
+		align-items: center;
+		min-height: 2.125rem;
+		padding: 0.3rem 0.5rem;
+		border-radius: var(--radius-sm);
+		color: var(--fg-muted);
+		font-size: var(--text-sm);
+	}
+
+	.admin-link a:hover {
+		background: var(--surface-hover);
+		color: var(--fg);
+		text-decoration: none;
+	}
+
+	.admin-link a.active {
+		background: var(--accent-soft);
+		color: var(--fg);
 	}
 
 	.panel-foot {

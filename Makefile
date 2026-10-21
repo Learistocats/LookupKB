@@ -45,6 +45,16 @@ logs: ## Tail stack logs
 garage-init: ## Assign the initial Garage cluster layout (run once after `make up`)
 	@COMPOSE="$(COMPOSE)" deploy/garage-init.sh
 
+.PHONY: admin-grant
+admin-grant: ## Make an account super-admin: make admin-grant EMAIL=you@example.com
+	@test -n "$(EMAIL)" || (echo "usage: make admin-grant EMAIL=you@example.com" && exit 2)
+	$(COMPOSE) exec api /api admin grant "$(EMAIL)"
+
+.PHONY: admin-revoke
+admin-revoke: ## Remove super-admin: make admin-revoke EMAIL=you@example.com
+	@test -n "$(EMAIL)" || (echo "usage: make admin-revoke EMAIL=you@example.com" && exit 2)
+	$(COMPOSE) exec api /api admin revoke "$(EMAIL)"
+
 .PHONY: config
 config: env ## Validate the Compose config
 	$(COMPOSE) config -q && echo "compose config OK"

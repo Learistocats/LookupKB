@@ -41,6 +41,7 @@ type Server struct {
 	publish         PublishService
 	draftDelete     DraftDeleter
 	search          SearchService
+	admin           AdminService
 }
 
 // Option configures a Server at construction. Later tickets add their own.
@@ -103,6 +104,14 @@ func WithPublish(svc PublishService) Option {
 // (deny-by-default: no service ⇒ no route).
 func WithSearch(svc SearchService) Option {
 	return func(s *Server) { s.search = svc }
+}
+
+// WithAdmin enables the super-admin surface (/api/admin/*, LOO-56). It needs
+// Postgres, and the routes additionally require auth; omitted otherwise
+// (deny-by-default: no service ⇒ no route). Every admin route is gated by
+// auth.RequireSuperAdmin, re-checked from the database on each request.
+func WithAdmin(svc AdminService) Option {
+	return func(s *Server) { s.admin = svc }
 }
 
 // New constructs a Server with base middleware and health routes registered.
@@ -256,6 +265,12 @@ func (s *Server) registerRoutes() {
 			api.Post("/documents/:id/publish", s.handlePublish)
 			api.Post("/documents/:id/unpublish", s.handleUnpublish)
 		}
+
+		// Super-admin surface (LOO-56): groups, membership, tag policy, the role
+		// itself. Internal (unversioned) and gated per request by RequireSuperAdmin.
+		if s.admin != nil {
+			s.registerAdminRoutes(api.Group("/admin", auth.RequireSuperAdmin))
+		}
 	}
 }
 
@@ -272,6 +287,8 @@ func (s *Server) handleMe(c *fiber.Ctx) error {
 		"id":     id.UserID,
 		"email":  id.Email,
 		"groups": id.Groups,
+		// Drives the web's "Admin" link only; the API re-checks it per request.
+		"is_super_admin": id.IsSuperAdmin,
 	})
 }
 
