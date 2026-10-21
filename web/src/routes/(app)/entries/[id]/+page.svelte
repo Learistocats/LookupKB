@@ -5,9 +5,11 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
 	import PublishDialog from '$lib/components/PublishDialog.svelte';
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import { createAutosave, type Autosave, type AutosaveState } from '$lib/autosave';
 	import { publishDraft, unpublishDraft, type FieldError } from '$lib/publish';
 	import { isBlankEntry, type WorkingCopy } from '$lib/entries';
+	import { canDeleteEntry, deleteEntry, DELETE_CONFIRM_MESSAGE } from '$lib/drafts';
 	import type { PageData, ActionData } from './$types';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -91,6 +93,39 @@
 		}
 	}
 
+	// Delete (LOO-58): offered for a persisted draft/unpublished entry, behind a
+	// confirm dialog. Once deleted, autosave is torn down so neither a pending save
+	// nor the leave-flush can hit the gone row, then we leave the editor.
+	let deleteOpen = $state(false);
+	let deleting = $state(false);
+	let deleteError = $state('');
+	let deleted = false;
+
+	const deletable = $derived(canDeleteEntry(id, status));
+
+	function openDelete() {
+		deleteError = '';
+		deleteOpen = true;
+	}
+
+	async function confirmDelete() {
+		if (!id) return;
+		deleting = true;
+		deleteError = '';
+		try {
+			await deleteEntry(id);
+			deleted = true;
+			autosaver?.destroy();
+			deleteOpen = false;
+			void invalidate('app:entries');
+			await goto('/');
+		} catch (e) {
+			deleteError = e instanceof Error ? e.message : 'Deleting failed. Try again.';
+		} finally {
+			deleting = false;
+		}
+	}
+
 	type Snapshot = WorkingCopy;
 
 	// Client autosave (AC-2.6). The no-JS <form> still works on its own; once
@@ -163,7 +198,7 @@
 	// navigation until the save lands, then continue: navigating while the save is in
 	// flight would let its panel refresh (invalidate) cancel the navigation.
 	beforeNavigate((nav) => {
-		if (!autosaver) return;
+		if (!autosaver || deleted) return;
 		const pending = save.status === 'dirty' || save.status === 'saving';
 		if (!pending || nav.type === 'leave' || !nav.to) {
 			void autosaver.flush();
@@ -237,6 +272,16 @@
 			<span class="error-text">{publishError}</span>
 		{/if}
 		{#if hydrated}
+			{#if deletable}
+				<button
+					type="button"
+					class="btn btn-ghost btn-danger"
+					onclick={openDelete}
+					disabled={deleting || publishing}
+				>
+					<Icon name="trash" size={16} /> Delete
+				</button>
+			{/if}
 			{#if isPublished}
 				<a class="btn btn-ghost" href={`/docs/${slug}`}>
 					<Icon name="eye" size={16} /> View
@@ -322,6 +367,20 @@
 		onConfirm={confirmPublish}
 		onCancel={() => (publishOpen = false)}
 	/>
+	<ConfirmDialog
+		bind:open={deleteOpen}
+		title="Delete draft"
+		message={DELETE_CONFIRM_MESSAGE}
+		confirmLabel="Delete"
+		danger
+		busy={deleting}
+		onConfirm={confirmDelete}
+		onCancel={() => (deleteOpen = false)}
+	>
+		{#if deleteError}
+			<p class="error-text">{deleteError}</p>
+		{/if}
+	</ConfirmDialog>
 {/if}
 
 <style>
