@@ -213,6 +213,15 @@
 
 	<div class="panel-foot">
 		<span class="email" title={email ?? ''}>{email ?? 'Not signed in'}</span>
+		<a
+			class="icon-btn"
+			href="/settings"
+			title="Settings"
+			aria-label="Settings"
+			aria-current={page.url.pathname === '/settings' ? 'page' : undefined}
+		>
+			<Icon name="settings" size={17} />
+		</a>
 		<button
 			class="icon-btn"
 			type="button"

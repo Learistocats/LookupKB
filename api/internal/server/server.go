@@ -41,6 +41,7 @@ type Server struct {
 	publish         PublishService
 	draftDelete     DraftDeleter
 	search          SearchService
+	apiTokens       TokenStore
 	admin           AdminService
 }
 
@@ -217,7 +218,10 @@ func (s *Server) registerRoutes() {
 	// public read-only API (F12), which must never expose drafts — so the draft
 	// routes deliberately live off /api/v1.
 	if s.auth != nil {
-		api := s.app.Group("/api", s.auth.Handle)
+		// The middleware also confines Personal Access Tokens to the read surface
+		// (auth.PATAllowed ⇒ 403 elsewhere); the limiter then bounds each PAT per
+		// token id (sessions skip it).
+		api := s.app.Group("/api", s.auth.Handle, s.patRateLimiter())
 
 		// Versioned public surface (me today; the read-only public API grows here).
 		v1 := api.Group("/v1")
@@ -264,6 +268,14 @@ func (s *Server) registerRoutes() {
 		if s.publish != nil {
 			api.Post("/documents/:id/publish", s.handlePublish)
 			api.Post("/documents/:id/unpublish", s.handleUnpublish)
+		}
+
+		// Personal Access Token management (LOO-37/LOO-42). Session-only: off the
+		// PAT read surface, so a PAT gets 403 here. Needs Postgres.
+		if s.apiTokens != nil {
+			api.Get("/tokens", s.handleListTokens)
+			api.Post("/tokens", s.handleCreateToken)
+			api.Delete("/tokens/:id", s.handleRevokeToken)
 		}
 
 		// Super-admin surface (LOO-56): groups, membership, tag policy, the role
