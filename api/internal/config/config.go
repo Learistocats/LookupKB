@@ -90,6 +90,12 @@ type Config struct {
 	// rejected before rendering (render.ErrSourceTooLarge), never truncated. The
 	// limit is admin-tunable; the default (1 MiB) is generous for prose documents.
 	MarkdownMaxBytes int `env:"LOOKUPKB_MARKDOWN_MAX_BYTES" envDefault:"1048576"`
+
+	// MCPAllowedOrigins are the browser origins allowed to call the MCP endpoint
+	// (/mcp, LOO-59), comma-separated (e.g. a browser-based MCP inspector). A
+	// request carrying any other Origin header is refused (DNS-rebinding defence);
+	// native MCP clients send none. Empty (default) refuses every browser origin.
+	MCPAllowedOrigins []string `env:"LOOKUPKB_MCP_ALLOWED_ORIGINS" envSeparator:","`
 }
 
 // MeiliHealthURL returns the Meilisearch health endpoint, or "" when unconfigured.

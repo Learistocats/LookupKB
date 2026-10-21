@@ -50,6 +50,21 @@ describe('upstreamHeaders', () => {
 		expect(h.get('host')).toBeNull();
 	});
 
+	it('forwards the MCP transport headers and Origin (LOO-59)', () => {
+		const h = upstreamHeaders(
+			new Headers({
+				authorization: 'Bearer lkb_pat_abcdefgh_s',
+				accept: 'application/json, text/event-stream',
+				'mcp-protocol-version': '2025-06-18',
+				origin: 'https://evil.example'
+			})
+		);
+		expect(h.get('accept')).toBe('application/json, text/event-stream');
+		expect(h.get('mcp-protocol-version')).toBe('2025-06-18');
+		// Forwarded so the API can refuse a browser origin it does not allow.
+		expect(h.get('origin')).toBe('https://evil.example');
+	});
+
 	it('drops a non-PAT Authorization', () => {
 		const h = upstreamHeaders(new Headers({ authorization: 'Bearer eyJ.session.jwt' }));
 		expect(h.get('authorization')).toBeNull();

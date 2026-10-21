@@ -36,7 +36,9 @@ const FORWARD_REQUEST = [
 	'content-type',
 	'if-none-match',
 	'if-modified-since',
-	// MCP streamable-HTTP transport (LOO-59).
+	// MCP streamable-HTTP transport (LOO-59). Origin lets the API refuse browser
+	// origins on /mcp (DNS-rebinding guidance); native clients send none.
+	'origin',
 	'mcp-session-id',
 	'mcp-protocol-version',
 	'last-event-id'

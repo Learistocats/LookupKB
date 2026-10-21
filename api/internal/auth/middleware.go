@@ -185,6 +185,23 @@ func IdentityFromCtx(c *fiber.Ctx) (Identity, bool) {
 	return id, ok
 }
 
+type identityCtxKey struct{}
+
+// ContextWithIdentity carries a verified Identity on a context.Context, for code
+// that runs outside Fiber (the MCP handler is a net/http handler bridged from a
+// Fiber route; c.Locals do not travel with the converted request). Only call it
+// with an Identity obtained from IdentityFromCtx.
+func ContextWithIdentity(ctx context.Context, id Identity) context.Context {
+	return context.WithValue(ctx, identityCtxKey{}, id)
+}
+
+// IdentityFromContext returns the Identity set by ContextWithIdentity. ok is false
+// when there is none (fail closed: callers must treat that as unauthenticated).
+func IdentityFromContext(ctx context.Context) (Identity, bool) {
+	id, ok := ctx.Value(identityCtxKey{}).(Identity)
+	return id, ok
+}
+
 // bearerToken extracts the token from an "Authorization: Bearer <token>" header
 // (scheme match is case-insensitive per RFC 6750).
 func bearerToken(c *fiber.Ctx) (string, bool) {

@@ -108,3 +108,48 @@ export LKB=https://kb.example.com TOKEN=lkb_pat_...
 curl -H "Authorization: Bearer $TOKEN" "$LKB/api/v1/search?q=kubernetes+runbook&tags=ops&limit=10"
 curl -H "Authorization: Bearer $TOKEN" "$LKB/api/v1/documents/kubernetes-runbook-a1b2c3d4?format=markdown"
 ```
+
+### MCP server for agents
+
+`/mcp` is a read-only [Model Context Protocol](https://modelcontextprotocol.io) server,
+so an agent (Claude Code, Claude Desktop, any MCP client) can search and read the
+knowledge base with your PAT. It uses the Streamable HTTP transport, **stateless with
+JSON responses** (POST only; there is no SSE stream, `GET` answers `405`).
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `search` | `query` (required), `tags` (all must match), `limit` (≤ 50, default 10) | Hits: slug, title, plain-text snippet, tags, published date |
+| `get_document` | `slug` (required), `format`: `markdown` (default), `text`, `html` | Metadata block + the body; unknown and inaccessible slugs both answer `document not found` |
+| `list_documents` | `limit` (≤ 100, default 20), `cursor` | A metadata page + `next_cursor` |
+| `list_tags` | `prefix` | Tags you can see, most used first |
+
+The tools use the same services and access rule as the REST endpoints above, so an
+agent sees exactly what the token's user may read, and nothing it can do changes the
+knowledge base.
+
+Claude Code:
+
+```bash
+claude mcp add --transport http lookupkb https://kb.example.com/mcp \
+  --header "Authorization: Bearer lkb_pat_..."
+```
+
+Generic client configuration (e.g. a `.mcp.json` / `mcpServers` block):
+
+```json
+{
+  "mcpServers": {
+    "lookupkb": {
+      "type": "http",
+      "url": "https://kb.example.com/mcp",
+      "headers": { "Authorization": "Bearer lkb_pat_..." }
+    }
+  }
+}
+```
+
+Requests carrying a browser `Origin` header are refused (`403`) unless that origin is
+listed in `LOOKUPKB_MCP_ALLOWED_ORIGINS` (comma-separated, e.g.
+`http://localhost:6274` for the browser-based MCP Inspector). Native clients send no
+`Origin` and need no configuration. The PAT's 120 requests/minute budget is shared
+between `/mcp` and `/api/v1`.

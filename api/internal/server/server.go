@@ -14,6 +14,7 @@ import (
 	"github.com/Learistocats/LookupKB/api/internal/catalog"
 	"github.com/Learistocats/LookupKB/api/internal/config"
 	"github.com/Learistocats/LookupKB/api/internal/logging"
+	"github.com/Learistocats/LookupKB/api/internal/mcpserver"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/limiter"
 	"github.com/gofiber/fiber/v2/middleware/recover"
@@ -228,7 +229,10 @@ func (s *Server) registerRoutes() {
 		// The middleware also confines Personal Access Tokens to the read surface
 		// (auth.PATAllowed ⇒ 403 elsewhere); the limiter then bounds each PAT per
 		// token id (sessions skip it).
-		api := s.app.Group("/api", s.auth.Handle, s.patRateLimiter())
+		// One limiter instance for /api and /mcp, so a token has one budget even
+		// when the limiter counts in process memory.
+		patLimiter := s.patRateLimiter()
+		api := s.app.Group("/api", s.auth.Handle, patLimiter)
 
 		// Versioned public read API (LOO-38, 10-public-api.md): read-only, published
 		// entries only, access-filtered for the caller; reachable by a session and
@@ -287,6 +291,14 @@ func (s *Server) registerRoutes() {
 		if s.publish != nil {
 			api.Post("/documents/:id/publish", s.handlePublish)
 			api.Post("/documents/:id/unpublish", s.handleUnpublish)
+		}
+
+		// MCP server for agents (LOO-59): Streamable HTTP, stateless, JSON-only,
+		// read-only tools over the same catalog/search/tag services as /api/v1.
+		// Outside /api, so it gets the auth middleware and the PAT limiter itself.
+		// Needs every service its tools use (deny-by-default).
+		if s.catalog != nil && s.search != nil && s.tags != nil {
+			s.registerMCP(patLimiter)
 		}
 
 		// Personal Access Token management (LOO-37/LOO-42). Session-only: off the
@@ -366,4 +378,21 @@ func (s *Server) handleReadyz(c *fiber.Ctx) error {
 		"status": statusText,
 		"checks": checks,
 	})
+}
+
+// registerMCP mounts /mcp behind the auth middleware (a PAT is confined to
+// GET/POST there by auth.PATAllowed) and the per-token limiter. The SDK answers
+// GET (no server-initiated stream in stateless mode) with 405.
+func (s *Server) registerMCP(limiter fiber.Handler) {
+	h, err := mcpserver.New(s.catalog, s.search, s.tags, mcpserver.Options{
+		Version:        s.version,
+		AllowedOrigins: s.cfg.MCPAllowedOrigins,
+		Logger:         s.log,
+	})
+	if err != nil {
+		// Only a tool-schema bug can fail here; boot without the endpoint.
+		s.log.Error("mcp endpoint disabled", "error", err.Error())
+		return
+	}
+	s.app.All("/mcp", s.auth.Handle, limiter, h.Handle)
 }

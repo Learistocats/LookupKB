@@ -42,6 +42,8 @@ services:
       LOOKUPKB_MEILI_KEY: ${MEILI_MASTER_KEY}
       LOOKUPKB_KROKI_URL: http://kroki:8000
       LOOKUPKB_GARAGE_ADMIN_URL: http://garage:3903
+      # Browser origins allowed on /mcp (empty: none; native MCP clients need none).
+      LOOKUPKB_MCP_ALLOWED_ORIGINS: ${LOOKUPKB_MCP_ALLOWED_ORIGINS:-}
     # Loopback-only by default: the browser talks to `web`, never to the API. Point
     # a host reverse proxy at it (and set LOOKUPKB_API_BIND=0.0.0.0 if that proxy
     # runs elsewhere) to expose the public /api surface.
