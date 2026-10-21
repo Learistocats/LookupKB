@@ -14,7 +14,9 @@ export default defineConfig({
 		proxy: {
 			'/healthz': apiTarget,
 			'/readyz': apiTarget,
-			'/api': apiTarget
+			'/api': apiTarget,
+			// MCP over PAT (LOO-59); in the stack the BFF forwards it instead.
+			'/mcp': apiTarget
 		}
 	},
 	test: {

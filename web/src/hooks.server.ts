@@ -6,6 +6,7 @@
 import { redirect, type Handle } from '@sveltejs/kit';
 import { getAuthConfig } from '$lib/server/auth';
 import { THEME_COOKIE, parseTheme } from '$lib/theme';
+import { isPatProxyPath } from '$lib/server/patProxy';
 import {
 	getSessionCookie,
 	clearSessionCookie,
@@ -64,8 +65,15 @@ export const handle: Handle = async ({ event, resolve }) => {
 		event.locals.accessToken = session.accessToken;
 	}
 
-	// Gate real app routes only (event.route.id is null for asset/404 misses).
-	if (!session && !PUBLIC_PATHS.has(event.url.pathname) && event.route.id !== null) {
+	// Gate real app routes only (event.route.id is null for asset/404 misses). The
+	// PAT pass-through (/api/v1/*, /mcp) is for machine clients: never redirected,
+	// the API answers 401 itself when no Personal Access Token is presented.
+	if (
+		!session &&
+		!PUBLIC_PATHS.has(event.url.pathname) &&
+		!isPatProxyPath(event.url.pathname) &&
+		event.route.id !== null
+	) {
 		const returnTo = event.url.pathname + event.url.search;
 		redirect(302, `/login?returnTo=${encodeURIComponent(returnTo)}`);
 	}

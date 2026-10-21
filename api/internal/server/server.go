@@ -39,7 +39,9 @@ type Server struct {
 	documents       DocumentStore
 	tags            TagStore
 	publish         PublishService
+	draftDelete     DraftDeleter
 	search          SearchService
+	apiTokens       TokenStore
 	admin           AdminService
 }
 
@@ -75,6 +77,13 @@ func WithLimiterStorage(st fiber.Storage) Option {
 // registered (mirrors WithAuth's deny-by-default).
 func WithDocuments(store DocumentStore) Option {
 	return func(s *Server) { s.documents = store }
+}
+
+// WithDraftDelete enables DELETE /api/drafts/:id (LOO-58). The service needs
+// Postgres (it runs a transaction); the route is only registered alongside the
+// other draft routes, i.e. when WithDocuments is also set (deny-by-default).
+func WithDraftDelete(svc DraftDeleter) Option {
+	return func(s *Server) { s.draftDelete = svc }
 }
 
 // WithTags enables the tag autocomplete route (GET /api/v1/tags). Omitted when no
@@ -209,7 +218,10 @@ func (s *Server) registerRoutes() {
 	// public read-only API (F12), which must never expose drafts — so the draft
 	// routes deliberately live off /api/v1.
 	if s.auth != nil {
-		api := s.app.Group("/api", s.auth.Handle)
+		// The middleware also confines Personal Access Tokens to the read surface
+		// (auth.PATAllowed ⇒ 403 elsewhere); the limiter then bounds each PAT per
+		// token id (sessions skip it).
+		api := s.app.Group("/api", s.auth.Handle, s.patRateLimiter())
 
 		// Versioned public surface (me today; the read-only public API grows here).
 		v1 := api.Group("/v1")
@@ -232,6 +244,11 @@ func (s *Server) registerRoutes() {
 			api.Get("/documents/mine", s.handleListMyDocuments)
 			api.Get("/drafts/:id", s.handleGetDraft)
 			api.Put("/drafts/:id", s.handleSaveDraft)
+			// Hard delete of a draft/unpublished entry (LOO-58); needs the
+			// transactional delete service too.
+			if s.draftDelete != nil {
+				api.Delete("/drafts/:id", s.handleDeleteDraft)
+			}
 
 			// Hot read path (F8, LOO-18): serve a published document's cached,
 			// sanitized HTML by slug. Distinct method (GET) + shape (:slug, not an
@@ -251,6 +268,14 @@ func (s *Server) registerRoutes() {
 		if s.publish != nil {
 			api.Post("/documents/:id/publish", s.handlePublish)
 			api.Post("/documents/:id/unpublish", s.handleUnpublish)
+		}
+
+		// Personal Access Token management (LOO-37/LOO-42). Session-only: off the
+		// PAT read surface, so a PAT gets 403 here. Needs Postgres.
+		if s.apiTokens != nil {
+			api.Get("/tokens", s.handleListTokens)
+			api.Post("/tokens", s.handleCreateToken)
+			api.Delete("/tokens/:id", s.handleRevokeToken)
 		}
 
 		// Super-admin surface (LOO-56): groups, membership, tag policy, the role

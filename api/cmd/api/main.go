@@ -17,6 +17,7 @@ import (
 	"github.com/Learistocats/LookupKB/api/internal/config"
 	"github.com/Learistocats/LookupKB/api/internal/db"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
+	"github.com/Learistocats/LookupKB/api/internal/drafts"
 	"github.com/Learistocats/LookupKB/api/internal/health"
 	"github.com/Learistocats/LookupKB/api/internal/logging"
 	"github.com/Learistocats/LookupKB/api/internal/publish"
@@ -183,14 +184,23 @@ func run(cfg config.Config, version string) error {
 			return err
 		}
 		var groups auth.GroupLister
+		var pats auth.PATVerifier
 		if pool != nil {
 			groups = dbgen.New(pool)
 			// Signup/login need the users table, so they exist only with a database.
 			opts = append(opts, server.WithAccounts(dbgen.New(pool), tokens))
+			// Personal Access Tokens: verification + management need api_tokens.
+			// Without a pool the verifier stays nil and every PAT is rejected.
+			pats = auth.NewDBPATStore(dbgen.New(pool))
+			opts = append(opts, server.WithTokens(dbgen.New(pool)))
 		} else {
-			log.Warn("auth enabled without a database; signup/login and group lookup are disabled")
+			log.Warn("auth enabled without a database; signup/login, group lookup and PATs are disabled")
 		}
-		opts = append(opts, server.WithAuth(auth.NewMiddleware(tokens, groups, log)))
+		mw := auth.NewMiddleware(tokens, groups, log)
+		if pats != nil {
+			mw.WithPATs(pats)
+		}
+		opts = append(opts, server.WithAuth(mw))
 		log.Info("token authentication enabled", "token_ttl", cfg.AuthTokenTTL.String())
 	} else {
 		log.Warn("LOOKUPKB_AUTH_SECRET is empty; protected routes are disabled")
@@ -216,6 +226,7 @@ func run(cfg config.Config, version string) error {
 	// routes are omitted (the skeleton still boots for bare `go run`).
 	if pool != nil {
 		opts = append(opts, server.WithDocuments(dbgen.New(pool)))
+		opts = append(opts, server.WithDraftDelete(drafts.NewService(pool)))
 		opts = append(opts, server.WithTags(tags.New(pool)))
 		// One process-wide renderer (concurrency-safe) drives the publish gate's
 		// server-side render+sanitize; the publish service composes it with the

@@ -3,11 +3,14 @@
   marked as such, then everything else by last edit. Collapsed by default and
   toggled by the handle centered on the left edge (or ⌘/Ctrl + \). On narrow
   screens it overlays the page with a scrim and closes after navigating.
+  Draft and unpublished items carry a delete action (LOO-58) behind a confirm.
 -->
 <script lang="ts">
 	import { page } from '$app/state';
-	import { afterNavigate } from '$app/navigation';
+	import { afterNavigate, goto, invalidate } from '$app/navigation';
 	import Icon from './Icon.svelte';
+	import ConfirmDialog from './ConfirmDialog.svelte';
+	import { canDeleteEntry, deleteEntry, DELETE_CONFIRM_MESSAGE } from '$lib/drafts';
 	import { relativeTime } from '$lib/time';
 	import { applyTheme, nextTheme, type ThemePref } from '$lib/theme';
 	import type { EntrySummary } from '$lib/entries';
@@ -61,11 +64,53 @@
 		return p === `/entries/${e.id}` || p === `/docs/${e.slug}`;
 	}
 
+	// Delete (LOO-58): the entry awaiting confirmation, if any.
+	let pendingDelete = $state<EntrySummary | null>(null);
+	let confirmOpen = $state(false);
+	let deleting = $state(false);
+	let deleteError = $state('');
+
+	function askDelete(e: EntrySummary) {
+		pendingDelete = e;
+		deleteError = '';
+		confirmOpen = true;
+	}
+
+	function cancelDelete() {
+		if (deleting) return;
+		confirmOpen = false;
+		pendingDelete = null;
+	}
+
+	async function confirmDelete() {
+		const target = pendingDelete;
+		if (!target) return;
+		deleting = true;
+		deleteError = '';
+		try {
+			await deleteEntry(target.id);
+			const wasOpen = isActive(target);
+			confirmOpen = false;
+			pendingDelete = null;
+			void invalidate('app:entries');
+			if (wasOpen) await goto('/');
+		} catch (err) {
+			deleteError = err instanceof Error ? err.message : 'Deleting failed. Try again.';
+		} finally {
+			deleting = false;
+		}
+	}
+
 	function onKeydown(ev: KeyboardEvent) {
 		if ((ev.metaKey || ev.ctrlKey) && ev.key === '\\') {
 			ev.preventDefault();
 			setOpen(!open);
-		} else if (ev.key === 'Escape' && open && window.matchMedia('(max-width: 899px)').matches) {
+		} else if (
+			ev.key === 'Escape' &&
+			open &&
+			!confirmOpen &&
+			window.matchMedia('(max-width: 899px)').matches
+		) {
 			setOpen(false);
 		}
 	}
@@ -77,6 +122,20 @@
 </script>
 
 <svelte:window onkeydown={onKeydown} />
+
+{#snippet deleteButton(e: EntrySummary)}
+	{#if canDeleteEntry(e.id, e.status)}
+		<button
+			class="icon-btn item-delete"
+			type="button"
+			title="Delete"
+			aria-label={`Delete ${e.title || 'Untitled'}`}
+			onclick={() => askDelete(e)}
+		>
+			<Icon name="trash" size={15} />
+		</button>
+	{/if}
+{/snippet}
 
 {#if open}
 	<button class="scrim" type="button" aria-label="Close panel" onclick={() => setOpen(false)}
@@ -110,6 +169,7 @@
 								<span class="title" class:untitled={!e.title}>{e.title || 'Untitled'}</span>
 								<span class="chip chip-draft">Draft</span>
 							</a>
+							{@render deleteButton(e)}
 						</li>
 					{/each}
 				</ul>
@@ -137,6 +197,7 @@
 									>
 								{/if}
 							</a>
+							{@render deleteButton(e)}
 						</li>
 					{/each}
 				</ul>
@@ -152,6 +213,15 @@
 
 	<div class="panel-foot">
 		<span class="email" title={email ?? ''}>{email ?? 'Not signed in'}</span>
+		<a
+			class="icon-btn"
+			href="/settings"
+			title="Settings"
+			aria-label="Settings"
+			aria-current={page.url.pathname === '/settings' ? 'page' : undefined}
+		>
+			<Icon name="settings" size={17} />
+		</a>
 		<button
 			class="icon-btn"
 			type="button"
@@ -168,6 +238,21 @@
 		</form>
 	</div>
 </aside>
+
+<ConfirmDialog
+	bind:open={confirmOpen}
+	title="Delete draft"
+	message={DELETE_CONFIRM_MESSAGE}
+	confirmLabel="Delete"
+	danger
+	busy={deleting}
+	onConfirm={confirmDelete}
+	onCancel={cancelDelete}
+>
+	{#if deleteError}
+		<p class="error-text">{deleteError}</p>
+	{/if}
+</ConfirmDialog>
 
 <button
 	class="handle"
@@ -229,6 +314,9 @@
 		overflow-y: auto;
 		padding: 0 0.5rem 1rem;
 		display: grid;
+		/* minmax(0, 1fr): without it the auto track grows to the rows' unwrapped
+		   title width and pushes the row's chip/delete button past the panel edge. */
+		grid-template-columns: minmax(0, 1fr);
 		align-content: start;
 		gap: 1.25rem;
 	}
@@ -248,10 +336,29 @@
 		margin: 0;
 		padding: 0;
 		display: grid;
+		grid-template-columns: minmax(0, 1fr);
 		gap: 1px;
 	}
 
+	li {
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
+		min-width: 0;
+		border-radius: var(--radius-sm);
+	}
+
+	li:hover {
+		background: var(--surface-hover);
+	}
+
+	li:has(a.active) {
+		background: var(--accent-soft);
+	}
+
 	li a {
+		flex: 1;
+		min-width: 0;
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
@@ -263,12 +370,37 @@
 	}
 
 	li a:hover {
-		background: var(--surface-hover);
 		text-decoration: none;
 	}
 
-	li a.active {
-		background: var(--accent-soft);
+	li .chip {
+		flex: none;
+	}
+
+	/* Per-item delete: sits right after the row's chip, revealed on hover/focus. */
+	.item-delete {
+		flex: none;
+		width: 1.75rem;
+		height: 1.75rem;
+		margin-right: 0.25rem;
+		opacity: 0;
+		transition: opacity 120ms var(--ease);
+	}
+
+	li:hover .item-delete,
+	li:focus-within .item-delete {
+		opacity: 1;
+	}
+
+	.item-delete:hover {
+		color: var(--danger);
+		background: var(--danger-soft);
+	}
+
+	@media (hover: none) {
+		.item-delete {
+			opacity: 1;
+		}
 	}
 
 	.title {
