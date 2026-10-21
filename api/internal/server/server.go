@@ -45,8 +45,8 @@ type Server struct {
 	publish     PublishService
 	draftDelete DraftDeleter
 	search      SearchService
-	admin       AdminService
 	apiTokens   TokenStore
+	admin       AdminService
 }
 
 // Option configures a Server at construction. Later tickets add their own.
@@ -289,18 +289,18 @@ func (s *Server) registerRoutes() {
 			api.Post("/documents/:id/unpublish", s.handleUnpublish)
 		}
 
-		// Super-admin surface (LOO-56): groups, membership, tag policy, the role
-		// itself. Internal (unversioned) and gated per request by RequireSuperAdmin.
-		if s.admin != nil {
-			s.registerAdminRoutes(api.Group("/admin", auth.RequireSuperAdmin))
-		}
-
 		// Personal Access Token management (LOO-37/LOO-42). Session-only: off the
 		// PAT read surface, so a PAT gets 403 here. Needs Postgres.
 		if s.apiTokens != nil {
 			api.Get("/tokens", s.handleListTokens)
 			api.Post("/tokens", s.handleCreateToken)
 			api.Delete("/tokens/:id", s.handleRevokeToken)
+		}
+
+		// Super-admin surface (LOO-56): groups, membership, tag policy, the role
+		// itself. Internal (unversioned) and gated per request by RequireSuperAdmin.
+		if s.admin != nil {
+			s.registerAdminRoutes(api.Group("/admin", auth.RequireSuperAdmin))
 		}
 	}
 }
