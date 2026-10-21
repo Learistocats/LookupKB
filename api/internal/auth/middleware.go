@@ -125,6 +125,8 @@ func (m *Middleware) Handle(c *fiber.Ctx) error {
 		}
 	}
 
+	// Loaded for PAT callers too: a PAT acts as its user, and the access policy
+	// (protected tags) treats a super-admin as unrestricted.
 	isAdmin, err := m.loadSuperAdmin(c.UserContext(), uid)
 	if err != nil {
 		m.log.ErrorContext(c.UserContext(), "load caller super-admin flag failed", "error", err.Error())

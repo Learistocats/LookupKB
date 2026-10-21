@@ -69,8 +69,16 @@ func TestMigrations(t *testing.T) {
 	assertDocumentACLDropped(t, ctx, superDSN, true)
 	assertAppRoleCannotDDL(t, ctx, pgc)
 
+	// --- 00012 (LOO-38) down then up: published_md is backfilled from the working
+	// copy for published rows only ---
+	require.NoError(t, appdb.RunMigrations(ctx, migratorDSN, "down"), "00012 down must apply")
+	assertPublishedMDBackfill(t, ctx, superDSN, func() {
+		require.NoError(t, appdb.RunMigrations(ctx, migratorDSN, "up"), "00012 re-applies")
+	})
+
 	// --- 00011 (LOO-33) down then up: the document ACL comes back empty, and is
 	// usable by the app role, then goes again ---
+	require.NoError(t, appdb.RunMigrations(ctx, migratorDSN, "down"), "00012 down must apply")
 	require.NoError(t, appdb.RunMigrations(ctx, migratorDSN, "down"), "00011 down must apply")
 	assertDocumentACLDropped(t, ctx, superDSN, false)
 	appConn := open(t, roleDSN(t, ctx, pgc, "lookupkb_app", appPassword))
@@ -141,6 +149,51 @@ func assertDocumentACLDropped(t *testing.T, ctx context.Context, dsn string, dro
 	require.Equal(t, !dropped, table, "document_acl")
 	require.Equal(t, !dropped, column, "documents.access")
 	require.Equal(t, !dropped, enum, "document_access enum")
+}
+
+// assertPublishedMDBackfill seeds documents with 00012 rolled back, runs up, and
+// checks the best-effort backfill: published rows take their working copy (a
+// NULL source becomes the empty string), drafts and unpublished rows stay NULL.
+// The seed rows are removed afterwards.
+func assertPublishedMDBackfill(t *testing.T, ctx context.Context, dsn string, up func()) {
+	t.Helper()
+	conn := open(t, dsn)
+	defer func() { _ = conn.Close() }()
+
+	var uid string
+	require.NoError(t, conn.QueryRowContext(ctx,
+		`INSERT INTO users (email, password_hash) VALUES ('backfill@example.com', 'x') RETURNING id`).Scan(&uid))
+	_, err := conn.ExecContext(ctx, `INSERT INTO documents (slug, author_id, status, source_md, published_at) VALUES
+		('bf-pub', $1, 'published', '# published', now()),
+		('bf-pub-null', $1, 'published', NULL, now()),
+		('bf-draft', $1, 'draft', '# draft', NULL),
+		('bf-unpub', $1, 'unpublished', '# unpub', now())`, uid)
+	require.NoError(t, err)
+
+	up()
+
+	got := map[string]*string{}
+	rows, err := conn.QueryContext(ctx, `SELECT slug, published_md FROM documents WHERE slug LIKE 'bf-%'`)
+	require.NoError(t, err)
+	for rows.Next() {
+		var slug string
+		var md *string
+		require.NoError(t, rows.Scan(&slug, &md))
+		got[slug] = md
+	}
+	require.NoError(t, rows.Err())
+	_ = rows.Close()
+	require.NotNil(t, got["bf-pub"])
+	require.Equal(t, "# published", *got["bf-pub"])
+	require.NotNil(t, got["bf-pub-null"])
+	require.Equal(t, "", *got["bf-pub-null"])
+	require.Nil(t, got["bf-draft"], "drafts have no published source")
+	require.Nil(t, got["bf-unpub"], "unpublished rows have no published source")
+
+	_, err = conn.ExecContext(ctx, `DELETE FROM documents WHERE author_id = $1`, uid)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, `DELETE FROM users WHERE id = $1`, uid)
+	require.NoError(t, err)
 }
 
 func assertNoAppTables(t *testing.T, ctx context.Context, dsn string) {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Learistocats/LookupKB/api/internal/auth"
+	"github.com/Learistocats/LookupKB/api/internal/catalog"
 	"github.com/Learistocats/LookupKB/api/internal/config"
 	"github.com/Learistocats/LookupKB/api/internal/logging"
 	"github.com/gofiber/fiber/v2"
@@ -37,12 +38,15 @@ type Server struct {
 	tokens          *auth.Tokens
 	limiterStorage  fiber.Storage
 	documents       DocumentStore
-	tags            TagStore
-	publish         PublishService
-	draftDelete     DraftDeleter
-	search          SearchService
-	apiTokens       TokenStore
-	admin           AdminService
+	// catalog is the shared published-read logic (internal read view, public API,
+	// MCP); built over documents, so it exists exactly when documents does.
+	catalog     *catalog.Service
+	tags        TagStore
+	publish     PublishService
+	draftDelete DraftDeleter
+	search      SearchService
+	apiTokens   TokenStore
+	admin       AdminService
 }
 
 // Option configures a Server at construction. Later tickets add their own.
@@ -144,6 +148,9 @@ func New(cfg config.Config, log *slog.Logger, version string, opts ...Option) *S
 	for _, opt := range opts {
 		opt(s)
 	}
+	if s.documents != nil {
+		s.catalog = catalog.New(s.documents)
+	}
 
 	app.Use(recover.New())
 	app.Use(requestid.New())
@@ -223,9 +230,20 @@ func (s *Server) registerRoutes() {
 		// token id (sessions skip it).
 		api := s.app.Group("/api", s.auth.Handle, s.patRateLimiter())
 
-		// Versioned public surface (me today; the read-only public API grows here).
+		// Versioned public read API (LOO-38, 10-public-api.md): read-only, published
+		// entries only, access-filtered for the caller; reachable by a session and
+		// by a PAT (it is the PAT read surface, auth.PATAllowed). Each route exists
+		// only when its dependency does.
 		v1 := api.Group("/v1")
 		v1.Get("/me", s.handleMe)
+		if s.documents != nil {
+			v1.Get("/documents", s.handleV1ListDocuments)
+			v1.Get("/documents/:slug", s.handleV1GetDocument)
+		}
+		if s.search != nil {
+			// Same handler and semantics as the UI's /api/search.
+			v1.Get("/search", s.handleSearch)
+		}
 
 		// Tag autocomplete (LOO-15). Only wired when a tag store is present (needs
 		// Postgres); the suggestion vocabulary is owner-agnostic.
@@ -257,14 +275,15 @@ func (s *Server) registerRoutes() {
 			api.Get("/documents/:slug", s.handleReadDocument)
 		}
 
-		// Publish gate (LOO-14). The deliberate, metadata-validated draft→published
-		// transition and its reverse. Only wired when the publish service is present
-		// (needs Postgres + the renderer). Lives on the unversioned internal /api,
-		// like the draft routes — never /api/v1.
+		// The UI's search (LOO-26/34); the same handler serves /api/v1/search.
 		if s.search != nil {
 			api.Get("/search", s.handleSearch)
 		}
 
+		// Publish gate (LOO-14). The deliberate, metadata-validated draft→published
+		// transition and its reverse. Only wired when the publish service is present
+		// (needs Postgres + the renderer). Lives on the unversioned internal /api,
+		// like the draft routes — never /api/v1.
 		if s.publish != nil {
 			api.Post("/documents/:id/publish", s.handlePublish)
 			api.Post("/documents/:id/unpublish", s.handleUnpublish)

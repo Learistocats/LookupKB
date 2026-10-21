@@ -147,9 +147,12 @@ func (s *Service) Publish(ctx context.Context, in Input) (*Result, []FieldError,
 		Title:        &title,
 		Description:  &description,
 		RenderedHtml: &html,
-		Slug:         slug,
-		ID:           in.DocID,
-		AuthorID:     in.AuthorID,
+		// The exact source rendered above (LOO-38): the published Markdown served by
+		// the public API, decoupled from later working-copy saves.
+		PublishedMd: &source,
+		Slug:        slug,
+		ID:          in.DocID,
+		AuthorID:    in.AuthorID,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil, ErrNotFound

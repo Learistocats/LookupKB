@@ -61,6 +61,20 @@ type fakeDocStore struct {
 	// deniedSlugs are the protected tags the caller lacks (access policy).
 	deniedSlugs []string
 	deniedCalls int
+
+	listPublishedArg  dbgen.ListPublishedDocumentsParams
+	listPublishedRows []dbgen.ListPublishedDocumentsRow
+	listPublishedErr  error
+}
+
+// ListPublishedDocuments satisfies DocumentStore for the public catalogue tests.
+func (f *fakeDocStore) ListPublishedDocuments(_ context.Context, arg dbgen.ListPublishedDocumentsParams) ([]dbgen.ListPublishedDocumentsRow, error) {
+	f.listPublishedArg = arg
+	rows := f.listPublishedRows
+	if int(arg.MaxRows) < len(rows) {
+		rows = rows[:arg.MaxRows]
+	}
+	return rows, f.listPublishedErr
 }
 
 func (f *fakeDocStore) CreateDraft(_ context.Context, arg dbgen.CreateDraftParams) (dbgen.Document, error) {

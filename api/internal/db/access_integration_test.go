@@ -243,15 +243,25 @@ func TestProtectedTagsEndToEnd(t *testing.T) {
 		b, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, b
 	}
-	searchSlugs := func(who pgtype.UUID) []string {
+	// trySearchSlugs reports ok=false on a non-200 instead of failing, for polling:
+	// the worker creates the Meili index asynchronously, so the first searches can
+	// 503 until it exists.
+	trySearchSlugs := func(who pgtype.UUID) ([]string, bool) {
 		code, b := call(who, http.MethodGet, "/api/search?q=reeflect", "")
-		require.Equal(t, http.StatusOK, code, string(b))
+		if code != http.StatusOK {
+			return nil, false
+		}
 		var res search.Result
 		require.NoError(t, json.Unmarshal(b, &res))
 		out := []string{}
 		for _, h := range res.Hits {
 			out = append(out, h.Slug)
 		}
+		return out, true
+	}
+	searchSlugs := func(who pgtype.UUID) []string {
+		out, ok := trySearchSlugs(who)
+		require.True(t, ok, "search should answer 200")
 		return out
 	}
 	suggests := func(who pgtype.UUID) bool {
@@ -274,7 +284,10 @@ func TestProtectedTagsEndToEnd(t *testing.T) {
 	// Before protection everyone reads/finds it.
 	code, _ = call(user2.ID, http.MethodGet, readURL, "")
 	require.Equal(t, http.StatusOK, code)
-	require.Eventually(t, func() bool { return len(searchSlugs(user2.ID)) == 1 }, 20*time.Second, 200*time.Millisecond)
+	require.Eventually(t, func() bool {
+		slugs, ok := trySearchSlugs(user2.ID)
+		return ok && len(slugs) == 1
+	}, 20*time.Second, 200*time.Millisecond)
 
 	// The admin protects reeflect by granting it to group G.
 	adm := admin.New(pool)

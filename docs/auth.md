@@ -76,3 +76,35 @@ database on each request, so grants and memberships apply at once with no reinde
 Drafts stay author-only (super-admins included).
 
 Every admin change is recorded in `audit_log` (`group.*`, `user.super_admin_set`).
+
+## Personal access tokens & the public API
+
+A **personal access token** (PAT) lets a script, CI job or agent read the knowledge base
+as you, with exactly your access (your groups decide which protected entries it sees).
+Create one under **Settings → API tokens**: give it a name and an optional expiry
+(1–365 days). The secret (`lkb_pat_…`) is shown **once**; only its hash is stored.
+Revoke it there at any time; a revoked or expired token gets `401` on its next request.
+
+A PAT is **read-only**: it reaches `GET /api/v1/*` (except the account routes) and the
+MCP endpoint `/mcp`, nothing else (`403` for drafts, publishing, token management,
+admin). Each token is limited to 120 requests per minute (`429` + `Retry-After`).
+Programmatic clients go through the web origin (the API port is loopback-only); the web
+server forwards only the `Authorization: Bearer lkb_pat_…` header, never cookies.
+
+| Endpoint | What it returns |
+|---|---|
+| `GET /api/v1/search?q=&tags=&author_id=&published_from=&published_to=&facets=tags&limit=&offset=` | Ranked hits (`slug`, `title`, `snippet`, `tags`, `published_at`, …) and `next_offset` when more exist. Same semantics as the in-app search. |
+| `GET /api/v1/documents?limit=&cursor=` | Published entries you can read, newest first, metadata only (limit 20 by default, max 100). Pass `next_cursor` back as `cursor` for the next page. |
+| `GET /api/v1/documents/{slug}?format=json\|markdown\|html\|text` | One entry. `json` (default) is metadata + `html` + `markdown`; the others return the raw body. `Accept: text/markdown`, `text/html` or `text/plain` works too. |
+| `GET /api/v1/tags?prefix=` | Tags you can see, most used first. |
+
+Only **published** content is served: `markdown` is the source as of the last publish
+(later draft edits stay private until you re-publish), `html` is the sanitized HTML
+rendered at publish, and `text` is plain text extracted from it. Drafts never appear. An
+entry you cannot read answers the same `404` as one that does not exist.
+
+```bash
+export LKB=https://kb.example.com TOKEN=lkb_pat_...
+curl -H "Authorization: Bearer $TOKEN" "$LKB/api/v1/search?q=kubernetes+runbook&tags=ops&limit=10"
+curl -H "Authorization: Bearer $TOKEN" "$LKB/api/v1/documents/kubernetes-runbook-a1b2c3d4?format=markdown"
+```

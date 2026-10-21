@@ -26,7 +26,11 @@ type SearchService interface {
 //	&tags=a,b (or repeated tags=)   entry must carry every listed tag
 //	&author_id=<uuid>               one author
 //	&published_from=&published_to=  published_at range (RFC 3339 or YYYY-MM-DD)
+//	&offset=                        pagination (0..search.MaxOffset); the
+//	                                response carries next_offset when more exist
 //
+// It serves both /api/search (the UI) and /api/v1/search (the public read API,
+// LOO-38) — one implementation, one access path.
 // The access filter is derived from the verified caller and injected server-side
 // (protected tags, LOO-33); the client filters above are an allowlist ANDed to it,
 // so they can only narrow the result — never widen it (05-search-and-indexing.md
@@ -41,10 +45,19 @@ func (s *Server) handleSearch(c *fiber.Ctx) error {
 		q = q[:maxQueryRunes]
 	}
 	limit, _ := strconv.Atoi(c.Query("limit"))
+	offset := 0
+	if raw := c.Query("offset"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return badRequest(c, "invalid search filter")
+		}
+		offset = n
+	}
 
 	query := search.Query{
 		Q:      string(q),
 		Limit:  limit,
+		Offset: offset,
 		Facets: multiValue(c, "facets"),
 		Filters: search.Filters{
 			Tags:          multiValue(c, "tags"),

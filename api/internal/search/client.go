@@ -129,6 +129,7 @@ type searchRequest struct {
 	Filter                []string `json:"filter,omitempty"`
 	Facets                []string `json:"facets,omitempty"`
 	Limit                 int      `json:"limit"`
+	Offset                int      `json:"offset,omitempty"`
 	Sort                  []string `json:"sort,omitempty"`
 	AttributesToRetrieve  []string `json:"attributesToRetrieve"`
 	AttributesToHighlight []string `json:"attributesToHighlight"`

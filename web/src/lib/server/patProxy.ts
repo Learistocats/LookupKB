@@ -54,7 +54,12 @@ const FORWARD_RESPONSE = [
 	'x-ratelimit-reset',
 	'x-request-id',
 	'www-authenticate',
-	'mcp-session-id'
+	'mcp-session-id',
+	// Public read API (LOO-38): content negotiation + the boxing headers on
+	// ?format=html, so the web origin never serves author HTML without them.
+	'vary',
+	'content-security-policy',
+	'x-content-type-options'
 ];
 
 /** Build the upstream request headers: allowlisted ones plus a PAT, nothing else. */

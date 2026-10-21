@@ -29,7 +29,8 @@ type tagResponse struct {
 	Protected  bool   `json:"protected"`
 }
 
-// handleListTags serves the tag autocomplete (AC-6.1): GET /api/v1/tags?q=&limit=.
+// handleListTags serves the tag autocomplete (AC-6.1): GET /api/v1/tags?q=&limit=
+// (?prefix= is accepted as an alias for q).
 // An empty q returns the most-used tags. limit is optional (store clamps it). The
 // route is under the authenticated group. Protected tags the caller lacks are
 // excluded (their very existence is need-to-know); super-admins see every tag.
@@ -38,7 +39,12 @@ func (s *Server) handleListTags(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	// ?prefix= is the public API's name for the same filter (10-public-api.md §4);
+	// matching is on the normalized slug (substring), most-used first.
 	q := c.Query("q")
+	if q == "" {
+		q = c.Query("prefix")
+	}
 
 	// limit is advisory; a malformed value falls back to the store default rather
 	// than erroring, so a typo in the typeahead URL never breaks suggestions.
