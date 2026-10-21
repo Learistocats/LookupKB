@@ -36,8 +36,11 @@ SET rendered_html = $2,
 WHERE id = $1;
 
 -- name: GetDraft :one
--- Read a single draft owned by the author (drafts are private to their author,
--- 03-data-model.md §2). deleted_at IS NULL excludes soft-deleted rows.
+-- Read one of the author's own documents for the editor, in ANY status (draft/
+-- published/unpublished — there is no status filter despite the name; editing a
+-- published entry loads its working copy). Owner-scoped so a cross-author or
+-- missing id yields pgx.ErrNoRows → 404 (03-data-model.md §2). deleted_at IS NULL
+-- excludes soft-deleted rows.
 SELECT *
 FROM documents
 WHERE id = $1
@@ -47,8 +50,8 @@ WHERE id = $1
 -- name: GetOwnedDocument :one
 -- Read one of the caller's own documents in ANY status (draft/published/
 -- unpublished) — the publish gate (LOO-14) needs the working copy of an
--- already-published doc for a re-publish, which GetDraft (status='draft' only)
--- cannot return. Owner-scoped so a cross-author or missing id yields pgx.ErrNoRows
+-- already-published doc for a re-publish. (Same filter as GetDraft today; kept as
+-- its own query so the editor read and the publish read can diverge.) Owner-scoped so a cross-author or missing id yields pgx.ErrNoRows
 -- → an identical 404 that never leaks existence (03-data-model.md §2).
 SELECT *
 FROM documents
@@ -122,6 +125,20 @@ WHERE id = $1
   AND status = 'published'
   AND deleted_at IS NULL
 RETURNING *;
+
+-- name: DeleteDraft :one
+-- Hard-delete one of the author's own never-public documents (LOO-58): only a
+-- 'draft' or 'unpublished' row may go — a published doc must be unpublished first,
+-- so it yields pgx.ErrNoRows → the identical 404, like a missing or other-author
+-- id. document_tags/document_acl cascade; index_outbox rows survive (no FK since
+-- 00008). RETURNING status lets the caller enqueue a defensive index delete for a
+-- previously-published (unpublished) doc.
+DELETE FROM documents
+WHERE id = $1
+  AND author_id = $2
+  AND status IN ('draft', 'unpublished')
+  AND deleted_at IS NULL
+RETURNING id, status;
 
 -- name: ListDrafts :many
 -- List the author's own drafts for their private workspace (AC-2.5). Owner-scoped
