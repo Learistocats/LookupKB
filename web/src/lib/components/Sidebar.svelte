@@ -297,6 +297,9 @@
 		overflow-y: auto;
 		padding: 0 0.5rem 1rem;
 		display: grid;
+		/* minmax(0, 1fr): without it the auto track grows to the rows' unwrapped
+		   title width and pushes the row's chip/delete button past the panel edge. */
+		grid-template-columns: minmax(0, 1fr);
 		align-content: start;
 		gap: 1.25rem;
 	}
@@ -316,6 +319,7 @@
 		margin: 0;
 		padding: 0;
 		display: grid;
+		grid-template-columns: minmax(0, 1fr);
 		gap: 1px;
 	}
 
@@ -323,6 +327,7 @@
 		display: flex;
 		align-items: center;
 		gap: 0.25rem;
+		min-width: 0;
 		border-radius: var(--radius-sm);
 	}
 
@@ -349,6 +354,10 @@
 
 	li a:hover {
 		text-decoration: none;
+	}
+
+	li .chip {
+		flex: none;
 	}
 
 	/* Per-item delete: sits right after the row's chip, revealed on hover/focus. */
