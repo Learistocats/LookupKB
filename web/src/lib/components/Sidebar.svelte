@@ -320,10 +320,23 @@
 	}
 
 	li {
-		position: relative;
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
+		border-radius: var(--radius-sm);
+	}
+
+	li:hover {
+		background: var(--surface-hover);
+	}
+
+	li:has(a.active) {
+		background: var(--accent-soft);
 	}
 
 	li a {
+		flex: 1;
+		min-width: 0;
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
@@ -335,29 +348,21 @@
 	}
 
 	li a:hover {
-		background: var(--surface-hover);
 		text-decoration: none;
 	}
 
-	li a.active {
-		background: var(--accent-soft);
-	}
-
-	/* Per-item delete: revealed on hover/focus, overlaying the row's right edge. */
+	/* Per-item delete: sits right after the row's chip, revealed on hover/focus. */
 	.item-delete {
-		position: absolute;
-		top: 50%;
-		right: 0.25rem;
+		flex: none;
 		width: 1.75rem;
 		height: 1.75rem;
-		background: var(--surface);
+		margin-right: 0.25rem;
 		opacity: 0;
-		transform: translateY(-50%);
 		transition: opacity 120ms var(--ease);
 	}
 
 	li:hover .item-delete,
-	.item-delete:focus-visible {
+	li:focus-within .item-delete {
 		opacity: 1;
 	}
 
@@ -369,10 +374,6 @@
 	@media (hover: none) {
 		.item-delete {
 			opacity: 1;
-		}
-
-		li:has(.item-delete) a {
-			padding-right: 2.25rem;
 		}
 	}
 
