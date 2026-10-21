@@ -8,9 +8,11 @@
   Presentational: it binds the metadata and renders any server per-field errors
   inline; the page owns the publish request (see $lib/publish). On a 422 the page
   feeds `fieldErrors` back in and keeps the dialog open, so the document stays a
-  draft and the editor content is preserved.
+  draft and the editor content is preserved. The modal chrome (native <dialog>,
+  header, Cancel/Confirm) is the shared ConfirmDialog; this adds the metadata form.
 -->
 <script lang="ts">
+	import ConfirmDialog from './ConfirmDialog.svelte';
 	import TagInput from './TagInput.svelte';
 	import type { FieldError } from '$lib/publish';
 
@@ -36,15 +38,6 @@
 		onCancel: () => void;
 	} = $props();
 
-	let dialogEl = $state<HTMLDialogElement>();
-
-	// Drive the native <dialog> from the `open` prop so the parent controls it.
-	$effect(() => {
-		if (!dialogEl) return;
-		if (open && !dialogEl.open) dialogEl.showModal();
-		else if (!open && dialogEl.open) dialogEl.close();
-	});
-
 	// Per-field lookup for inline errors beside the offending input.
 	function errorsFor(field: string): string[] {
 		return fieldErrors.filter((e) => e.field === field).map((e) => e.message);
@@ -56,16 +49,18 @@
 	);
 </script>
 
-<dialog bind:this={dialogEl} onclose={onCancel} aria-label="Publish document">
-	<header>
-		<h2>{confirmLabel === 'Update' ? 'Update published entry' : 'Publish entry'}</h2>
-		<p class="hint">
-			{confirmLabel === 'Update'
-				? 'Readers will see your latest changes once you confirm.'
-				: 'Check the details readers and search will see, then confirm.'}
-		</p>
-	</header>
-
+<ConfirmDialog
+	bind:open
+	ariaLabel="Publish document"
+	title={confirmLabel === 'Update' ? 'Update published entry' : 'Publish entry'}
+	message={confirmLabel === 'Update'
+		? 'Readers will see your latest changes once you confirm.'
+		: 'Check the details readers and search will see, then confirm.'}
+	confirmLabel={`Confirm ${confirmLabel.toLowerCase()}`}
+	{busy}
+	{onConfirm}
+	{onCancel}
+>
 	{#each otherErrors as err (err.message)}
 		<p class="error-text">{err.message}</p>
 	{/each}
@@ -104,56 +99,9 @@
 	</div>
 
 	<p class="access">Visible to everyone signed in to this knowledge base.</p>
-
-	<div class="actions">
-		<button type="button" class="btn btn-ghost" onclick={onCancel} disabled={busy}>Cancel</button>
-		<button type="button" class="btn btn-primary" onclick={onConfirm} disabled={busy}>
-			{busy ? 'Working…' : `Confirm ${confirmLabel.toLowerCase()}`}
-		</button>
-	</div>
-</dialog>
+</ConfirmDialog>
 
 <style>
-	dialog {
-		width: min(34rem, calc(100vw - 2rem));
-		max-height: calc(100dvh - 2rem);
-		margin: auto;
-		padding: 1.5rem;
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		background: var(--surface);
-		color: var(--fg);
-		box-shadow: var(--shadow-md);
-	}
-
-	dialog[open] {
-		display: grid;
-		gap: 1rem;
-	}
-
-	dialog::backdrop {
-		background: var(--scrim);
-		backdrop-filter: blur(2px);
-	}
-
-	header {
-		display: grid;
-		gap: 0.25rem;
-	}
-
-	h2 {
-		margin: 0;
-		font-size: var(--text-lg);
-		font-weight: 650;
-		letter-spacing: -0.01em;
-	}
-
-	.hint {
-		margin: 0;
-		color: var(--fg-muted);
-		font-size: var(--text-sm);
-	}
-
 	textarea {
 		resize: vertical;
 	}
@@ -162,12 +110,5 @@
 		margin: 0;
 		color: var(--fg-subtle);
 		font-size: var(--text-sm);
-	}
-
-	.actions {
-		display: flex;
-		justify-content: flex-end;
-		gap: 0.5rem;
-		margin-top: 0.25rem;
 	}
 </style>

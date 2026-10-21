@@ -34,6 +34,10 @@ type Identity struct {
 	// TokenID is the api_tokens.id of the PAT used (empty for sessions). It keys
 	// the per-token rate limit.
 	TokenID string
+	// IsSuperAdmin is users.is_super_admin, re-read from the database on every
+	// request (never a token claim) so a revoke is honored immediately. False when
+	// no database is wired (deny-by-default). See superadmin.go.
+	IsSuperAdmin bool
 }
 
 // Authentication methods recorded on Identity.Method.
@@ -120,6 +124,13 @@ func (m *Middleware) Handle(c *fiber.Ctx) error {
 			id.Groups = append(id.Groups, uuid.UUID(g.Bytes).String())
 		}
 	}
+
+	isAdmin, err := m.loadSuperAdmin(c.UserContext(), uid)
+	if err != nil {
+		m.log.ErrorContext(c.UserContext(), "load caller super-admin flag failed", "error", err.Error())
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	}
+	id.IsSuperAdmin = isAdmin
 
 	// Attribute the request to the caller for the rest of the pipeline. Use the
 	// internal user id, never the email — actor_id is redacted PII (06-security.md

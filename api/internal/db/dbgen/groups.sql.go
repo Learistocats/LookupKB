@@ -11,6 +11,236 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const addGroupMember = `-- name: AddGroupMember :execrows
+INSERT INTO group_members (group_id, user_id)
+VALUES ($1, $2)
+ON CONFLICT (group_id, user_id) DO NOTHING
+`
+
+type AddGroupMemberParams struct {
+	GroupID pgtype.UUID `json:"group_id"`
+	UserID  pgtype.UUID `json:"user_id"`
+}
+
+// Idempotent: re-adding an existing member affects 0 rows (no duplicate audit).
+func (q *Queries) AddGroupMember(ctx context.Context, arg AddGroupMemberParams) (int64, error) {
+	result, err := q.db.Exec(ctx, addGroupMember, arg.GroupID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const addGroupTagGrant = `-- name: AddGroupTagGrant :execrows
+INSERT INTO group_tag_grants (group_id, tag_id)
+VALUES ($1, $2)
+ON CONFLICT (group_id, tag_id) DO NOTHING
+`
+
+type AddGroupTagGrantParams struct {
+	GroupID pgtype.UUID `json:"group_id"`
+	TagID   pgtype.UUID `json:"tag_id"`
+}
+
+// Idempotent: re-granting an existing pair affects 0 rows.
+func (q *Queries) AddGroupTagGrant(ctx context.Context, arg AddGroupTagGrantParams) (int64, error) {
+	result, err := q.db.Exec(ctx, addGroupTagGrant, arg.GroupID, arg.TagID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const countTagGrants = `-- name: CountTagGrants :one
+SELECT count(*)::bigint
+FROM group_tag_grants
+WHERE tag_id = $1
+`
+
+// How many groups grant this tag: 0 means the tag is public, >= 1 protected. The
+// admin confirm flow uses it to detect "first grant" / "last grant".
+func (q *Queries) CountTagGrants(ctx context.Context, tagID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countTagGrants, tagID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const createGroup = `-- name: CreateGroup :one
+
+INSERT INTO groups (name)
+VALUES ($1)
+RETURNING id, name, created_at
+`
+
+// ── Admin group management (LOO-56, F10) ─────────────────────────────────────
+// Every mutation below is called by internal/admin inside a transaction that also
+// writes the matching audit_log row.
+// groups.name is UNIQUE (00007): a duplicate surfaces as a 23505 the admin service
+// maps to a 409.
+func (q *Queries) CreateGroup(ctx context.Context, name string) (Group, error) {
+	row := q.db.QueryRow(ctx, createGroup, name)
+	var i Group
+	err := row.Scan(&i.ID, &i.Name, &i.CreatedAt)
+	return i, err
+}
+
+const deleteGroup = `-- name: DeleteGroup :execrows
+DELETE FROM groups
+WHERE id = $1
+`
+
+// Cascades to group_members, group_tag_grants and document_acl.
+func (q *Queries) DeleteGroup(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteGroup, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getGroup = `-- name: GetGroup :one
+SELECT id, name, created_at
+FROM groups
+WHERE id = $1
+`
+
+func (q *Queries) GetGroup(ctx context.Context, id pgtype.UUID) (Group, error) {
+	row := q.db.QueryRow(ctx, getGroup, id)
+	var i Group
+	err := row.Scan(&i.ID, &i.Name, &i.CreatedAt)
+	return i, err
+}
+
+const listGroupMembers = `-- name: ListGroupMembers :many
+SELECT u.id, u.email, u.display_name, u.is_super_admin
+FROM group_members gm
+JOIN users u ON u.id = gm.user_id
+WHERE gm.group_id = $1
+ORDER BY u.email ASC
+`
+
+type ListGroupMembersRow struct {
+	ID           pgtype.UUID `json:"id"`
+	Email        string      `json:"email"`
+	DisplayName  *string     `json:"display_name"`
+	IsSuperAdmin bool        `json:"is_super_admin"`
+}
+
+func (q *Queries) ListGroupMembers(ctx context.Context, groupID pgtype.UUID) ([]ListGroupMembersRow, error) {
+	rows, err := q.db.Query(ctx, listGroupMembers, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListGroupMembersRow
+	for rows.Next() {
+		var i ListGroupMembersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.DisplayName,
+			&i.IsSuperAdmin,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGroupTagGrants = `-- name: ListGroupTagGrants :many
+
+SELECT t.id AS tag_id, t.slug, t.label, gt.created_at
+FROM group_tag_grants gt
+JOIN tags t ON t.id = gt.tag_id
+WHERE gt.group_id = $1
+ORDER BY t.slug ASC
+`
+
+type ListGroupTagGrantsRow struct {
+	TagID     pgtype.UUID        `json:"tag_id"`
+	Slug      string             `json:"slug"`
+	Label     string             `json:"label"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+// ── Group tag policy (group_tag_grants) ──────────────────────────────────────
+// A tag with >= 1 grant is a protected tag. Enforcement is LOO-33; these queries
+// only maintain the policy.
+func (q *Queries) ListGroupTagGrants(ctx context.Context, groupID pgtype.UUID) ([]ListGroupTagGrantsRow, error) {
+	rows, err := q.db.Query(ctx, listGroupTagGrants, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListGroupTagGrantsRow
+	for rows.Next() {
+		var i ListGroupTagGrantsRow
+		if err := rows.Scan(
+			&i.TagID,
+			&i.Slug,
+			&i.Label,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGroups = `-- name: ListGroups :many
+SELECT g.id,
+       g.name,
+       g.created_at,
+       (SELECT count(*) FROM group_members gm WHERE gm.group_id = g.id)::bigint    AS member_count,
+       (SELECT count(*) FROM group_tag_grants gt WHERE gt.group_id = g.id)::bigint AS tag_count
+FROM groups g
+ORDER BY g.name ASC
+`
+
+type ListGroupsRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	Name        string             `json:"name"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	MemberCount int64              `json:"member_count"`
+	TagCount    int64              `json:"tag_count"`
+}
+
+// The admin overview: every group with its member and tag-grant counts.
+func (q *Queries) ListGroups(ctx context.Context) ([]ListGroupsRow, error) {
+	rows, err := q.db.Query(ctx, listGroups)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListGroupsRow
+	for rows.Next() {
+		var i ListGroupsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.CreatedAt,
+			&i.MemberCount,
+			&i.TagCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUserGroupIDs = `-- name: ListUserGroupIDs :many
 
 SELECT group_id
@@ -40,4 +270,61 @@ func (q *Queries) ListUserGroupIDs(ctx context.Context, userID pgtype.UUID) ([]p
 		return nil, err
 	}
 	return items, nil
+}
+
+const removeGroupMember = `-- name: RemoveGroupMember :execrows
+DELETE FROM group_members
+WHERE group_id = $1
+  AND user_id = $2
+`
+
+type RemoveGroupMemberParams struct {
+	GroupID pgtype.UUID `json:"group_id"`
+	UserID  pgtype.UUID `json:"user_id"`
+}
+
+func (q *Queries) RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) (int64, error) {
+	result, err := q.db.Exec(ctx, removeGroupMember, arg.GroupID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const removeGroupTagGrant = `-- name: RemoveGroupTagGrant :execrows
+DELETE FROM group_tag_grants
+WHERE group_id = $1
+  AND tag_id = $2
+`
+
+type RemoveGroupTagGrantParams struct {
+	GroupID pgtype.UUID `json:"group_id"`
+	TagID   pgtype.UUID `json:"tag_id"`
+}
+
+func (q *Queries) RemoveGroupTagGrant(ctx context.Context, arg RemoveGroupTagGrantParams) (int64, error) {
+	result, err := q.db.Exec(ctx, removeGroupTagGrant, arg.GroupID, arg.TagID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const renameGroup = `-- name: RenameGroup :one
+UPDATE groups
+SET name = $2
+WHERE id = $1
+RETURNING id, name, created_at
+`
+
+type RenameGroupParams struct {
+	ID   pgtype.UUID `json:"id"`
+	Name string      `json:"name"`
+}
+
+func (q *Queries) RenameGroup(ctx context.Context, arg RenameGroupParams) (Group, error) {
+	row := q.db.QueryRow(ctx, renameGroup, arg.ID, arg.Name)
+	var i Group
+	err := row.Scan(&i.ID, &i.Name, &i.CreatedAt)
+	return i, err
 }

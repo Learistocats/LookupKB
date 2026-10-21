@@ -168,6 +168,12 @@ type GroupMember struct {
 	UserID  pgtype.UUID `json:"user_id"`
 }
 
+type GroupTagGrant struct {
+	GroupID   pgtype.UUID        `json:"group_id"`
+	TagID     pgtype.UUID        `json:"tag_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type IndexOutbox struct {
 	ID          int64              `json:"id"`
 	DocumentID  pgtype.UUID        `json:"document_id"`
@@ -201,4 +207,5 @@ type User struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	LastSeenAt   pgtype.Timestamptz `json:"last_seen_at"`
 	PasswordHash string             `json:"password_hash"`
+	IsSuperAdmin bool               `json:"is_super_admin"`
 }
