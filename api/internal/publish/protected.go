@@ -8,7 +8,7 @@ import (
 )
 
 // ProtectedTagErrors refuses tagging an entry with a protected tag the caller is
-// not granted (LOO-33): one per-field "tags" error per offending tag, in the
+// not granted: one per-field "tags" error per offending tag, in the
 // submitted order. A super-admin is never refused. The rule itself lives in
 // internal/access; this only phrases its verdict for the 422.
 //

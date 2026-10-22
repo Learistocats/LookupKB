@@ -9,10 +9,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/Learistocats/LookupKB/api/internal/auth"
+	"github.com/Learistocats/LookupKB/api/internal/db"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -84,8 +84,7 @@ func (s *Server) handleSignup(c *fiber.Ctx) error {
 		PasswordHash: hash,
 		DisplayName:  displayName,
 	})
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+	if db.IsUniqueViolation(err) {
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "an account with this email already exists"})
 	}
 	if err != nil {

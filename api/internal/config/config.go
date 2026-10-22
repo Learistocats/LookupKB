@@ -65,8 +65,7 @@ type Config struct {
 	// survive restarts. Empty falls back to an in-process limiter.
 	ValkeyURL string `env:"LOOKUPKB_VALKEY_URL"`
 
-	// Downstream dependency base URLs used only by the /readyz probes
-	// (01-architecture.md §6, AC-11.1). Each is the service's base URL; the
+	// Downstream dependency base URLs used only by the /readyz probes. Each is the service's base URL; the
 	// health path is appended by the *HealthURL helpers below. Following the
 	// "empty disables it" convention, an unset URL skips that check so the
 	// skeleton/tests stay ready without the dependency running.
@@ -78,7 +77,7 @@ type Config struct {
 	GarageAdminURL string `env:"LOOKUPKB_GARAGE_ADMIN_URL"`
 
 	// ReadinessTimeout bounds each /readyz dependency probe so an unreachable
-	// dependency can never hang the readiness endpoint (AC-11.1).
+	// dependency can never hang the readiness endpoint.
 	ReadinessTimeout time.Duration `env:"LOOKUPKB_READINESS_TIMEOUT" envDefault:"2s"`
 
 	// ReadinessCacheTTL memoizes each probe's result for this window so frequent
@@ -92,7 +91,7 @@ type Config struct {
 	MarkdownMaxBytes int `env:"LOOKUPKB_MARKDOWN_MAX_BYTES" envDefault:"1048576"`
 
 	// MCPAllowedOrigins are the browser origins allowed to call the MCP endpoint
-	// (/mcp, LOO-59), comma-separated (e.g. a browser-based MCP inspector). A
+	// (/mcp), comma-separated (e.g. a browser-based MCP inspector). A
 	// request carrying any other Origin header is refused (DNS-rebinding defence);
 	// native MCP clients send none. Empty (default) refuses every browser origin.
 	MCPAllowedOrigins []string `env:"LOOKUPKB_MCP_ALLOWED_ORIGINS" envSeparator:","`
@@ -128,11 +127,6 @@ func (c Config) MigrateDSN() string {
 		return c.MigrateDatabaseURL
 	}
 	return c.DatabaseURL
-}
-
-// IsProduction reports whether the API runs in a production-like environment.
-func (c Config) IsProduction() bool {
-	return c.Env == "production"
 }
 
 // AuthEnabled reports whether token authentication is configured. When the

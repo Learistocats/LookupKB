@@ -10,24 +10,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Store is the tag vocabulary's data access, wrapping the pgx pool so it can run
-// the multi-statement tag-apply atomically in a transaction — the DocumentStore
-// seam uses a bare *dbgen.Queries, but maintaining usage_count alongside
-// document_tags membership needs a real transaction, so this holds the pool.
+// Store serves the tag autocomplete.
 type Store struct {
-	pool *pgxpool.Pool
-	q    *dbgen.Queries
+	q *dbgen.Queries
 }
 
 // New builds a Store over the connection pool.
 func New(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool, q: dbgen.New(pool)}
-}
-
-// GetSetting exposes the settings read so *Store satisfies SettingGetter (for
-// LoadLimits) without a separate wiring path.
-func (s *Store) GetSetting(ctx context.Context, key string) ([]byte, error) {
-	return s.q.GetSetting(ctx, key)
+	return &Store{q: dbgen.New(pool)}
 }
 
 // searchLimits bound the autocomplete result set.
@@ -37,14 +27,11 @@ const (
 )
 
 // SearchTags returns tags whose slug contains the normalized query, most-used
-// first, for the autocomplete dropdown (AC-6.1). The query is normalized with the
-// same rule as tag creation so a partial "My T" matches "my-tag"; an empty query
-// returns the most-used tags. limit is clamped to [1, maxSearchLimit].
+// first. The query is normalized like tag creation so "My T" matches "my-tag"; an
+// empty query returns the most-used tags. limit is clamped to [1, maxSearchLimit].
 //
-// Protected tags the caller is not granted are never suggested (LOO-33): the
-// caller's access.Policy supplies their ids and the query excludes them BEFORE
-// the LIMIT, so hiding them never shortens the list. Each row carries
-// IsProtected so the publish dialog can say the entry will be restricted.
+// Protected tags the caller is not granted are excluded in SQL before the LIMIT,
+// so hiding them never shortens the list.
 func (s *Store) SearchTags(ctx context.Context, rawQuery string, limit int32, caller access.Caller) ([]dbgen.SearchTagsRow, error) {
 	if limit <= 0 {
 		limit = defaultSearchLimit
@@ -61,12 +48,9 @@ func (s *Store) SearchTags(ctx context.Context, rawQuery string, limit int32, ca
 	return s.q.SearchTags(ctx, dbgen.SearchTagsParams{Pattern: pattern, ExcludedIds: policy.DeniedIDs(), MaxRows: limit})
 }
 
-// TagWriter is the narrow, transaction-bound query surface ApplyDocumentTags needs
-// — exactly the tag-membership + usage_count statements, nothing else. Both
-// *dbgen.Queries (via WithTx) and a test fake satisfy it, and it lets the publish
-// gate (LOO-14) run the tag apply INSIDE its own publish transaction rather than a
-// separate one, so a rolled-back publish never leaves usage_count incremented
-// (mirrors versions.VersionWriter / versions.CreateSnapshot).
+// TagWriter is the transaction-bound query surface ApplyDocumentTags needs, so the
+// apply runs inside the caller's transaction and a rollback never leaves
+// usage_count incremented.
 type TagWriter interface {
 	ListDocumentTags(ctx context.Context, documentID pgtype.UUID) ([]dbgen.ListDocumentTagsRow, error)
 	RemoveDocumentTag(ctx context.Context, arg dbgen.RemoveDocumentTagParams) error
@@ -77,18 +61,10 @@ type TagWriter interface {
 }
 
 // ApplyDocumentTags replaces a document's tag set with the normalized `raw` tags
-// and keeps each tag's usage_count in sync, using the caller-provided
-// transaction-bound queries so it composes into a larger transaction (the publish
-// gate, LOO-14) as an all-or-nothing unit. It is idempotent (re-applying the same
-// set is a no-op for counts) and passing an empty/nil set detaches all tags.
-//
-// usage_count therefore tracks LIVE published usage: publishing a tag increments
-// it, unpublishing or dropping the tag on edit decrements it (clamped at zero).
-//
-// The caller owns the transaction boundary (Begin/Commit); ApplyDocumentTags never
-// commits — a failure returns an error and the caller's deferred Rollback undoes it.
+// and keeps each tag's usage_count in sync (live published usage). It is
+// idempotent and a nil set detaches all tags. The caller owns the transaction:
+// this never commits, and a failure is undone by the caller's rollback.
 func ApplyDocumentTags(ctx context.Context, q TagWriter, docID pgtype.UUID, raw []string) error {
-	// Normalize + de-dupe the desired set once, up front.
 	want := make(map[string]struct{}, len(raw))
 	for _, r := range raw {
 		if slug := Normalize(r); slug != "" {
@@ -96,7 +72,6 @@ func ApplyDocumentTags(ctx context.Context, q TagWriter, docID pgtype.UUID, raw 
 		}
 	}
 
-	// Current membership is the diff source.
 	current, err := q.ListDocumentTags(ctx, docID)
 	if err != nil {
 		return fmt.Errorf("list current tags: %w", err)
@@ -122,7 +97,7 @@ func ApplyDocumentTags(ctx context.Context, q TagWriter, docID pgtype.UUID, raw 
 	// Add newly-wanted tags: upsert vocabulary row, attach, increment.
 	for slug := range want {
 		if _, exists := have[slug]; exists {
-			continue // already attached — leave count untouched (idempotent).
+			continue // already attached: leave the count untouched
 		}
 		tag, err := q.UpsertTag(ctx, dbgen.UpsertTagParams{Slug: slug, Label: slug})
 		if err != nil {
@@ -137,32 +112,4 @@ func ApplyDocumentTags(ctx context.Context, q TagWriter, docID pgtype.UUID, raw 
 	}
 
 	return nil
-}
-
-// SetDocumentTags is the standalone wrapper over ApplyDocumentTags: it owns a
-// transaction (pool Begin → WithTx → deferred Rollback → Commit) for callers
-// applying tags outside a larger transaction. The publish gate calls
-// ApplyDocumentTags directly on its own transaction instead.
-func (s *Store) SetDocumentTags(ctx context.Context, docID pgtype.UUID, raw []string) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin tag tx: %w", err)
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck // no-op after Commit; safe rollback on any early return
-
-	if err := ApplyDocumentTags(ctx, s.q.WithTx(tx), docID, raw); err != nil {
-		return err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit tag tx: %w", err)
-	}
-	return nil
-}
-
-// ClearDocumentTags detaches every tag from a document and decrements the affected
-// usage_counts — the unpublish path, so a unpublished document stops counting
-// toward tag popularity. Equivalent to SetDocumentTags with an empty set.
-func (s *Store) ClearDocumentTags(ctx context.Context, docID pgtype.UUID) error {
-	return s.SetDocumentTags(ctx, docID, nil)
 }

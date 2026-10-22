@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/stretchr/testify/require"
 )
 
@@ -14,13 +14,16 @@ type fakeGetter struct {
 	err   error
 }
 
-func (f fakeGetter) GetSetting(context.Context, string) ([]byte, error) {
-	return f.value, f.err
+func (f fakeGetter) GetSettings(context.Context, []string) ([]dbgen.GetSettingsRow, error) {
+	if f.err != nil || f.value == nil {
+		return nil, f.err
+	}
+	return []dbgen.GetSettingsRow{{Key: LimitsSettingKey, Value: f.value}}, nil
 }
 
 // TestLoadLimits_DefaultsWhenUnset: a missing settings row yields DefaultLimits.
 func TestLoadLimits_DefaultsWhenUnset(t *testing.T) {
-	got, err := LoadLimits(context.Background(), fakeGetter{err: pgx.ErrNoRows})
+	got, err := LoadLimits(context.Background(), fakeGetter{})
 	require.NoError(t, err)
 	require.Equal(t, DefaultLimits, got)
 }

@@ -1,5 +1,5 @@
 // Package access is the single home of LookupKB's read-access rule for published
-// entries (LOO-33, 03-data-model.md §2): protected tags.
+// entries: protected tags.
 //
 //   - A tag is protected iff at least one group grants it (group_tag_grants).
 //   - A caller is granted a protected tag iff they belong to a granting group.
@@ -42,7 +42,7 @@ type Tag struct {
 	Label string
 }
 
-// Policy is one caller's resolved access policy, built with Load (or NewPolicy).
+// Policy is one caller's resolved access policy, built with Load.
 // The zero value is fail-closed: it reads nothing and is never Unrestricted, so a
 // forgotten Load can never widen access.
 type Policy struct {
@@ -71,15 +71,6 @@ func Load(ctx context.Context, q Querier, c Caller) (Policy, error) {
 		denied = append(denied, Tag{ID: r.ID, Slug: r.Slug, Label: r.Label})
 	}
 	return newPolicy(c, denied), nil
-}
-
-// NewPolicy builds a policy from an already-known denied set. It exists for tests
-// and for callers that resolved the set themselves; production code uses Load.
-func NewPolicy(c Caller, denied []Tag) Policy {
-	if c.IsSuperAdmin {
-		return Policy{loaded: true, caller: c}
-	}
-	return newPolicy(c, denied)
 }
 
 func newPolicy(c Caller, denied []Tag) Policy {

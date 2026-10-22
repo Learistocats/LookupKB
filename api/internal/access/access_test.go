@@ -63,7 +63,7 @@ func TestLoad_UsesCallerAndPropagatesErrors(t *testing.T) {
 
 func TestCanRead_Matrix(t *testing.T) {
 	caller, author := id(), id()
-	p := NewPolicy(Caller{UserID: caller}, []Tag{{ID: id(), Slug: "reeflect"}, {ID: id(), Slug: "hr"}})
+	p := newPolicy(Caller{UserID: caller}, []Tag{{ID: id(), Slug: "reeflect"}, {ID: id(), Slug: "hr"}})
 
 	cases := []struct {
 		name   string
@@ -88,7 +88,7 @@ func TestCanRead_Matrix(t *testing.T) {
 // entry is still denied — the denied set holds the tag they lack.
 func TestCanRead_PartialGrantIsDenied(t *testing.T) {
 	// Granted "reeflect" (so it is not in the denied set) but not "hr".
-	p := NewPolicy(Caller{UserID: id()}, []Tag{{ID: id(), Slug: "hr"}})
+	p := newPolicy(Caller{UserID: id()}, []Tag{{ID: id(), Slug: "hr"}})
 	require.True(t, p.CanRead(id(), []string{"reeflect"}))
 	require.False(t, p.CanRead(id(), []string{"reeflect", "hr"}))
 }
@@ -101,7 +101,7 @@ func TestZeroPolicyFailsClosed(t *testing.T) {
 }
 
 func TestDeniedAmong_OrderAndDedupe(t *testing.T) {
-	p := NewPolicy(Caller{UserID: id()}, []Tag{{ID: id(), Slug: "b"}, {ID: id(), Slug: "a"}})
+	p := newPolicy(Caller{UserID: id()}, []Tag{{ID: id(), Slug: "b"}, {ID: id(), Slug: "a"}})
 	require.Equal(t, []string{"a", "b"}, p.DeniedAmong([]string{"x", "a", "b", "a"}))
 	require.Empty(t, p.DeniedAmong([]string{"x"}))
 }

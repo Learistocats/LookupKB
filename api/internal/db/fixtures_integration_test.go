@@ -12,6 +12,7 @@ import (
 
 	appdb "github.com/Learistocats/LookupKB/api/internal/db"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
+	"github.com/Learistocats/LookupKB/api/internal/tags"
 )
 
 // newFixture spins up Postgres, migrates, and returns a pool plus an author user
@@ -40,4 +41,14 @@ func newDoc(t *testing.T, ctx context.Context, pool *pgxpool.Pool, author pgtype
 	doc, err := dbgen.New(pool).CreateDraft(ctx, dbgen.CreateDraftParams{Slug: slug, AuthorID: author})
 	require.NoError(t, err)
 	return doc.ID
+}
+
+// setTags applies a document's tag set in its own transaction (nil clears it).
+func setTags(t *testing.T, ctx context.Context, pool *pgxpool.Pool, doc pgtype.UUID, raw []string) {
+	t.Helper()
+	tx, err := pool.Begin(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx) //nolint:errcheck // no-op after Commit
+	require.NoError(t, tags.ApplyDocumentTags(ctx, dbgen.New(pool).WithTx(tx), doc, raw))
+	require.NoError(t, tx.Commit(ctx))
 }
