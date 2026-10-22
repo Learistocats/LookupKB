@@ -122,14 +122,14 @@ func TestV1GetDocument_AuthorBypassesProtectedTag(t *testing.T) {
 	require.Equal(t, "mine", body)
 }
 
-// A published row without published_md is a data bug: 500, never a fallback to
-// the working copy.
+// A published row without published_md is a data bug: 500 in every format, never
+// a fallback to the working copy.
 func TestV1GetDocument_MissingPublishedMarkdownIs500(t *testing.T) {
-	store := &fakeDocStore{getBySlugRow: publishedRow(uuid.New())} // PublishedMd nil
+	row := publishedRow(uuid.New())
+	row.PublishedMd = nil
+	store := &fakeDocStore{getBySlugRow: row}
 	resp, _ := getV1(t, newDraftServer(t, store), "/api/v1/documents/x?format=markdown", "")
 	require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
-	resp, _ = getV1(t, newDraftServer(t, store), "/api/v1/documents/x?format=html", "")
-	require.Equal(t, http.StatusOK, resp.StatusCode, "html does not depend on published_md")
 }
 
 func listRow(slug string, at time.Time) dbgen.ListPublishedDocumentsRow {
@@ -195,7 +195,7 @@ func TestV1ListDocuments_PaginatesWithCursorAndPassesPolicy(t *testing.T) {
 func TestV1ListDocuments_Validation(t *testing.T) {
 	store := &fakeDocStore{}
 	s := newDraftServer(t, store)
-	for _, q := range []string{"?limit=0", "?limit=-1", "?limit=abc", "?cursor=!!", "?cursor=bm90LWEtY3Vyc29y"} {
+	for _, q := range []string{"?limit=-1", "?limit=abc", "?cursor=!!", "?cursor=bm90LWEtY3Vyc29y"} {
 		resp, _ := getV1(t, s, "/api/v1/documents"+q, "")
 		require.Equal(t, http.StatusBadRequest, resp.StatusCode, q)
 	}

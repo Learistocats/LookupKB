@@ -2,17 +2,14 @@ package server
 
 import (
 	"errors"
-	"strconv"
 
 	"github.com/Learistocats/LookupKB/api/internal/catalog"
 	"github.com/gofiber/fiber/v2"
 )
 
-// Public read API (LOO-38, 10-public-api.md §4): the versioned /api/v1 surface
-// for programmatic callers — a PAT, or the BFF's session. Read-only, published
-// entries only (drafts never appear), every answer access-filtered for the
-// verified caller by the same policy as the UI (internal/access via catalog and
-// search). Errors keep the API's {"error": "..."} shape.
+// The versioned /api/v1 surface for programmatic callers (a PAT, or the BFF's
+// session): read-only, published entries only, access-filtered for the verified
+// caller by the same policy as the UI.
 
 // v1Document is the JSON envelope of GET /api/v1/documents/{slug}: the public
 // metadata plus the content in both stored representations. Internal ids, the
@@ -41,13 +38,9 @@ func (s *Server) handleV1ListDocuments(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	limit := 0
-	if raw := c.Query("limit"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 {
-			return badRequest(c, "invalid limit")
-		}
-		limit = n
+	limit, err := queryInt(c, "limit")
+	if err != nil {
+		return badRequest(c, err.Error())
 	}
 	page, err := s.catalog.List(c.UserContext(), caller, limit, c.Query("cursor"))
 	if errors.Is(err, catalog.ErrInvalidCursor) {
@@ -87,23 +80,15 @@ func (s *Server) handleV1GetDocument(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	doc, ok, err := s.readPublished(c, caller, c.Params("slug"))
-	if !ok {
+	doc, err := s.readPublished(c, caller, c.Params("slug"))
+	if err != nil {
 		return err
 	}
 
 	if format == catalog.FormatJSON {
-		md, err := doc.Body(catalog.FormatMarkdown)
-		if err != nil {
-			return s.integrityError(c, doc.Slug)
-		}
-		return c.JSON(v1Document{Summary: doc.Summary, HTML: doc.HTML, Markdown: md})
+		return c.JSON(v1Document{Summary: doc.Summary, HTML: doc.HTML, Markdown: doc.Markdown})
 	}
 
-	body, err := doc.Body(format)
-	if err != nil {
-		return s.integrityError(c, doc.Slug)
-	}
 	switch format {
 	case catalog.FormatHTML:
 		c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
@@ -116,12 +101,7 @@ func (s *Server) handleV1GetDocument(c *fiber.Ctx) error {
 		c.Set(fiber.HeaderContentType, fiber.MIMETextPlainCharsetUTF8)
 	}
 	c.Set(fiber.HeaderXContentTypeOptions, "nosniff")
-	return c.SendString(body)
-}
-
-func (s *Server) integrityError(c *fiber.Ctx, slug string) error {
-	s.log.ErrorContext(c.UserContext(), "published document missing publish-time content", "slug", slug)
-	return internalError(c)
+	return c.SendString(doc.Body(format))
 }
 
 // formatFromAccept maps the negotiated media type to a format; anything else

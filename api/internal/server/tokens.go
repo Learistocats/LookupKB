@@ -16,9 +16,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// Personal Access Token management (LOO-37/LOO-42). These routes live on the
-// unversioned internal /api and are session-only: a PAT reaching them gets 403
-// from the auth middleware's read-surface check (auth.PATAllowed).
+// Personal Access Token management. These routes are session-only: a PAT
+// reaching them gets 403 from the auth middleware (auth.PATAllowed).
 const (
 	// maxActiveTokens caps a user's live (unrevoked, unexpired) tokens.
 	maxActiveTokens = 20
@@ -26,17 +25,18 @@ const (
 	maxTokenNameLen = 100
 	// maxTokenExpiryDays bounds the optional expiry.
 	maxTokenExpiryDays = 365
-	// patRateLimit is the per-token request budget per patRateWindow (AC-12.10).
+	// maxCreateAttempts bounds retries on a token-prefix collision.
+	maxCreateAttempts = 3
+	// patRateLimit is the per-token request budget per patRateWindow.
 	patRateLimit  = 120
 	patRateWindow = time.Minute
 )
 
 // TokenStore is the subset of the generated queries the token routes need.
-// *dbgen.Queries satisfies it. Create and revoke write their audit row in the
-// same statement (see queries/api_tokens.sql).
+// *dbgen.Queries satisfies it. Create (which enforces the active-token cap) and
+// revoke write their audit row in the same statement (see queries/api_tokens.sql).
 type TokenStore interface {
 	CreateAPIToken(ctx context.Context, arg dbgen.CreateAPITokenParams) (dbgen.CreateAPITokenRow, error)
-	CountActiveAPITokens(ctx context.Context, userID pgtype.UUID) (int64, error)
 	ListMyAPITokens(ctx context.Context, userID pgtype.UUID) ([]dbgen.ListMyAPITokensRow, error)
 	RevokeMyAPIToken(ctx context.Context, arg dbgen.RevokeMyAPITokenParams) (pgtype.UUID, error)
 }
@@ -61,6 +61,18 @@ type tokenResponse struct {
 	Token      string  `json:"token,omitempty"`
 }
 
+func newTokenResponse(id pgtype.UUID, name, prefix string, created, lastUsed, expires, revoked pgtype.Timestamptz) tokenResponse {
+	return tokenResponse{
+		ID:         formatUUID(id),
+		Name:       name,
+		Prefix:     prefix,
+		CreatedAt:  formatTime(created),
+		LastUsedAt: optTime(lastUsed),
+		ExpiresAt:  optTime(expires),
+		RevokedAt:  optTime(revoked),
+	}
+}
+
 func optTime(t pgtype.Timestamptz) *string {
 	if !t.Valid {
 		return nil
@@ -81,17 +93,34 @@ func (s *Server) handleListTokens(c *fiber.Ctx) error {
 	}
 	out := make([]tokenResponse, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, tokenResponse{
-			ID:         formatUUID(r.ID),
-			Name:       r.Name,
-			Prefix:     r.Prefix,
-			CreatedAt:  formatTime(r.CreatedAt),
-			LastUsedAt: optTime(r.LastUsedAt),
-			ExpiresAt:  optTime(r.ExpiresAt),
-			RevokedAt:  optTime(r.RevokedAt),
-		})
+		out = append(out, newTokenResponse(r.ID, r.Name, r.Prefix, r.CreatedAt, r.LastUsedAt, r.ExpiresAt, r.RevokedAt))
 	}
 	return c.JSON(out)
+}
+
+type createTokenRequest struct {
+	Name          string `json:"name"`
+	ExpiresInDays *int   `json:"expires_in_days"`
+}
+
+// validate returns the trimmed name and the optional expiry, or a client-facing
+// message.
+func (r createTokenRequest) validate() (name string, expires pgtype.Timestamptz, msg string) {
+	name = strings.TrimSpace(r.Name)
+	switch {
+	case name == "":
+		return "", expires, "name is required"
+	case utf8.RuneCountInString(name) > maxTokenNameLen:
+		return "", expires, "name is too long"
+	}
+	if r.ExpiresInDays != nil {
+		d := *r.ExpiresInDays
+		if d < 1 || d > maxTokenExpiryDays {
+			return "", expires, "expires_in_days must be between 1 and 365"
+		}
+		expires = pgtype.Timestamptz{Time: time.Now().Add(time.Duration(d) * 24 * time.Hour), Valid: true}
+	}
+	return name, expires, ""
 }
 
 // handleCreateToken issues a PAT and returns its plaintext exactly once (201).
@@ -100,41 +129,19 @@ func (s *Server) handleCreateToken(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	var body struct {
-		Name          string `json:"name"`
-		ExpiresInDays *int   `json:"expires_in_days"`
-	}
+	var body createTokenRequest
 	if err := c.BodyParser(&body); err != nil {
 		return badRequest(c, "invalid request body")
 	}
-	name := strings.TrimSpace(body.Name)
-	if name == "" {
-		return badRequest(c, "name is required")
-	}
-	if utf8.RuneCountInString(name) > maxTokenNameLen {
-		return badRequest(c, "name is too long")
-	}
-	var expires pgtype.Timestamptz
-	if body.ExpiresInDays != nil {
-		d := *body.ExpiresInDays
-		if d < 1 || d > maxTokenExpiryDays {
-			return badRequest(c, "expires_in_days must be between 1 and 365")
-		}
-		expires = pgtype.Timestamptz{Time: time.Now().Add(time.Duration(d) * 24 * time.Hour), Valid: true}
+	name, expires, msg := body.validate()
+	if msg != "" {
+		return badRequest(c, msg)
 	}
 
 	ctx := c.UserContext()
-	n, err := s.apiTokens.CountActiveAPITokens(ctx, uid)
-	if err != nil {
-		s.log.ErrorContext(ctx, "count api tokens failed", "error", err.Error())
-		return internalError(c)
-	}
-	if n >= maxActiveTokens {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "too many active tokens; revoke one first"})
-	}
-
-	// The prefix is UNIQUE; retry the (astronomically rare) collision once more.
-	for attempt := 0; ; attempt++ {
+	// The prefix is UNIQUE; on the (astronomically rare) collision, try again with
+	// a fresh token, up to maxCreateAttempts in all.
+	for attempt := 1; ; attempt++ {
 		pat, err := auth.GeneratePAT()
 		if err != nil {
 			s.log.ErrorContext(ctx, "generate api token failed", "error", err.Error())
@@ -146,35 +153,31 @@ func (s *Server) handleCreateToken(c *fiber.Ctx) error {
 			TokenHash: pat.Hash,
 			Prefix:    pat.Prefix,
 			ExpiresAt: expires,
+			MaxActive: maxActiveTokens,
 		})
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" && attempt < 2 {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows): // the INSERT refused: at the cap
+			return errJSON(c, fiber.StatusConflict, "too many active tokens; revoke one first")
+		case errors.As(err, &pgErr) && pgErr.Code == "23505" && attempt < maxCreateAttempts:
 			continue
-		}
-		if err != nil {
+		case err != nil:
 			s.log.ErrorContext(ctx, "create api token failed", "error", err.Error())
 			return internalError(c)
 		}
 		s.log.InfoContext(ctx, "api token created", "token_id", formatUUID(row.ID), "prefix", row.Prefix)
-		return c.Status(fiber.StatusCreated).JSON(tokenResponse{
-			ID:         formatUUID(row.ID),
-			Name:       row.Name,
-			Prefix:     row.Prefix,
-			CreatedAt:  formatTime(row.CreatedAt),
-			LastUsedAt: optTime(row.LastUsedAt),
-			ExpiresAt:  optTime(row.ExpiresAt),
-			RevokedAt:  optTime(row.RevokedAt),
-			Token:      pat.Token,
-		})
+		resp := newTokenResponse(row.ID, row.Name, row.Prefix, row.CreatedAt, row.LastUsedAt, row.ExpiresAt, row.RevokedAt)
+		resp.Token = pat.Token
+		return c.Status(fiber.StatusCreated).JSON(resp)
 	}
 }
 
 // handleRevokeToken revokes one of the caller's tokens. Missing, foreign and
 // already-revoked tokens all answer the same 404 (no existence leak).
 func (s *Server) handleRevokeToken(c *fiber.Ctx) error {
-	id, err := parseUUID(c.Params("id"))
-	if err != nil {
-		return tokenNotFound(c)
+	id, ok := parseUUIDParam(c, "id")
+	if !ok {
+		return badRequest(c, "invalid token id")
 	}
 	uid, err := s.callerID(c)
 	if err != nil {
@@ -182,7 +185,7 @@ func (s *Server) handleRevokeToken(c *fiber.Ctx) error {
 	}
 	_, err = s.apiTokens.RevokeMyAPIToken(c.UserContext(), dbgen.RevokeMyAPITokenParams{ID: id, UserID: uid})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return tokenNotFound(c)
+		return notFound(c, "token")
 	}
 	if err != nil {
 		s.log.ErrorContext(c.UserContext(), "revoke api token failed", "error", err.Error())
@@ -192,12 +195,8 @@ func (s *Server) handleRevokeToken(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func tokenNotFound(c *fiber.Ctx) error {
-	return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "token not found"})
-}
-
 // patRateLimiter bounds each PAT to patRateLimit requests per patRateWindow,
-// keyed by token id (AC-12.10) in the shared limiter storage (Valkey, or process
+// keyed by token id in the shared limiter storage (Valkey, or process
 // memory). Session requests skip it. Exceeding it answers 429 with the
 // limiter's X-RateLimit-* and Retry-After headers.
 func (s *Server) patRateLimiter() fiber.Handler {
@@ -214,7 +213,7 @@ func (s *Server) patRateLimiter() fiber.Handler {
 			return "pat:" + id.TokenID
 		},
 		LimitReached: func(c *fiber.Ctx) error {
-			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{"error": "rate limit exceeded, try again later"})
+			return errJSON(c, fiber.StatusTooManyRequests, "rate limit exceeded, try again later")
 		},
 	})
 }

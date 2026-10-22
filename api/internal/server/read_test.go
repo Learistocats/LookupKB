@@ -22,12 +22,14 @@ func publishedRow(authorID uuid.UUID) dbgen.GetPublishedBySlugRow {
 	title := "Kubernetes Guide"
 	desc := "How we run k8s"
 	html := "<h1>Kubernetes</h1><p>content</p>"
+	md := "# Kubernetes\n\ncontent"
 	name := "Ada Lovelace"
 	return dbgen.GetPublishedBySlugRow{
 		Slug:              "kubernetes-guide-abcd1234",
 		Title:             &title,
 		Description:       &desc,
 		RenderedHtml:      &html,
+		PublishedMd:       &md,
 		AuthorID:          pgUUID(authorID),
 		PublishedAt:       pgtype.Timestamptz{Time: time.Now(), Valid: true},
 		AuthorDisplayName: name,

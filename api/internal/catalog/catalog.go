@@ -1,6 +1,6 @@
-// Package catalog is the read side of the published corpus for programmatic
-// callers (LOO-38 public read API, LOO-59 MCP tools): list the published entries
-// a caller may read, and fetch one in a chosen representation.
+// Package catalog is the read side of the published corpus (internal read view,
+// public API, MCP tools): list the published entries a caller may read, and
+// fetch one in a chosen representation.
 //
 // Every decision goes through the protected-tag policy (internal/access): the list
 // excludes denied entries in SQL BEFORE pagination, and a single read answers
@@ -87,8 +87,7 @@ type Document struct {
 	ID       pgtype.UUID `json:"-"`
 	AuthorID pgtype.UUID `json:"-"`
 	HTML     string      `json:"-"`
-	// Markdown is published_md (nil only on a data-integrity bug).
-	Markdown *string `json:"-"`
+	Markdown string      `json:"-"` // published_md
 }
 
 // Get returns the published entry at slug if the caller may read it. The policy
@@ -112,24 +111,28 @@ func (s *Service) Get(ctx context.Context, caller access.Caller, slug string) (D
 	if !policy.CanRead(row.AuthorID, row.TagSlugs) {
 		return Document{}, ErrNotFound
 	}
-	if row.RenderedHtml == nil {
+	if row.RenderedHtml == nil || row.PublishedMd == nil {
 		return Document{}, ErrIntegrity
 	}
 	return Document{
-		Summary: Summary{
-			Slug:              row.Slug,
-			Title:             deref(row.Title),
-			Description:       deref(row.Description),
-			Tags:              nonNil(row.Tags),
-			AuthorDisplayName: row.AuthorDisplayName,
-			PublishedAt:       formatTime(row.PublishedAt),
-			UpdatedAt:         formatTime(row.UpdatedAt),
-		},
+		Summary:  newSummary(row.Slug, row.Title, row.Description, row.Tags, row.AuthorDisplayName, row.PublishedAt, row.UpdatedAt),
 		ID:       row.ID,
 		AuthorID: row.AuthorID,
 		HTML:     *row.RenderedHtml,
-		Markdown: row.PublishedMd,
+		Markdown: *row.PublishedMd,
 	}, nil
+}
+
+func newSummary(slug string, title, description *string, tags []string, author string, publishedAt, updatedAt pgtype.Timestamptz) Summary {
+	return Summary{
+		Slug:              slug,
+		Title:             deref(title),
+		Description:       deref(description),
+		Tags:              nonNil(tags),
+		AuthorDisplayName: author,
+		PublishedAt:       formatTime(publishedAt),
+		UpdatedAt:         formatTime(updatedAt),
+	}
 }
 
 // List returns one page of the published entries the caller may read, newest
@@ -168,15 +171,7 @@ func (s *Service) List(ctx context.Context, caller access.Caller, limit int, cur
 			page.NextCursor = encodeCursor(last.PublishedAt, last.ID)
 			break
 		}
-		page.Documents = append(page.Documents, Summary{
-			Slug:              r.Slug,
-			Title:             deref(r.Title),
-			Description:       deref(r.Description),
-			Tags:              nonNil(r.Tags),
-			AuthorDisplayName: r.AuthorDisplayName,
-			PublishedAt:       formatTime(r.PublishedAt),
-			UpdatedAt:         formatTime(r.UpdatedAt),
-		})
+		page.Documents = append(page.Documents, newSummary(r.Slug, r.Title, r.Description, r.Tags, r.AuthorDisplayName, r.PublishedAt, r.UpdatedAt))
 	}
 	return page, nil
 }
@@ -206,19 +201,15 @@ func ParseFormat(s string) (Format, bool) {
 //   - text: plain text extracted from that HTML (the search indexer's walk,
 //     keeping line structure — search.ReadableTextFromHTML);
 //   - markdown: published_md, the source rendered_html was rendered from.
-func (d Document) Body(f Format) (string, error) {
+func (d Document) Body(f Format) string {
 	switch f {
 	case FormatHTML:
-		return d.HTML, nil
+		return d.HTML
 	case FormatText:
-		return search.ReadableTextFromHTML(d.HTML), nil
-	case FormatMarkdown:
-		if d.Markdown == nil {
-			return "", ErrIntegrity
-		}
-		return *d.Markdown, nil
+		return search.ReadableTextFromHTML(d.HTML)
+	default:
+		return d.Markdown
 	}
-	return "", fmt.Errorf("catalog: format %q has no text body", f)
 }
 
 // cursor = base64url("<published_at unix µs>.<uuid>"): opaque to clients, exact to

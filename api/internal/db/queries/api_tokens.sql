@@ -5,10 +5,18 @@
 -- name: CreateAPIToken :one
 -- Issue a token for its owner and record the audit row in the same statement (one
 -- implicit transaction). The audit metadata carries the display prefix and name,
--- never the secret or its hash.
+-- never the secret or its hash. The per-user cap is enforced in the INSERT itself:
+-- at the cap nothing is inserted and the query returns no row (pgx.ErrNoRows).
 WITH t AS (
     INSERT INTO api_tokens (user_id, name, token_hash, prefix, expires_at)
-    VALUES (@user_id, @name, @token_hash, @prefix, @expires_at)
+    SELECT @user_id::uuid, @name::text, @token_hash::text, @prefix::text, @expires_at::timestamptz
+    WHERE (
+        SELECT count(*)
+        FROM api_tokens
+        WHERE user_id = @user_id::uuid
+          AND revoked_at IS NULL
+          AND (expires_at IS NULL OR expires_at > now())
+    ) < @max_active::bigint
     RETURNING id, user_id, name, prefix, created_at, last_used_at, expires_at, revoked_at
 ), a AS (
     INSERT INTO audit_log (actor_id, action, target_type, target_id, metadata)
@@ -18,14 +26,6 @@ WITH t AS (
 )
 SELECT id, user_id, name, prefix, created_at, last_used_at, expires_at, revoked_at
 FROM t;
-
--- name: CountActiveAPITokens :one
--- Active (not revoked, not expired) tokens a user holds — bounds issuance.
-SELECT count(*)
-FROM api_tokens
-WHERE user_id = $1
-  AND revoked_at IS NULL
-  AND (expires_at IS NULL OR expires_at > now());
 
 -- name: GetActiveAPITokenByPrefix :one
 -- The verifier's lookup: an active token by its non-secret prefix, with the owner's

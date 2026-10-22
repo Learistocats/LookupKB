@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/Learistocats/LookupKB/api/internal/access"
@@ -18,13 +20,9 @@ import (
 
 // DocumentStore is the subset of the generated queries the document routes need.
 // *dbgen.Queries satisfies it; kept as an interface so the handlers are testable
-// without a database. The draft queries are owner-scoped (author_id) and never
-// touch versions/index/status — see internal/db/queries/documents.sql.
+// without a database. The draft queries are owner-scoped (author_id).
 //
-// SetRenderedHTML is the write path to documents.rendered_html for the sanitized
-// publish-time HTML (LOO-16). It has no handler yet: the publish gate (LOO-14)
-// composes render.RenderAndSanitize output into its publish transaction and calls
-// it there. The seam ships now so that ticket has nothing to retrofit here.
+// SetRenderedHTML has no handler: the publish transaction calls it.
 type DocumentStore interface {
 	CreateDraft(ctx context.Context, arg dbgen.CreateDraftParams) (dbgen.Document, error)
 	SaveDraft(ctx context.Context, arg dbgen.SaveDraftParams) (dbgen.Document, error)
@@ -33,20 +31,17 @@ type DocumentStore interface {
 	ListMyDocuments(ctx context.Context, authorID pgtype.UUID) ([]dbgen.ListMyDocumentsRow, error)
 	ListDocumentTagLabels(ctx context.Context, documentID pgtype.UUID) ([]string, error)
 	SetRenderedHTML(ctx context.Context, arg dbgen.SetRenderedHTMLParams) error
-	// GetPublishedBySlug is the hot read path (F8): a published doc by slug, NOT
-	// owner-scoped (public reads), with author/version/tags joined. status guard
-	// makes a draft/unpublished slug indistinguishable from a missing one (404).
+	// GetPublishedBySlug is not owner-scoped; its status guard makes a
+	// draft/unpublished slug indistinguishable from a missing one.
 	GetPublishedBySlug(ctx context.Context, slug string) (dbgen.GetPublishedBySlugRow, error)
-	// ListPublishedDocuments is the public catalogue page (LOO-38): published
-	// entries the caller may read, access-filtered in SQL before the LIMIT.
+	// ListPublishedDocuments filters by access in SQL before the LIMIT.
 	ListPublishedDocuments(ctx context.Context, arg dbgen.ListPublishedDocumentsParams) ([]dbgen.ListPublishedDocumentsRow, error)
-	// The protected-tag policy source for the read check (LOO-33).
+	// The protected-tag policy source for the read check.
 	access.Querier
 }
 
-// draftResponse is the JSON projection returned to the caller. Only the fields
-// the walking-skeleton UI needs are exposed; rendered_html, versioning and
-// search_tsv are publish-time/M1 concerns and stay server-side.
+// draftResponse is the owner's view of a document: the working copy, never
+// rendered_html.
 type draftResponse struct {
 	ID          string  `json:"id"`
 	Slug        string  `json:"slug"`
@@ -73,10 +68,7 @@ func toDraftResponse(d dbgen.Document) draftResponse {
 	}
 }
 
-// draftListItem is the per-row projection for the private workspace list. It is
-// deliberately lighter than draftResponse — title (nullable; the UI renders
-// "Untitled" when absent) and updated_at are all the list needs; source_md and
-// rendered_html are never listed.
+// draftListItem is the light per-row projection for the owner's lists (no bodies).
 type draftListItem struct {
 	ID        string  `json:"id"`
 	Slug      string  `json:"slug"`
@@ -95,10 +87,8 @@ func toDraftListItem(r dbgen.ListDraftsRow) draftListItem {
 	}
 }
 
-// handleCreateDraft creates an empty draft owned by the caller (AC-2.1): a new
-// document with status 'draft' and no metadata required. The slug is a
-// server-generated placeholder (schema requires slug NOT NULL UNIQUE); the real
-// title-derived slug is assigned at publish (M1), so it is not exposed here.
+// handleCreateDraft creates an empty draft owned by the caller. The slug is a
+// placeholder (the column is NOT NULL UNIQUE); the real one is assigned at publish.
 func (s *Server) handleCreateDraft(c *fiber.Ctx) error {
 	authorID, err := s.callerID(c)
 	if err != nil {
@@ -111,7 +101,6 @@ func (s *Server) handleCreateDraft(c *fiber.Ctx) error {
 		return internalError(c)
 	}
 
-	// Title/description/source_md left nil — creating a draft requires no metadata.
 	doc, err := s.documents.CreateDraft(c.UserContext(), dbgen.CreateDraftParams{
 		Slug:     slug,
 		AuthorID: authorID,
@@ -124,14 +113,12 @@ func (s *Server) handleCreateDraft(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(toDraftResponse(doc))
 }
 
-// handleSaveDraft overwrites the draft's working copy in place (AC-2.2): title,
-// description and source_md are all optional and empty/partial metadata saves
-// with no validation gate (that gate is publish-time). The query is scoped to
-// author_id, so a non-owner yields no row → 404, never a cross-author write. A
-// published entry may be saved too: only its working copy changes until the
-// author re-publishes.
+// handleSaveDraft overwrites the working copy in place with no validation gate
+// (that is publish-time). The query is scoped to author_id, so a non-owner gets
+// 404, never a cross-author write. A published entry may be saved too: only its
+// working copy changes until re-publish.
 func (s *Server) handleSaveDraft(c *fiber.Ctx) error {
-	docID, ok := parseDocID(c)
+	docID, ok := parseUUIDParam(c, "id")
 	if !ok {
 		return badRequest(c, "invalid document id")
 	}
@@ -157,7 +144,7 @@ func (s *Server) handleSaveDraft(c *fiber.Ctx) error {
 		SourceMd:    body.SourceMd,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return notFound(c)
+		return notFound(c, "draft")
 	}
 	if err != nil {
 		s.log.ErrorContext(c.UserContext(), "save draft failed", "error", err.Error())
@@ -167,12 +154,10 @@ func (s *Server) handleSaveDraft(c *fiber.Ctx) error {
 	return c.JSON(toDraftResponse(doc))
 }
 
-// handleGetDraft returns the caller's own draft. GetDraft is scoped to
-// author_id, so another user's draft (or a missing/soft-deleted one) yields no
-// row → 404. The not-found response is identical for "not yours" and "does not
-// exist" so ownership is never leaked to a probing second user.
+// handleGetDraft returns the caller's own draft. "Not yours" and "does not
+// exist" give the identical 404 so ownership never leaks.
 func (s *Server) handleGetDraft(c *fiber.Ctx) error {
-	docID, ok := parseDocID(c)
+	docID, ok := parseUUIDParam(c, "id")
 	if !ok {
 		return badRequest(c, "invalid document id")
 	}
@@ -186,7 +171,7 @@ func (s *Server) handleGetDraft(c *fiber.Ctx) error {
 		AuthorID: authorID,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return notFound(c)
+		return notFound(c, "draft")
 	}
 	if err != nil {
 		s.log.ErrorContext(c.UserContext(), "get draft failed", "error", err.Error())
@@ -206,9 +191,8 @@ func (s *Server) handleGetDraft(c *fiber.Ctx) error {
 	return c.JSON(resp)
 }
 
-// handleListMyDocuments returns the caller's own entries for the history panel:
-// drafts first, then the rest by most recent edit. Owner-scoped like every
-// draft query; an empty list is [] (never null).
+// handleListMyDocuments returns the caller's entries for the history panel:
+// drafts first, then by most recent edit.
 func (s *Server) handleListMyDocuments(c *fiber.Ctx) error {
 	authorID, err := s.callerID(c)
 	if err != nil {
@@ -221,22 +205,13 @@ func (s *Server) handleListMyDocuments(c *fiber.Ctx) error {
 	}
 	items := make([]draftListItem, 0, len(rows))
 	for _, r := range rows {
-		items = append(items, draftListItem{
-			ID:        formatUUID(r.ID),
-			Slug:      r.Slug,
-			Status:    string(r.Status),
-			Title:     r.Title,
-			UpdatedAt: formatTime(r.UpdatedAt),
-		})
+		items = append(items, toDraftListItem(dbgen.ListDraftsRow(r)))
 	}
 	return c.JSON(items)
 }
 
-// handleListDrafts returns the caller's own drafts for their private workspace
-// (AC-2.5). The query is owner-scoped (author_id) and status='draft', so no other
-// user's drafts are ever returned (AC-2.3) — admins included: there is no bypass,
-// a deliberate privacy decision (03-data-model.md §2). An empty workspace returns
-// a JSON [] (never null) so the client can render uniformly.
+// handleListDrafts returns the caller's own drafts. There is no admin bypass:
+// other users' drafts are never visible. Empty is [] (never null).
 func (s *Server) handleListDrafts(c *fiber.Ctx) error {
 	authorID, err := s.callerID(c)
 	if err != nil {
@@ -273,18 +248,8 @@ func (s *Server) callerID(c *fiber.Ctx) (pgtype.UUID, error) {
 	return uid, nil
 }
 
-// parseDocID reads and validates the :id path parameter as a uuid.
-func parseDocID(c *fiber.Ctx) (pgtype.UUID, bool) {
-	id, err := parseUUID(c.Params("id"))
-	if err != nil {
-		return pgtype.UUID{}, false
-	}
-	return id, true
-}
-
-// newDraftSlug returns a collision-resistant placeholder slug ("draft-" + 16 hex
-// chars). 64 bits of randomness makes a UNIQUE violation on documents.slug
-// astronomically unlikely for M0's single-draft-per-create flow.
+// newDraftSlug returns a placeholder slug ("draft-" + 16 hex chars); 64 random
+// bits make a UNIQUE collision negligible.
 func newDraftSlug() (string, error) {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -315,14 +280,33 @@ func formatTime(t pgtype.Timestamptz) string {
 	return t.Time.UTC().Format(time.RFC3339)
 }
 
-func badRequest(c *fiber.Ctx, msg string) error {
-	return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": msg})
+func errJSON(c *fiber.Ctx, status int, msg string) error {
+	return c.Status(status).JSON(fiber.Map{"error": msg})
 }
 
-func notFound(c *fiber.Ctx) error {
-	return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "draft not found"})
+func badRequest(c *fiber.Ctx, msg string) error {
+	return errJSON(c, fiber.StatusBadRequest, msg)
+}
+
+// notFound is the one 404 shape; callers name the resource, never the reason, so
+// missing and denied look identical.
+func notFound(c *fiber.Ctx, what string) error {
+	return errJSON(c, fiber.StatusNotFound, what+" not found")
 }
 
 func internalError(c *fiber.Ctx) error {
-	return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+	return errJSON(c, fiber.StatusInternalServerError, "internal error")
+}
+
+// queryInt reads an optional non-negative integer query parameter (0 when absent).
+func queryInt(c *fiber.Ctx, name string) (int, error) {
+	raw := c.Query(name)
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("invalid %s", name)
+	}
+	return n, nil
 }

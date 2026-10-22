@@ -30,8 +30,7 @@ type Result struct {
 	Hits   []Hit                       `json:"hits"`
 	TookMs int64                       `json:"took_ms"`
 	Facets map[string]map[string]int64 `json:"facets,omitempty"`
-	// NextOffset is the offset of the next page, present only when there is one
-	// (LOO-38 pagination).
+	// NextOffset is the offset of the next page, present only when there is one.
 	NextOffset *int `json:"next_offset,omitempty"`
 }
 
@@ -60,8 +59,15 @@ func NewService(c *Client, policy access.Querier) *Service {
 	return &Service{client: c, policy: policy}
 }
 
-// MaxLimit caps how many hits one query may return.
-const MaxLimit = 50
+// Page-size bounds: a missing limit means DefaultLimit, a larger one is clamped.
+const (
+	DefaultLimit = 20
+	MaxLimit     = 50
+)
+
+// MaxQueryRunes bounds the free-text query forwarded to the engine; longer
+// queries are truncated.
+const MaxQueryRunes = 200
 
 // MaxOffset caps pagination depth. Meilisearch's default maxTotalHits is 1000,
 // so hits past it are unreachable anyway; a deeper offset is refused.
@@ -83,14 +89,15 @@ func (s *Service) Search(ctx context.Context, query Query, caller access.Caller)
 		return Result{}, err
 	}
 	limit := query.Limit
-	if limit <= 0 || limit > MaxLimit {
-		limit = 20
+	if limit <= 0 {
+		limit = DefaultLimit
 	}
+	limit = min(limit, MaxLimit)
 	if query.Offset < 0 || query.Offset > MaxOffset {
 		return Result{}, fmt.Errorf("%w: offset out of range", ErrInvalidFilter)
 	}
 	req := searchRequest{
-		Q:      strings.TrimSpace(query.Q),
+		Q:      truncateRunes(strings.TrimSpace(query.Q), MaxQueryRunes),
 		Filter: filter,
 		Facets: facets,
 		// One extra hit tells whether a next page exists; it is never returned.
@@ -144,6 +151,13 @@ func (s *Service) Search(ctx context.Context, query Query, caller access.Caller)
 		})
 	}
 	return out, nil
+}
+
+func truncateRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
 }
 
 // pickSnippet prefers a body excerpt that contains a match, then the

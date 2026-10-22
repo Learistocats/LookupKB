@@ -68,9 +68,7 @@ func TestGet_DeniedIsNotFoundAndBodyFormats(t *testing.T) {
 	d, err := svc.Get(context.Background(), caller(), "s")
 	require.NoError(t, err)
 	for f, want := range map[Format]string{FormatHTML: html, FormatMarkdown: md, FormatText: "Hi there"} {
-		got, err := d.Body(f)
-		require.NoError(t, err)
-		require.Equal(t, want, got, f)
+		require.Equal(t, want, d.Body(f), f)
 	}
 	require.Equal(t, []string{}, d.Tags)
 
@@ -81,6 +79,11 @@ func TestGet_DeniedIsNotFoundAndBodyFormats(t *testing.T) {
 	store.rowErr = pgx.ErrNoRows
 	_, err = svc.Get(context.Background(), caller(), "s")
 	require.ErrorIs(t, err, ErrNotFound)
+
+	// A published row missing either stored representation is an integrity error.
+	store.denied, store.rowErr, store.row.PublishedMd = nil, nil, nil
+	_, err = svc.Get(context.Background(), caller(), "s")
+	require.ErrorIs(t, err, ErrIntegrity)
 
 	// A zero caller fails closed (never anonymous).
 	_, err = svc.Get(context.Background(), access.Caller{}, "s")

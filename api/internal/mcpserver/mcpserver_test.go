@@ -94,7 +94,7 @@ func newHarness(t *testing.T, origins ...string) *harness {
 			"kube-1": {
 				Summary: catalog.Summary{Slug: "kube-1", Title: "Kube", Description: "How to", Tags: []string{"ops"},
 					AuthorDisplayName: "ada", PublishedAt: "2026-10-01T00:00:00Z", UpdatedAt: "2026-10-02T00:00:00Z"},
-				HTML: "<h1>Kube</h1><p>Run <strong>it</strong>.</p>", Markdown: &md,
+				HTML: "<h1>Kube</h1><p>Run <strong>it</strong>.</p>", Markdown: md,
 			},
 		}},
 		search: &fakeSearch{},
@@ -244,7 +244,7 @@ func TestJSONRPCErrors(t *testing.T) {
 	// the SDK pre-validates every message so nothing is silently dropped.
 	code, _, b := h.post(`{"jsonrpc":"2.0","id":3,"method":"no/such"}`, map[string]string{"MCP-Protocol-Version": "2025-06-18"})
 	require.Equal(t, http.StatusBadRequest, code)
-	require.Equal(t, -32601, rpcErrorCode(t, b))
+	require.Equal(t, codeInvalidRequest, rpcErrorCode(t, b))
 	require.Contains(t, string(b), `no/such`)
 
 	r := h.rpc(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"no_such_tool","arguments":{}}}`)
@@ -253,12 +253,12 @@ func TestJSONRPCErrors(t *testing.T) {
 
 	code, _, b = h.post(`{not json`, map[string]string{"MCP-Protocol-Version": "2025-06-18"})
 	require.Equal(t, http.StatusBadRequest, code)
-	require.Equal(t, -32700, rpcErrorCode(t, b))
+	require.Equal(t, codeInvalidRequest, rpcErrorCode(t, b))
 
 	// Not a JSON-RPC 2.0 envelope.
 	code, _, b = h.post(`{"jsonrpc":"1.0","id":1,"method":"ping"}`, map[string]string{"MCP-Protocol-Version": "2025-06-18"})
 	require.Equal(t, http.StatusBadRequest, code)
-	require.Contains(t, []int{-32600, -32700}, rpcErrorCode(t, b))
+	require.Equal(t, codeInvalidRequest, rpcErrorCode(t, b))
 
 	// Bad arguments are a tool error the agent can read and correct.
 	res := h.call(ToolSearch, `{"query":"x","limit":500}`)
