@@ -1,11 +1,11 @@
-// Publish-flow client logic (F5, LOO-14). The publish confirm dialog collects the
+// Publish-flow client logic. The publish confirm dialog collects the
 // metadata; this module builds the request, calls the same-origin proxy (which
 // attaches the bearer server-side), and normalizes the outcome — success, or the
 // server's per-field validation errors (422). Kept out of the component so it is
 // unit-testable and the dialog stays presentational.
 //
 // Client-side hints (validateTags, length checks) are UX only; the SERVER is always
-// authoritative and re-validates everything (06-security.md §6).
+// authoritative and re-validates everything.
 
 /** A single per-field validation error, matching the Go handler's 422 body. */
 export interface FieldError {
@@ -15,7 +15,7 @@ export interface FieldError {
 
 /**
  * The metadata a publish attempt carries. There is no access field: who can read
- * the entry follows from its tags and the group tag policy (LOO-33).
+ * the entry follows from its tags and the group tag policy.
  */
 export interface PublishRequest {
 	title: string;
@@ -24,7 +24,7 @@ export interface PublishRequest {
 }
 
 /** The published/unpublished document projection the API returns on success. */
-export interface PublishedDoc {
+export interface PublishResult {
 	id: string;
 	slug: string;
 	status: string;
@@ -40,11 +40,11 @@ export interface PublishedDoc {
  * other failure (network, 404, 5xx) throws.
  */
 export type PublishOutcome =
-	{ ok: true; doc: PublishedDoc } | { ok: false; fieldErrors: FieldError[] };
+	{ ok: true; doc: PublishResult } | { ok: false; fieldErrors: FieldError[] };
 
 /**
  * publishDraft posts the confirm-flow metadata to the same-origin proxy at
- * /entries/{id}/publish (NOT /api/*, to avoid the dev-time Vite /api proxy). On 422
+ * /entries/{id}/publish. On 422
  * it returns the per-field errors so the dialog can render them inline and keep the
  * document a draft; on any other non-OK status it throws.
  */
@@ -65,7 +65,7 @@ export async function publishDraft(
 	}
 	if (!res.ok) throw new Error(`publish failed (${res.status})`);
 
-	return { ok: true, doc: (await res.json()) as PublishedDoc };
+	return { ok: true, doc: (await res.json()) as PublishResult };
 }
 
 /**
@@ -75,23 +75,14 @@ export async function publishDraft(
 export async function unpublishDraft(
 	id: string,
 	fetchFn: typeof fetch = fetch
-): Promise<PublishedDoc> {
+): Promise<PublishResult> {
 	const res = await fetchFn(`/entries/${id}/unpublish`, { method: 'POST' });
 	if (!res.ok) throw new Error(`unpublish failed (${res.status})`);
-	return (await res.json()) as PublishedDoc;
-}
-
-/** groupErrorsByField buckets a flat FieldError list by field for inline display. */
-export function groupErrorsByField(errors: FieldError[]): Record<string, string[]> {
-	const out: Record<string, string[]> = {};
-	for (const e of errors) {
-		(out[e.field] ??= []).push(e.message);
-	}
-	return out;
+	return (await res.json()) as PublishResult;
 }
 
 /**
- * accessLine is the publish dialog's "who can see this" sentence (LOO-33): every
+ * accessLine is the publish dialog's "who can see this" sentence: every
  * signed-in user when no selected tag is protected, otherwise only members of
  * groups granted those tags — plus the author, who always reads their own entry.
  */

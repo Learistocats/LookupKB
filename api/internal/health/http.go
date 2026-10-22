@@ -1,11 +1,6 @@
-// Package health provides lightweight, bounded-timeout readiness probes for the
-// API's downstream dependencies (Meilisearch, Kroki, Garage).
-//
-// Each probe is a plain func() error — the same shape the server's /readyz
-// consults (see internal/server) and that db.ReadinessCheck already produces for
-// Postgres. Probes are deliberately dependency-free HTTP GETs: readiness only
-// needs to know a dependency is *reachable*, not to speak its protocol, so the
-// real Meilisearch/S3 clients stay in their feature tickets.
+// Package health provides bounded-timeout readiness probes for the API's
+// downstream dependencies. Probes are plain func() error, the shape /readyz
+// consults; they only check reachability, not the dependency's protocol.
 package health
 
 import (
@@ -17,15 +12,10 @@ import (
 )
 
 // HTTPCheck returns a readiness probe that GETs url with a bounded timeout and
-// treats any 2xx response as ready. name identifies the dependency in the
-// returned error.
-//
-// The error is intentionally descriptive (it carries the URL and status) because
-// it is meant for server-side logs; the /readyz handler is responsible for not
-// leaking it to clients (06-security.md: never return raw connection details).
+// treats any 2xx response as ready. The error carries the URL and status for
+// server-side logs; /readyz must not leak it to clients.
 func HTTPCheck(name, url string, timeout time.Duration) func() error {
-	// One client per check so the transport (and its connection pool) is reused
-	// across polls rather than rebuilt on every probe.
+	// One client per check so its connection pool is reused across polls.
 	client := &http.Client{Timeout: timeout}
 	return func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -48,10 +38,8 @@ func HTTPCheck(name, url string, timeout time.Duration) func() error {
 	}
 }
 
-// Cached wraps a probe so its most recent result is reused for up to ttl,
-// collapsing bursts of orchestrator polling into a single upstream request
-// (01-architecture.md §6: /readyz is polled frequently). A ttl <= 0 disables
-// caching and calls through every time.
+// Cached reuses a probe's last result for up to ttl, collapsing bursts of
+// polling into one upstream request. ttl <= 0 disables caching.
 func Cached(ttl time.Duration, check func() error) func() error {
 	if ttl <= 0 {
 		return check

@@ -51,7 +51,7 @@ func tagUsage(t *testing.T, ctx context.Context, pool *pgxpool.Pool, slug string
 	return n
 }
 
-// TestPublishFlow_FirstPublish covers AC-5.3 end-to-end through the real service:
+// TestPublishFlow_FirstPublish covers a first publish end-to-end through the real service:
 // valid metadata → published, published_at set, a title-derived slug,
 // live tag membership + usage_count, an audit row, and an enqueued index upsert.
 func TestPublishFlow_FirstPublish(t *testing.T) {
@@ -92,7 +92,7 @@ func TestPublishFlow_FirstPublish(t *testing.T) {
 		"SELECT count(*) FROM index_outbox WHERE document_id=$1 AND op='upsert'", docID))
 }
 
-// TestPublishFlow_RePublish covers AC-5.5: a re-publish overwrites the content,
+// TestPublishFlow_RePublish checks that a re-publish overwrites the content,
 // leaves published_at and the slug unchanged, and enqueues another index upsert.
 func TestPublishFlow_RePublish(t *testing.T) {
 	ctx := context.Background()
@@ -129,7 +129,7 @@ func TestPublishFlow_RePublish(t *testing.T) {
 	require.Equal(t, 1, tagUsage(t, ctx, pool, "beta"))
 }
 
-// TestPublishFlow_InvalidMetadataNoStateChange covers AC-5.2: a metadata violation
+// TestPublishFlow_InvalidMetadataNoStateChange checks that a metadata violation
 // returns per-field errors and leaves the document a draft — no version, no audit,
 // no index op.
 func TestPublishFlow_InvalidMetadataNoStateChange(t *testing.T) {
@@ -156,7 +156,7 @@ func TestPublishFlow_InvalidMetadataNoStateChange(t *testing.T) {
 	require.Zero(t, countRows(t, ctx, pool, "SELECT count(*) FROM index_outbox WHERE document_id=$1", docID))
 }
 
-// TestPublishFlow_SettingsLimitEnforced covers AC-10.4: a limit change stored in the
+// TestPublishFlow_SettingsLimitEnforced checks that a limit change stored in the
 // settings table is honored on the next publish attempt, no redeploy.
 func TestPublishFlow_SettingsLimitEnforced(t *testing.T) {
 	ctx := context.Background()
@@ -184,7 +184,7 @@ func TestPublishFlow_SettingsLimitEnforced(t *testing.T) {
 	require.True(t, sawTitle, "the tightened title limit is enforced")
 }
 
-// TestPublishFlow_Unpublish covers AC-5.6: unpublish reverts to author-only status,
+// TestPublishFlow_Unpublish checks that unpublish reverts to author-only status,
 // retains published_at, enqueues an index delete, drops live
 // tag counts, and writes an audit row.
 func TestPublishFlow_Unpublish(t *testing.T) {

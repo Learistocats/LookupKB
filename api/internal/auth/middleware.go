@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Learistocats/LookupKB/api/internal/access"
+	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/Learistocats/LookupKB/api/internal/logging"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -17,27 +19,25 @@ import (
 // so handlers must go through IdentityFromCtx.
 const identityLocalsKey = "auth.identity"
 
-// Identity is the verified caller projected onto the request. Groups are loaded
-// from group_members on every request (never baked into the token) so a
-// membership change is honored immediately by access checks.
+// Identity is the verified caller projected onto the request.
 type Identity struct {
-	// UserID is the LookupKB-internal users.id (uuid).
-	UserID string
+	UserID uuid.UUID
 	Email  string
-	// Groups are the caller's group ids.
-	Groups []string
-	// Method is how the caller authenticated: MethodSession (the BFF's JWT) or
-	// MethodPAT (a Personal Access Token). Both resolve to the same user and the
-	// same per-request group loading; a PAT is additionally confined to the read
-	// surface (PATAllowed).
+	// Method is MethodSession (the BFF's JWT) or MethodPAT. A PAT acts as its
+	// user but is confined to the read surface (PATAllowed).
 	Method string
 	// TokenID is the api_tokens.id of the PAT used (empty for sessions). It keys
 	// the per-token rate limit.
 	TokenID string
 	// IsSuperAdmin is users.is_super_admin, re-read from the database on every
-	// request (never a token claim) so a revoke is honored immediately. False when
-	// no database is wired (deny-by-default). See superadmin.go.
+	// request (never a token claim) so a revoke is honored immediately. False
+	// when no store is wired.
 	IsSuperAdmin bool
+}
+
+// Caller projects the identity onto the access-policy input.
+func (id Identity) Caller() access.Caller {
+	return access.Caller{UserID: pgtype.UUID{Bytes: id.UserID, Valid: true}, IsSuperAdmin: id.IsSuperAdmin}
 }
 
 // Authentication methods recorded on Identity.Method.
@@ -46,35 +46,27 @@ const (
 	MethodPAT     = "pat"
 )
 
-// GroupLister loads a user's group ids. *dbgen.Queries satisfies it; kept as an
-// interface so the middleware is testable without a DB.
-type GroupLister interface {
-	ListUserGroupIDs(ctx context.Context, userID pgtype.UUID) ([]pgtype.UUID, error)
+// Store is what the middleware reads per request. *dbgen.Queries satisfies it.
+type Store interface {
+	GetUserIsSuperAdmin(ctx context.Context, userID pgtype.UUID) (bool, error)
+	GetActiveAPITokenByPrefix(ctx context.Context, prefix string) (dbgen.GetActiveAPITokenByPrefixRow, error)
+	TouchAPITokenLastUsed(ctx context.Context, id pgtype.UUID) error
 }
 
 // Middleware verifies the bearer token on protected routes and injects the
 // caller's Identity into the request context.
 type Middleware struct {
 	tokens *Tokens
-	groups GroupLister
-	log    *slog.Logger
-	// pats verifies Personal Access Tokens. nil (no database) ⇒ every PAT is
+	// store may be nil (no database): nobody is a super-admin and every PAT is
 	// rejected with 401 (deny-by-default).
-	pats PATVerifier
-	now  func() time.Time
+	store Store
+	log   *slog.Logger
+	now   func() time.Time
 }
 
-// NewMiddleware wires the token verifier, the group lookup and the logger.
-// groups may be nil (no database): the caller then has no groups.
-func NewMiddleware(tokens *Tokens, groups GroupLister, log *slog.Logger) *Middleware {
-	return &Middleware{tokens: tokens, groups: groups, log: log, now: time.Now}
-}
-
-// WithPATs enables Personal Access Token authentication. Wired only when the
-// token store (Postgres) exists; without it every PAT is rejected with 401.
-func (m *Middleware) WithPATs(v PATVerifier) *Middleware {
-	m.pats = v
-	return m
+// NewMiddleware wires the token verifier, the store and the logger.
+func NewMiddleware(tokens *Tokens, store Store, log *slog.Logger) *Middleware {
+	return &Middleware{tokens: tokens, store: store, log: log, now: time.Now}
 }
 
 // Handle is the Fiber handler enforcing authentication. A missing/malformed
@@ -86,19 +78,13 @@ func (m *Middleware) Handle(c *fiber.Ctx) error {
 		return unauthorized(c)
 	}
 
-	var (
-		uid uuid.UUID
-		id  Identity
-	)
+	var id Identity
 	if IsPAT(raw) {
-		// Personal Access Token: verified against the store and confined to the
-		// read surface, then falls into the same group loading as a session.
-		rec, ok, err := m.authenticatePAT(c, raw)
-		if !ok {
+		var ok bool
+		var err error
+		if id, ok, err = m.authenticatePAT(c, raw); !ok {
 			return err
 		}
-		uid = rec.UserID
-		id = Identity{UserID: uid.String(), Email: rec.Email, Groups: []string{}, Method: MethodPAT, TokenID: rec.ID.String()}
 	} else {
 		claims, err := m.tokens.Verify(raw)
 		if err != nil {
@@ -106,38 +92,21 @@ func (m *Middleware) Handle(c *fiber.Ctx) error {
 			m.log.WarnContext(c.UserContext(), "rejected unauthenticated request", "error", err.Error())
 			return unauthorized(c)
 		}
-		uid, err = uuid.Parse(claims.UserID)
+		uid, err := uuid.Parse(claims.UserID)
 		if err != nil {
 			m.log.WarnContext(c.UserContext(), "rejected token with non-uuid subject")
 			return unauthorized(c)
 		}
-		id = Identity{UserID: uid.String(), Email: claims.Email, Groups: []string{}, Method: MethodSession}
-	}
-
-	if m.groups != nil {
-		gids, err := m.groups.ListUserGroupIDs(c.UserContext(), pgtype.UUID{Bytes: uid, Valid: true})
-		if err != nil {
-			m.log.ErrorContext(c.UserContext(), "load caller groups failed", "error", err.Error())
+		id = Identity{UserID: uid, Email: claims.Email, Method: MethodSession}
+		if id.IsSuperAdmin, err = m.loadSuperAdmin(c.UserContext(), uid); err != nil {
+			m.log.ErrorContext(c.UserContext(), "load caller super-admin flag failed", "error", err.Error())
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 		}
-		for _, g := range gids {
-			id.Groups = append(id.Groups, uuid.UUID(g.Bytes).String())
-		}
 	}
 
-	// Loaded for PAT callers too: a PAT acts as its user, and the access policy
-	// (protected tags) treats a super-admin as unrestricted.
-	isAdmin, err := m.loadSuperAdmin(c.UserContext(), uid)
-	if err != nil {
-		m.log.ErrorContext(c.UserContext(), "load caller super-admin flag failed", "error", err.Error())
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
-	}
-	id.IsSuperAdmin = isAdmin
-
-	// Attribute the request to the caller for the rest of the pipeline. Use the
-	// internal user id, never the email — actor_id is redacted PII (06-security.md
-	// §7). Set once here and picked up by every downstream log line.
-	c.SetUserContext(logging.WithActorID(c.UserContext(), id.UserID))
+	// Attribute the request to the caller for every downstream log line. The
+	// internal user id, never the email: actor_id is redacted PII.
+	c.SetUserContext(logging.WithActorID(c.UserContext(), id.UserID.String()))
 
 	c.Locals(identityLocalsKey, id)
 	return c.Next()
@@ -147,35 +116,41 @@ func (m *Middleware) Handle(c *fiber.Ctx) error {
 // is false when the request was rejected; the response is then already written
 // (401 with the same body as a bad JWT, 403 off the read surface, 500 on a store
 // error) and err is what Handle must return.
-func (m *Middleware) authenticatePAT(c *fiber.Ctx, raw string) (PATRecord, bool, error) {
+func (m *Middleware) authenticatePAT(c *fiber.Ctx, raw string) (Identity, bool, error) {
 	ctx := c.UserContext()
-	if m.pats == nil {
+	if m.store == nil {
 		m.log.WarnContext(ctx, "rejected personal access token: PATs not configured")
-		return PATRecord{}, false, unauthorized(c)
+		return Identity{}, false, unauthorized(c)
 	}
-	rec, err := verifyPAT(ctx, m.pats, raw, m.now())
+	row, err := verifyPAT(ctx, m.store, raw, m.now())
 	if errors.Is(err, ErrInvalidPAT) {
 		// The reason only — never the token.
 		m.log.WarnContext(ctx, "rejected personal access token", "error", err.Error())
-		return PATRecord{}, false, unauthorized(c)
+		return Identity{}, false, unauthorized(c)
 	}
 	if err != nil {
 		m.log.ErrorContext(ctx, "personal access token lookup failed", "error", err.Error())
-		return PATRecord{}, false, c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		return Identity{}, false, c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
 	}
+	tokenID := uuid.UUID(row.ID.Bytes).String()
 	if !PATAllowed(c.Method(), c.Path()) {
 		m.log.WarnContext(ctx, "personal access token used off the read surface",
-			"token_id", rec.ID.String(), "method", c.Method(), "path", c.Path())
-		return PATRecord{}, false, c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "forbidden"})
+			"token_id", tokenID, "method", c.Method(), "path", c.Path())
+		return Identity{}, false, c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "forbidden"})
 	}
-	// Throttled usage stamp (the query guards the write too). A failure is logged,
-	// never fatal to the request.
-	if rec.LastUsedAt.IsZero() || m.now().Sub(rec.LastUsedAt) >= lastUsedGranularity {
-		if err := m.pats.TouchPAT(ctx, rec.ID); err != nil {
+	// Throttled usage stamp; a failure is logged, never fatal to the request.
+	if !row.LastUsedAt.Valid || m.now().Sub(row.LastUsedAt.Time) >= lastUsedGranularity {
+		if err := m.store.TouchAPITokenLastUsed(ctx, row.ID); err != nil {
 			m.log.WarnContext(ctx, "touch personal access token failed", "error", err.Error())
 		}
 	}
-	return rec, true, nil
+	return Identity{
+		UserID:       uuid.UUID(row.UserID.Bytes),
+		Email:        row.Email,
+		Method:       MethodPAT,
+		TokenID:      tokenID,
+		IsSuperAdmin: row.IsSuperAdmin,
+	}, true, nil
 }
 
 // IdentityFromCtx returns the verified Identity set by the middleware. ok is

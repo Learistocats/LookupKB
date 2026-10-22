@@ -69,15 +69,17 @@ func TestMigrations(t *testing.T) {
 	assertDocumentACLDropped(t, ctx, superDSN, true)
 	assertAppRoleCannotDDL(t, ctx, pgc)
 
-	// --- 00012 (LOO-38) down then up: published_md is backfilled from the working
+	// --- 00012 down then up: published_md is backfilled from the working
 	// copy for published rows only ---
+	require.NoError(t, appdb.RunMigrations(ctx, migratorDSN, "down"), "00013 down must apply")
 	require.NoError(t, appdb.RunMigrations(ctx, migratorDSN, "down"), "00012 down must apply")
 	assertPublishedMDBackfill(t, ctx, superDSN, func() {
 		require.NoError(t, appdb.RunMigrations(ctx, migratorDSN, "up"), "00012 re-applies")
 	})
 
-	// --- 00011 (LOO-33) down then up: the document ACL comes back empty, and is
+	// --- 00011 down then up: the document ACL comes back empty, and is
 	// usable by the app role, then goes again ---
+	require.NoError(t, appdb.RunMigrations(ctx, migratorDSN, "down"), "00013 down must apply")
 	require.NoError(t, appdb.RunMigrations(ctx, migratorDSN, "down"), "00012 down must apply")
 	require.NoError(t, appdb.RunMigrations(ctx, migratorDSN, "down"), "00011 down must apply")
 	assertDocumentACLDropped(t, ctx, superDSN, false)
@@ -133,7 +135,7 @@ func assertTablesExist(t *testing.T, ctx context.Context, dsn string) {
 	}
 }
 
-// assertDocumentACLDropped checks the LOO-33 schema cleanup: document_acl,
+// assertDocumentACLDropped checks the schema cleanup: document_acl,
 // documents.access and the document_access enum are gone (dropped=true) or back
 // (dropped=false, after 00011 down).
 func assertDocumentACLDropped(t *testing.T, ctx context.Context, dsn string, dropped bool) {
@@ -221,7 +223,7 @@ func assertAppRoleCannotDDL(t *testing.T, ctx context.Context, pgc *postgres.Pos
 		"INSERT INTO users (email, password_hash) VALUES ('a@example.com', 'x')")
 	require.NoError(t, err, "app role should be able to INSERT")
 
-	// LOO-56: the migrator-created group_tag_grants table is usable by the app
+	// the migrator-created group_tag_grants table is usable by the app
 	// role (explicit GRANT in 00009), and users.is_super_admin is writable.
 	_, err = conn.ExecContext(ctx, "SELECT count(*) FROM group_tag_grants")
 	require.NoError(t, err, "app role should be able to read group_tag_grants")

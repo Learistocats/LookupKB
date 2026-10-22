@@ -1,4 +1,4 @@
-// CodeMirror theme + Markdown syntax highlighting for the entry editor (LOO-12).
+// CodeMirror theme + Markdown syntax highlighting for the entry editor.
 import { EditorView } from '@codemirror/view';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags as t } from '@lezer/highlight';
@@ -89,7 +89,7 @@ export const editorTheme = EditorView.theme({
 });
 
 // markdownHighlightStyle colours both Markdown structure and the tokens of nested
-// fenced-code languages (AC-3.2). Nested grammars are lazy-loaded via
+// fenced-code languages. Nested grammars are lazy-loaded via
 // @codemirror/language-data (see setup.ts).
 const markdownHighlightStyle = HighlightStyle.define([
 	{ tag: [t.heading1, t.heading2, t.heading3, t.heading4, t.heading5, t.heading6], color: text },

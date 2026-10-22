@@ -39,7 +39,7 @@ func TestMCPRoute_GatedAndPATReachable(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, code)
 
 	tokens := newFakeTokenStore()
-	mw := auth.NewMiddleware(testTokens, nil, slogDiscard()).WithPATs(tokens)
+	mw := auth.NewMiddleware(testTokens, tokens, slogDiscard())
 	s := New(cfg, slogDiscard(), "test", WithAuth(mw), WithTokens(tokens), WithDocuments(&fakeDocStore{}),
 		WithSearch(&fakeSearch{}), WithTags(&fakeTagStore{}))
 	pat := "Bearer " + createToken(t, s, `{"name":"agent"}`).Token

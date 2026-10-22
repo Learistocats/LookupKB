@@ -13,8 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// MaxBodyBytes caps one JSON-RPC request. Tool arguments are a few short strings;
-// anything larger is refused with 413 before it is parsed.
+// MaxBodyBytes caps one JSON-RPC request (enforced by the SDK transport).
 const MaxBodyBytes = 64 << 10
 
 // Handler serves the MCP endpoint as a Fiber handler.
@@ -46,8 +45,7 @@ func New(cat Catalog, srch Searcher, tagStore Tags, opts Options) (*Handler, err
 		return nil, err
 	}
 	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, &mcp.StreamableHTTPOptions{
-		// Stateless + JSON: every POST is a self-contained request answered with
-		// one application/json body. No session ids, no SSE stream (GET → 405).
+		// Stateless + JSON: one application/json answer per POST; no SSE (GET → 405).
 		Stateless:           true,
 		JSONResponse:        true,
 		MaxRequestBodyBytes: MaxBodyBytes,
@@ -63,13 +61,10 @@ func New(cat Catalog, srch Searcher, tagStore Tags, opts Options) (*Handler, err
 }
 
 // Handle bridges a Fiber request to the SDK's net/http handler. It must run after
-// auth.Middleware.Handle: the verified Identity is moved from c.Locals onto the
-// converted request's context explicitly (adaptor does not carry Locals or
-// c.UserContext() across), so every tool runs as the caller, and the request's
-// logging context (request_id, actor_id) follows along.
-//
-// The response is buffered and copied back: JSON-only responses make that exact,
-// and nothing here ever streams.
+// auth.Middleware.Handle: the verified Identity is moved onto the converted
+// request's context explicitly (adaptor does not carry Locals or UserContext
+// across), so every tool runs as the caller. The response is buffered and copied
+// back; nothing here streams.
 func (h *Handler) Handle(c *fiber.Ctx) error {
 	if origin := c.Get(fiber.HeaderOrigin); origin != "" {
 		if _, ok := h.allowedOrigins[strings.ToLower(strings.TrimRight(origin, "/"))]; !ok {
@@ -80,10 +75,6 @@ func (h *Handler) Handle(c *fiber.Ctx) error {
 	if !ok {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
 	}
-	if len(c.Body()) > MaxBodyBytes {
-		return c.Status(fiber.StatusRequestEntityTooLarge).JSON(fiber.Map{"error": "request too large"})
-	}
-
 	req, err := adaptor.ConvertRequest(c, true)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request"})
@@ -132,35 +123,20 @@ func (w *bufferedResponse) Write(b []byte) (int, error) {
 	return w.body.Write(b)
 }
 
-// JSON-RPC 2.0 error codes used for transport-level rejections.
-const (
-	codeParseError     = -32700
-	codeInvalidRequest = -32600
-	codeMethodNotFound = -32601
-)
+// codeInvalidRequest is the JSON-RPC 2.0 "Invalid Request" error code.
+const codeInvalidRequest = -32600
 
-// jsonRPCErrorBody turns the SDK's plain-text 400 (a message it refused before
-// dispatch: unparsable JSON, an unknown method, a bad envelope or protocol
-// version) into a JSON-RPC error response with a null id. The status stays 400,
-// as the transport spec requires; the body is what lets a client tell a parse
-// error (-32700) from an unknown method (-32601) or another invalid request
-// (-32600). Any other response passes through untouched.
+// jsonRPCErrorBody turns the SDK's plain-text 400 (a request it refused before
+// dispatch) into a JSON-RPC error response with a null id. The status stays 400,
+// as the transport spec requires. Any other response passes through untouched.
 func (w *bufferedResponse) jsonRPCErrorBody() {
 	if w.status != http.StatusBadRequest || !strings.HasPrefix(w.header.Get("Content-Type"), "text/plain") {
 		return
 	}
-	msg := strings.TrimSpace(w.body.String())
-	code := codeInvalidRequest
-	switch {
-	case strings.Contains(msg, "malformed payload"), strings.Contains(msg, "unmarshal"):
-		code = codeParseError
-	case strings.Contains(msg, "not handled"):
-		code = codeMethodNotFound
-	}
 	body, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      nil,
-		"error":   map[string]any{"code": code, "message": msg},
+		"error":   map[string]any{"code": codeInvalidRequest, "message": strings.TrimSpace(w.body.String())},
 	})
 	if err != nil {
 		return

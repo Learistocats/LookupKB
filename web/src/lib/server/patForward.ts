@@ -1,5 +1,5 @@
 // Forwards a PAT request from the web origin to the Go API and streams the
-// response back (LOO-37). The forwarding rules live in ./patProxy (pure, tested);
+// response back. The forwarding rules live in ./patProxy (pure, tested);
 // this is the thin I/O around them. The API alone authenticates and authorizes:
 // a missing/non-PAT credential is simply not forwarded, so the API answers 401.
 import type { RequestEvent } from '@sveltejs/kit';

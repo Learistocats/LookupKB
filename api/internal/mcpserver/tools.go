@@ -1,6 +1,6 @@
-// Package mcpserver is LookupKB's MCP server for agents (LOO-59): a read-only
-// Model Context Protocol endpoint over the Streamable HTTP transport, stateless,
-// JSON responses only (no SSE stream).
+// Package mcpserver is LookupKB's MCP server for agents: a read-only Model
+// Context Protocol endpoint over the Streamable HTTP transport, stateless, JSON
+// responses only (no SSE stream).
 //
 // It is built on the official Go SDK (github.com/modelcontextprotocol/go-sdk),
 // which owns the protocol: JSON-RPC 2.0 framing and error codes, initialize and
@@ -31,8 +31,6 @@ import (
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/Learistocats/LookupKB/api/internal/search"
 	"github.com/google/jsonschema-go/jsonschema"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -173,11 +171,7 @@ func (t *tools) searchTool(ctx context.Context, _ *mcp.CallToolRequest, in searc
 	if limit <= 0 {
 		limit = searchDefaultLimit
 	}
-	q := []rune(in.Query)
-	if len(q) > 200 { // same bound as the HTTP search handler
-		q = q[:200]
-	}
-	res, err := t.search.Search(ctx, search.Query{Q: string(q), Limit: limit, Filters: search.Filters{Tags: in.Tags}}, caller)
+	res, err := t.search.Search(ctx, search.Query{Q: in.Query, Limit: limit, Filters: search.Filters{Tags: in.Tags}}, caller)
 	if err != nil {
 		return nil, searchOutput{}, t.toolError(ctx, ToolSearch, err)
 	}
@@ -217,14 +211,8 @@ type getDocumentInput struct {
 // documentMeta is get_document's structured result: the metadata. The body is in
 // the text content only, so a large entry is not sent twice.
 type documentMeta struct {
-	Slug              string   `json:"slug"`
-	Title             string   `json:"title"`
-	Description       string   `json:"description"`
-	Tags              []string `json:"tags"`
-	AuthorDisplayName string   `json:"author_display_name"`
-	PublishedAt       string   `json:"published_at"`
-	UpdatedAt         string   `json:"updated_at"`
-	Format            string   `json:"format"`
+	catalog.Summary
+	Format string `json:"format"`
 }
 
 func (t *tools) getDocumentTool(ctx context.Context, _ *mcp.CallToolRequest, in getDocumentInput) (*mcp.CallToolResult, documentMeta, error) {
@@ -244,16 +232,8 @@ func (t *tools) getDocumentTool(ctx context.Context, _ *mcp.CallToolRequest, in 
 	if err != nil {
 		return nil, documentMeta{}, t.toolError(ctx, ToolGetDocument, err)
 	}
-	body, err := doc.Body(format)
-	if err != nil {
-		return nil, documentMeta{}, t.toolError(ctx, ToolGetDocument, err)
-	}
-	meta := documentMeta{
-		Slug: doc.Slug, Title: doc.Title, Description: doc.Description, Tags: doc.Tags,
-		AuthorDisplayName: doc.AuthorDisplayName, PublishedAt: doc.PublishedAt, UpdatedAt: doc.UpdatedAt,
-		Format: string(format),
-	}
-	return textResult(frontMatter(meta) + body), meta, nil
+	meta := documentMeta{Summary: doc.Summary, Format: string(format)}
+	return textResult(frontMatter(meta) + doc.Body(format)), meta, nil
 }
 
 // frontMatter renders the metadata as a YAML front-matter block (values are JSON
@@ -360,11 +340,7 @@ func callerFrom(ctx context.Context) (access.Caller, error) {
 	if !ok {
 		return access.Caller{}, errUnauthenticated
 	}
-	uid, err := uuid.Parse(id.UserID)
-	if err != nil {
-		return access.Caller{}, errUnauthenticated
-	}
-	return access.Caller{UserID: pgtype.UUID{Bytes: uid, Valid: true}, IsSuperAdmin: id.IsSuperAdmin}, nil
+	return id.Caller(), nil
 }
 
 // toolError maps a service error to the message the agent sees (an isError tool

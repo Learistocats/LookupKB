@@ -11,10 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
+	"github.com/jackc/pgx/v5"
 )
 
-// Personal Access Tokens (LOO-37, 10-public-api.md §2).
+// Personal Access Tokens.
 //
 // Wire format: lkb_pat_<prefix>_<secret>
 //   - prefix: PATPrefixLen random base62 chars — NOT secret; stored in clear,
@@ -39,9 +40,6 @@ const base62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 // ErrInvalidPAT covers every PAT verification failure (malformed, unknown
 // prefix, hash mismatch, revoked, expired). Callers map it to a bare 401.
 var ErrInvalidPAT = errors.New("invalid personal access token")
-
-// ErrPATNotFound is returned by a PATVerifier when no active token has the prefix.
-var ErrPATNotFound = errors.New("personal access token not found")
 
 // NewPAT is a freshly minted token. Token is the plaintext and must be shown to
 // the user exactly once and never logged or persisted.
@@ -89,58 +87,35 @@ func ParsePAT(raw string) (prefix string, ok bool) {
 	return prefix, true
 }
 
-// PATRecord is the stored token as the verifier sees it.
-type PATRecord struct {
-	ID     uuid.UUID
-	UserID uuid.UUID
-	Email  string
-	// Hash is the stored hex SHA-256 of the token.
-	Hash string
-	// ExpiresAt is zero when the token never expires.
-	ExpiresAt time.Time
-	Revoked   bool
-	// LastUsedAt is zero when the token has never been used.
-	LastUsedAt time.Time
-}
-
-// PATVerifier is the narrow store the middleware needs to authenticate PATs.
-// LookupPAT returns ErrPATNotFound when no active token has the prefix.
-type PATVerifier interface {
-	LookupPAT(ctx context.Context, prefix string) (PATRecord, error)
-	TouchPAT(ctx context.Context, id uuid.UUID) error
-}
-
 // lastUsedGranularity bounds how often a token's last_used_at is written.
 const lastUsedGranularity = time.Minute
 
-// verifyPAT authenticates a raw PAT against the store. Every failure is
-// ErrInvalidPAT wrapped with a log-safe reason (never the token).
-func verifyPAT(ctx context.Context, store PATVerifier, raw string, now time.Time) (PATRecord, error) {
+// verifyPAT authenticates a raw PAT against the store and returns the token's
+// row (owner included). Every failure is ErrInvalidPAT wrapped with a log-safe
+// reason (never the token).
+func verifyPAT(ctx context.Context, store Store, raw string, now time.Time) (dbgen.GetActiveAPITokenByPrefixRow, error) {
+	var none dbgen.GetActiveAPITokenByPrefixRow
 	prefix, ok := ParsePAT(raw)
 	if !ok {
-		return PATRecord{}, fmt.Errorf("%w: malformed", ErrInvalidPAT)
+		return none, fmt.Errorf("%w: malformed", ErrInvalidPAT)
 	}
-	rec, err := store.LookupPAT(ctx, prefix)
-	if errors.Is(err, ErrPATNotFound) {
-		return PATRecord{}, fmt.Errorf("%w: unknown or inactive prefix", ErrInvalidPAT)
+	row, err := store.GetActiveAPITokenByPrefix(ctx, prefix)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return none, fmt.Errorf("%w: unknown or inactive prefix", ErrInvalidPAT)
 	}
 	if err != nil {
-		return PATRecord{}, err
+		return none, err
 	}
-	// Constant-time compare of the hashes so timing reveals nothing about how much
-	// of a guessed secret matched.
-	if subtle.ConstantTimeCompare([]byte(HashPAT(raw)), []byte(rec.Hash)) != 1 {
-		return PATRecord{}, fmt.Errorf("%w: hash mismatch", ErrInvalidPAT)
+	// Constant-time compare so timing reveals nothing about how much of a guessed
+	// secret matched.
+	if subtle.ConstantTimeCompare([]byte(HashPAT(raw)), []byte(row.TokenHash)) != 1 {
+		return none, fmt.Errorf("%w: hash mismatch", ErrInvalidPAT)
 	}
-	// The lookup query already excludes these; re-checked so a store that does not
-	// (or a clock skew between DB and app) can never authenticate a dead token.
-	if rec.Revoked {
-		return PATRecord{}, fmt.Errorf("%w: revoked", ErrInvalidPAT)
+	// The query filters on now() in SQL; re-checked against the app clock.
+	if row.ExpiresAt.Valid && !now.Before(row.ExpiresAt.Time) {
+		return none, fmt.Errorf("%w: expired", ErrInvalidPAT)
 	}
-	if !rec.ExpiresAt.IsZero() && !now.Before(rec.ExpiresAt) {
-		return PATRecord{}, fmt.Errorf("%w: expired", ErrInvalidPAT)
-	}
-	return rec, nil
+	return row, nil
 }
 
 func randomBase62(n int) (string, error) {

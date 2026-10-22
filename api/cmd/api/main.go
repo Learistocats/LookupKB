@@ -32,7 +32,6 @@ import (
 
 // The auth middleware loads users.is_super_admin through this optional
 // capability of its group store; assert the real store keeps providing it.
-var _ auth.SuperAdminLoader = (*dbgen.Queries)(nil)
 
 // version is stamped at build time via -ldflags "-X main.version=...".
 var version = "dev"
@@ -62,7 +61,7 @@ func main() {
 		os.Exit(migrate(cfg, version))
 	}
 
-	// `api admin grant|revoke <email>` bootstraps the super-admin role (LOO-56):
+	// `api admin grant|revoke <email>` bootstraps the super-admin role:
 	// the first admin cannot be appointed through the API, and the shell-less
 	// image cannot run psql, so the binary does it.
 	if len(os.Args) > 1 && os.Args[1] == "admin" {
@@ -154,12 +153,38 @@ func adminCommand(cfg config.Config, version string, args []string) int {
 	return 0
 }
 
+// dataOptions wires the Postgres-backed routes (documents, tags, publish, admin)
+// and, when Meilisearch is also configured, search plus its outbox worker, which
+// runs until ctx is cancelled. Without a pool nothing is registered.
+func dataOptions(ctx context.Context, cfg config.Config, log *slog.Logger, pool *pgxpool.Pool, q *dbgen.Queries) []server.Option {
+	if pool == nil {
+		log.Warn("search disabled (needs LOOKUPKB_DATABASE_URL and LOOKUPKB_MEILI_URL)")
+		return nil
+	}
+	renderer := render.New(render.WithMaxBytes(cfg.MarkdownMaxBytes))
+	opts := []server.Option{
+		server.WithDocuments(q),
+		server.WithDraftDelete(drafts.NewService(pool)),
+		server.WithTags(tags.New(pool)),
+		server.WithPublish(publish.NewService(pool, renderer, log)),
+		server.WithAdmin(admin.New(pool)),
+	}
+	if cfg.MeiliURL == "" {
+		log.Warn("search disabled (needs LOOKUPKB_DATABASE_URL and LOOKUPKB_MEILI_URL)")
+		return opts
+	}
+	meili := search.NewClient(cfg.MeiliURL, cfg.MeiliKey)
+	opts = append(opts, server.WithSearch(search.NewService(meili, q)))
+	go search.NewWorker(q, meili, log).Run(ctx)
+	return opts
+}
+
 func run(cfg config.Config, version string) error {
 	log := logging.New(cfg.LogFormat, cfg.LogLevel, version)
 
-	// Connect to Postgres when configured. Empty DATABASE_URL keeps the M0
-	// skeleton bootable without a database (e.g. unit tests, bare `go run`).
+	// Empty DATABASE_URL keeps the API bootable without a database.
 	var pool *pgxpool.Pool
+	var q *dbgen.Queries
 	if cfg.DatabaseURL != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -168,39 +193,31 @@ func run(cfg config.Config, version string) error {
 			return err
 		}
 		pool = p
+		q = dbgen.New(pool)
 		defer pool.Close()
 		log.Info("postgres pool ready", "max_conns", cfg.DBMaxConns)
 	} else {
 		log.Warn("LOOKUPKB_DATABASE_URL is empty; starting without a database")
 	}
 
-	// Configure token authentication when a secret is set. An empty secret keeps
-	// the API open (no protected routes) so bare `go run` and tests boot without it,
-	// mirroring the empty-DATABASE_URL behaviour.
+	// An empty auth secret registers no protected routes.
 	var opts []server.Option
 	if cfg.AuthEnabled() {
 		tokens, err := auth.NewTokens(cfg.AuthSecret, cfg.AuthTokenTTL)
 		if err != nil {
 			return err
 		}
-		var groups auth.GroupLister
-		var pats auth.PATVerifier
+		var authStore auth.Store
 		if pool != nil {
-			groups = dbgen.New(pool)
+			authStore = q
 			// Signup/login need the users table, so they exist only with a database.
-			opts = append(opts, server.WithAccounts(dbgen.New(pool), tokens))
-			// Personal Access Tokens: verification + management need api_tokens.
-			// Without a pool the verifier stays nil and every PAT is rejected.
-			pats = auth.NewDBPATStore(dbgen.New(pool))
-			opts = append(opts, server.WithTokens(dbgen.New(pool)))
+			opts = append(opts, server.WithAccounts(q, tokens))
+			// Without a pool the auth store stays nil: no super-admins, every PAT rejected.
+			opts = append(opts, server.WithTokens(q))
 		} else {
-			log.Warn("auth enabled without a database; signup/login, group lookup and PATs are disabled")
+			log.Warn("auth enabled without a database; signup/login and PATs are disabled")
 		}
-		mw := auth.NewMiddleware(tokens, groups, log)
-		if pats != nil {
-			mw.WithPATs(pats)
-		}
-		opts = append(opts, server.WithAuth(mw))
+		opts = append(opts, server.WithAuth(auth.NewMiddleware(tokens, authStore, log)))
 		log.Info("token authentication enabled", "token_ttl", cfg.AuthTokenTTL.String())
 	} else {
 		log.Warn("LOOKUPKB_AUTH_SECRET is empty; protected routes are disabled")
@@ -222,33 +239,9 @@ func run(cfg config.Config, version string) error {
 		log.Info("valkey rate-limit storage ready")
 	}
 
-	// Wire the document routes when Postgres is configured. Without a pool the
-	// routes are omitted (the skeleton still boots for bare `go run`).
-	if pool != nil {
-		opts = append(opts, server.WithDocuments(dbgen.New(pool)))
-		opts = append(opts, server.WithDraftDelete(drafts.NewService(pool)))
-		opts = append(opts, server.WithTags(tags.New(pool)))
-		// One process-wide renderer (concurrency-safe) drives the publish gate's
-		// server-side render+sanitize; the publish service composes it with the
-		// tag/audit/outbox writes into one transaction.
-		renderer := render.New()
-		opts = append(opts, server.WithPublish(publish.NewService(pool, renderer, log)))
-		// Super-admin surface; its routes additionally need auth (registered only
-		// under the protected /api group).
-		opts = append(opts, server.WithAdmin(admin.New(pool)))
-	}
-
-	// Search needs both Postgres (the outbox + projections) and Meilisearch. The
-	// worker drains index_outbox into the index for the life of the process.
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	defer stopWorker()
-	if pool != nil && cfg.MeiliURL != "" {
-		meili := search.NewClient(cfg.MeiliURL, cfg.MeiliKey)
-		opts = append(opts, server.WithSearch(search.NewService(meili, dbgen.New(pool))))
-		go search.NewWorker(dbgen.New(pool), meili, log).Run(workerCtx)
-	} else {
-		log.Warn("search disabled (needs LOOKUPKB_DATABASE_URL and LOOKUPKB_MEILI_URL)")
-	}
+	opts = append(opts, dataOptions(workerCtx, cfg, log, pool, q)...)
 
 	srv := server.New(cfg, log, version, opts...)
 	if pool != nil {
@@ -278,25 +271,14 @@ func run(cfg config.Config, version string) error {
 	}
 }
 
-// registerDependencyChecks wires the /readyz probes for the downstream services
-// (AC-11.1). Each is registered only when its URL is configured, so the skeleton
-// stays ready without the dependency (mirroring the empty-DATABASE_URL pattern).
-// Meili/Kroki/Garage gate readiness. Each probe is bounded by
-// cfg.ReadinessTimeout and cached for cfg.ReadinessCacheTTL.
+// registerDependencyChecks wires the Meilisearch /readyz probe when its URL is
+// configured. The probe is bounded by cfg.ReadinessTimeout and cached for
+// cfg.ReadinessCacheTTL.
 func registerDependencyChecks(cfg config.Config, srv *server.Server, log *slog.Logger) {
-	cache := cfg.ReadinessCacheTTL
-	timeout := cfg.ReadinessTimeout
-
-	gating := []struct{ name, url string }{
-		{"meilisearch", cfg.MeiliHealthURL()},
-		{"kroki", cfg.KrokiHealthURL()},
-		{"garage", cfg.GarageHealthURL()},
+	url := cfg.MeiliHealthURL()
+	if url == "" {
+		log.Warn("readiness check disabled (no URL configured)", "check", "meilisearch")
+		return
 	}
-	for _, dep := range gating {
-		if dep.url == "" {
-			log.Warn("readiness check disabled (no URL configured)", "check", dep.name)
-			continue
-		}
-		srv.RegisterReadinessCheck(dep.name, health.Cached(cache, health.HTTPCheck(dep.name, dep.url, timeout)))
-	}
+	srv.RegisterReadinessCheck("meilisearch", health.Cached(cfg.ReadinessCacheTTL, health.HTTPCheck("meilisearch", url, cfg.ReadinessTimeout)))
 }

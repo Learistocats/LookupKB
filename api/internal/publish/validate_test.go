@@ -22,7 +22,7 @@ var (
 	defTL = tags.DefaultLimits
 )
 
-// AC-5.3: fully valid metadata produces no errors and the normalized tag set.
+// fully valid metadata produces no errors and the normalized tag set.
 func TestValidateMetadata_Valid(t *testing.T) {
 	norm, errs := ValidateMetadata(defML, defTL, MetadataInput{
 		Title:       "How to deploy LookupKB",
@@ -33,7 +33,7 @@ func TestValidateMetadata_Valid(t *testing.T) {
 	require.Equal(t, []string{"ops", "deploy"}, norm)
 }
 
-// AC-5.2: a missing title, too-short description and zero tags each surface as a
+// a missing title, too-short description and zero tags each surface as a
 // per-field error on their own field — all at once, not fail-fast.
 func TestValidateMetadata_PerFieldViolations(t *testing.T) {
 	_, errs := ValidateMetadata(defML, defTL, MetadataInput{
@@ -79,7 +79,7 @@ func TestValidateMetadata_MultilineTitle(t *testing.T) {
 	require.True(t, fieldsWithError(errs)[FieldTitle])
 }
 
-// T-6.3: more than the max number of tags is blocked on the tags field.
+// more than the max number of tags is blocked on the tags field.
 func TestValidateMetadata_TooManyTags(t *testing.T) {
 	many := make([]string, defTL.MaxTags+1)
 	for i := range many {

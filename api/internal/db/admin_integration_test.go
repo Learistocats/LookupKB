@@ -23,7 +23,7 @@ func auditCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool, action st
 	return n
 }
 
-// TestAdminGroups exercises the LOO-56 group/member/tag-grant queries through the
+// TestAdminGroups exercises the group/member/tag-grant queries through the
 // real admin service (real transactions, real constraints and cascades).
 func TestAdminGroups(t *testing.T) {
 	ctx := context.Background()

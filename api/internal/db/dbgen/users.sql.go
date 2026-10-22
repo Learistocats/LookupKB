@@ -37,8 +37,7 @@ type CreateUserParams struct {
 	DisplayName  *string `json:"display_name"`
 }
 
-// Local email/password accounts (03-data-model.md §1 `users`). password_hash is an
-// argon2id PHC string produced by internal/auth — never plaintext.
+// Local accounts. password_hash is an argon2id PHC string from internal/auth.
 // Register a new account. email is citext + UNIQUE, so a duplicate (any casing)
 // fails with a unique violation the signup handler maps to a generic conflict.
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, error) {
@@ -78,27 +77,6 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 	return i, err
 }
 
-const getUserByID = `-- name: GetUserByID :one
-SELECT id, email, display_name, created_at, last_seen_at, password_hash, is_super_admin
-FROM users
-WHERE id = $1
-`
-
-func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (User, error) {
-	row := q.db.QueryRow(ctx, getUserByID, id)
-	var i User
-	err := row.Scan(
-		&i.ID,
-		&i.Email,
-		&i.DisplayName,
-		&i.CreatedAt,
-		&i.LastSeenAt,
-		&i.PasswordHash,
-		&i.IsSuperAdmin,
-	)
-	return i, err
-}
-
 const getUserIsSuperAdmin = `-- name: GetUserIsSuperAdmin :one
 
 SELECT is_super_admin
@@ -106,9 +84,9 @@ FROM users
 WHERE id = $1
 `
 
-// ── Super-admin role (LOO-56) ────────────────────────────────────────────────
-// Loaded by the auth middleware on every request (never a token claim), so a
-// revoke takes effect on the caller's next request.
+// ── Super-admin role ─────────────────────────────────────────────────────────
+// Read by the auth middleware on every session request (never a token claim),
+// so a revoke takes effect on the caller's next request.
 func (q *Queries) GetUserIsSuperAdmin(ctx context.Context, id pgtype.UUID) (bool, error) {
 	row := q.db.QueryRow(ctx, getUserIsSuperAdmin, id)
 	var is_super_admin bool

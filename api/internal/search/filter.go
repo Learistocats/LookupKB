@@ -23,22 +23,19 @@ const (
 	FacetTags = "tags"
 )
 
-// AccessFilter builds the Meilisearch filter every query of this caller carries
-// (LOO-33). An entry is visible when the caller authored it, or when it carries
-// none of the protected tags the caller is denied:
+// accessFilter builds the Meilisearch filter every query of this caller carries.
+// An entry is visible when the caller authored it, or when it carries none of the
+// protected tags the caller is denied:
 //
 //	author_id = "<uid>" OR tags NOT IN ["<denied>", …]
 //
-// It returns "" (no filter) when the caller is unrestricted — a super-admin, or
-// nobody-denied — so every published entry is visible. The denied set comes from
-// the database per request, so a policy change needs no reindex. A zero
-// (unresolved) policy is refused rather than read as unrestricted.
+// It returns "" (no filter) when the caller is unrestricted. A zero (unresolved)
+// policy is refused rather than read as unrestricted.
 //
 // The index stores tag labels; the denied list carries both each tag's label and
-// its slug (identical today: labels are written as the normalized slug) so a
-// label drift can never let a denied tag through. Every value is quoted with
-// quoteFilterValue; the caller id is validated as a UUID.
-func AccessFilter(p access.Policy) (string, error) {
+// its slug so label drift can never let a denied tag through. Every value is
+// quoted with quoteFilterValue; the caller id is validated as a UUID.
+func accessFilter(p access.Policy) (string, error) {
 	if !p.Loaded() {
 		return "", errors.New("search: access policy not resolved")
 	}
@@ -69,7 +66,7 @@ func AccessFilter(p access.Policy) (string, error) {
 		` OR tags NOT IN [` + strings.Join(values, ", ") + `]`, nil
 }
 
-// Filters are the client-requested narrowing filters (LOO-34). They are an
+// Filters are the client-requested narrowing filters. They are an
 // allowlist — tags, author, published_at range — each validated and quoted, and
 // sent to Meilisearch as separate elements of the filter array, which Meilisearch
 // ANDs together with the access filter. A client filter can therefore only ever
@@ -146,7 +143,7 @@ func parseFilterTime(s string, endOfDay bool) (int64, error) {
 // buildFilter composes the access filter and the client filters into the
 // Meilisearch filter array (elements are ANDed). nil means no filter at all.
 func buildFilter(p access.Policy, f Filters) ([]string, error) {
-	accessExpr, err := AccessFilter(p)
+	accessExpr, err := accessFilter(p)
 	if err != nil {
 		return nil, err
 	}

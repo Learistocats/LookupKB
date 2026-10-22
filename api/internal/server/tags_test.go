@@ -81,15 +81,12 @@ func TestListTags_ForwardsLimit(t *testing.T) {
 	require.Equal(t, int32(7), store.gotLimit)
 }
 
-func TestListTags_BadLimitIgnored(t *testing.T) {
-	store := &fakeTagStore{}
-	s := newTagServer(t, store)
+func TestListTags_BadLimitIs400(t *testing.T) {
+	s := newTagServer(t, &fakeTagStore{})
 
-	// A non-numeric limit falls back to 0 (store applies its default) rather than 400.
 	resp := doReq(t, s, "GET", "/api/v1/tags?q=a&limit=abc", "")
 	defer resp.Body.Close()
-	require.Equal(t, 200, resp.StatusCode)
-	require.Equal(t, int32(0), store.gotLimit)
+	require.Equal(t, 400, resp.StatusCode)
 }
 
 func TestListTags_RequiresAuth(t *testing.T) {
@@ -104,7 +101,7 @@ func TestListTags_RequiresAuth(t *testing.T) {
 	require.Equal(t, 401, resp.StatusCode)
 }
 
-// LOO-33: the store gets the verified caller (to hide protected tags they lack)
+// the store gets the verified caller (to hide protected tags they lack)
 // and each suggestion carries the protected flag for the publish dialog.
 func TestListTags_ForwardsCallerAndProtectedFlag(t *testing.T) {
 	store := &fakeTagStore{rows: []dbgen.SearchTagsRow{

@@ -1,16 +1,17 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
 	import { invalidate } from '$app/navigation';
-	import AdminConfirmDialog from '$lib/components/admin/AdminConfirmDialog.svelte';
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+	import { tagSuggester } from '$lib/components/tagSuggest';
 	import { grantTag, revokeTag } from '$lib/admin';
-	import { debounce, searchTags, type TagSuggestion } from '$lib/tags';
+	import type { TagSuggestion } from '$lib/tags';
 	import type { ActionData, PageData } from './$types';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
 
 	const group = $derived(data.group);
 
-	// --- confirmation dialog, exposed to $lib/admin as a Promise-returning `ask` ---
+	// Confirmation dialog, exposed to $lib/admin as a Promise-returning `ask`.
 	let confirmOpen = $state(false);
 	let confirmTitle = $state('Are you sure?');
 	let confirmMessage = $state('');
@@ -27,29 +28,23 @@
 		return new Promise<boolean>((resolve) => (settle = resolve));
 	}
 
+	// Closing also fires onCancel; settling only the first time makes that a no-op.
 	function resolveConfirm(ok: boolean) {
+		confirmOpen = false;
 		settle?.(ok);
 		settle = null;
 	}
 
-	// --- tag policy (client-side so the 409 confirm-and-retry can run) ---
+	// Tag policy runs client-side so the 409 confirm-and-retry can run.
 	let tagDraft = $state('');
 	let tagBusy = $state(false);
 	let tagError = $state('');
 	let suggestions = $state<TagSuggestion[]>([]);
 
-	const runSearch = debounce(async (q: string) => {
-		if (!q.trim()) {
-			suggestions = [];
-			return;
-		}
-		try {
-			const granted = new Set(group.tags.map((t) => t.slug));
-			suggestions = (await searchTags(q)).filter((s) => !granted.has(s.slug));
-		} catch {
-			suggestions = []; // best-effort; typing a tag still works
-		}
-	}, 200);
+	const runSearch = tagSuggester({
+		exclude: (slug) => group.tags.some((t) => t.slug === slug),
+		onResult: (shown) => (suggestions = shown)
+	});
 
 	async function onGrant(e: SubmitEvent) {
 		e.preventDefault();
@@ -84,7 +79,7 @@
 		}
 	}
 
-	// --- delete group: confirm, then submit the hidden form ---
+	// Delete group: confirm, then submit the hidden form.
 	let deleteForm = $state<HTMLFormElement>();
 	async function onDelete() {
 		const ok = await ask(
@@ -201,7 +196,7 @@
 	{/if}
 </section>
 
-<AdminConfirmDialog
+<ConfirmDialog
 	bind:open={confirmOpen}
 	title={confirmTitle}
 	message={confirmMessage}

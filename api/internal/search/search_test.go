@@ -44,3 +44,8 @@ func TestPickSnippet(t *testing.T) {
 	require.Equal(t, h.Formatted.BodyText, pickSnippet(h, true))
 	require.Equal(t, "the description", pickSnippet(h, false), "empty query → description")
 }
+
+func TestTruncateRunes(t *testing.T) {
+	require.Equal(t, "héé", truncateRunes("hééllo", 3))
+	require.Equal(t, "ab", truncateRunes("ab", 3))
+}

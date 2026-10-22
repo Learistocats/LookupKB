@@ -1,8 +1,7 @@
-# sqlc generates type-safe Go from SQL (02-tech-stack.md §1). The schema source
+# sqlc generates type-safe Go from SQL. The schema source
 # is the goose migrations themselves, so generated types can never drift from the
-# applied schema. Queries live beside the feature that needs them (M0 only wires
-# the walking-skeleton draft path). Regenerate with `make sqlc`; CI fails if the
-# committed output is stale.
+# applied schema. Regenerate with `make sqlc`; CI fails if the committed output
+# is stale.
 version: "2"
 sql:
   - engine: postgresql

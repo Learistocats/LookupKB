@@ -50,7 +50,7 @@ describe('upstreamHeaders', () => {
 		expect(h.get('host')).toBeNull();
 	});
 
-	it('forwards the MCP transport headers and Origin (LOO-59)', () => {
+	it('forwards the MCP transport headers and Origin', () => {
 		const h = upstreamHeaders(
 			new Headers({
 				authorization: 'Bearer lkb_pat_abcdefgh_s',
@@ -91,7 +91,7 @@ describe('downstreamHeaders', () => {
 		expect(h.get('server')).toBeNull();
 	});
 
-	it('relays the public API negotiation and HTML boxing headers (LOO-38)', () => {
+	it('relays the public API negotiation and HTML boxing headers', () => {
 		const h = downstreamHeaders(
 			new Headers({
 				'content-type': 'text/html; charset=utf-8',

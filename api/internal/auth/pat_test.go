@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -85,44 +85,24 @@ func TestPATAllowed(t *testing.T) {
 	}
 }
 
-// fakePATs is an in-memory PATVerifier.
-type fakePATs struct {
-	recs     map[string]PATRecord
-	err      error
-	touched  []uuid.UUID
-	lookedUp []string
-}
-
-func (f *fakePATs) LookupPAT(_ context.Context, prefix string) (PATRecord, error) {
-	f.lookedUp = append(f.lookedUp, prefix)
-	if f.err != nil {
-		return PATRecord{}, f.err
-	}
-	r, ok := f.recs[prefix]
-	if !ok {
-		return PATRecord{}, ErrPATNotFound
-	}
-	return r, nil
-}
-
-func (f *fakePATs) TouchPAT(_ context.Context, id uuid.UUID) error {
-	f.touched = append(f.touched, id)
-	return nil
-}
-
-func issuePAT(t *testing.T, f *fakePATs, mutate func(*PATRecord)) (string, PATRecord) {
+func issuePAT(t *testing.T, f *fakeStore, mutate func(*dbgen.GetActiveAPITokenByPrefixRow)) (string, dbgen.GetActiveAPITokenByPrefixRow) {
 	t.Helper()
 	p, err := GeneratePAT()
 	require.NoError(t, err)
-	rec := PATRecord{ID: uuid.New(), UserID: uuid.New(), Email: "pat@example.com", Hash: p.Hash}
+	row := dbgen.GetActiveAPITokenByPrefixRow{
+		ID:        pgtype.UUID{Bytes: uuid.New(), Valid: true},
+		UserID:    pgtype.UUID{Bytes: uuid.New(), Valid: true},
+		Email:     "pat@example.com",
+		TokenHash: p.Hash,
+	}
 	if mutate != nil {
-		mutate(&rec)
+		mutate(&row)
 	}
-	if f.recs == nil {
-		f.recs = map[string]PATRecord{}
+	if f.rows == nil {
+		f.rows = map[string]dbgen.GetActiveAPITokenByPrefixRow{}
 	}
-	f.recs[p.Prefix] = rec
-	return p.Token, rec
+	f.rows[p.Prefix] = row
+	return p.Token, row
 }
 
 // newPATApp mounts the middleware the way the server does (a prefix group) with a
@@ -163,12 +143,10 @@ func readBody(t *testing.T, resp *http.Response) string {
 	return string(b)
 }
 
-func TestMiddleware_ValidPATActsAsUserWithGroups(t *testing.T) {
-	pats := &fakePATs{}
-	raw, rec := issuePAT(t, pats, nil)
-	gid := uuid.New()
-	g := &fakeGroups{ids: []pgtype.UUID{{Bytes: gid, Valid: true}}}
-	app := newPATApp(NewMiddleware(newTestTokens(t), g, discardLogger()).WithPATs(pats))
+func TestMiddleware_ValidPATActsAsUser(t *testing.T) {
+	st := &fakeStore{}
+	raw, row := issuePAT(t, st, func(r *dbgen.GetActiveAPITokenByPrefixRow) { r.IsSuperAdmin = true })
+	app := newPATApp(NewMiddleware(newTestTokens(t), st, discardLogger()))
 
 	resp := doPAT(t, app, http.MethodGet, "/api/v1/me", "Bearer "+raw)
 	defer resp.Body.Close()
@@ -176,39 +154,41 @@ func TestMiddleware_ValidPATActsAsUserWithGroups(t *testing.T) {
 
 	var got Identity
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
-	require.Equal(t, rec.UserID.String(), got.UserID)
+	require.Equal(t, uuid.UUID(row.UserID.Bytes), got.UserID)
 	require.Equal(t, "pat@example.com", got.Email)
-	require.Equal(t, []string{gid.String()}, got.Groups)
 	require.Equal(t, MethodPAT, got.Method)
-	require.Equal(t, rec.ID.String(), got.TokenID)
-	// Same group-loading path as a session: looked up for the token's user.
-	require.Equal(t, pgtype.UUID{Bytes: rec.UserID, Valid: true}, g.gotID)
-	require.Equal(t, []uuid.UUID{rec.ID}, pats.touched)
+	require.Equal(t, uuid.UUID(row.ID.Bytes).String(), got.TokenID)
+	require.True(t, got.IsSuperAdmin)
+	require.Zero(t, st.superHits, "the PAT lookup already carries the flag")
+	require.Equal(t, []pgtype.UUID{row.ID}, st.touched)
 }
 
 func TestMiddleware_PATLastUsedIsThrottled(t *testing.T) {
-	pats := &fakePATs{}
-	raw, _ := issuePAT(t, pats, func(r *PATRecord) { r.LastUsedAt = time.Now().Add(-10 * time.Second) })
-	app := newPATApp(NewMiddleware(newTestTokens(t), nil, discardLogger()).WithPATs(pats))
+	st := &fakeStore{}
+	raw, _ := issuePAT(t, st, func(r *dbgen.GetActiveAPITokenByPrefixRow) {
+		r.LastUsedAt = pgtype.Timestamptz{Time: time.Now().Add(-10 * time.Second), Valid: true}
+	})
+	app := newPATApp(NewMiddleware(newTestTokens(t), st, discardLogger()))
 
 	resp := doPAT(t, app, http.MethodGet, "/api/v1/me", "Bearer "+raw)
 	_ = resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	require.Empty(t, pats.touched, "a token used within the last minute must not be re-stamped")
+	require.Empty(t, st.touched, "a token used within the last minute must not be re-stamped")
 }
 
 // Every PAT failure answers exactly what a bad JWT answers.
 func TestMiddleware_InvalidPATsAre401LikeBadJWT(t *testing.T) {
-	pats := &fakePATs{}
-	app := newPATApp(NewMiddleware(newTestTokens(t), nil, discardLogger()).WithPATs(pats))
+	st := &fakeStore{}
+	app := newPATApp(NewMiddleware(newTestTokens(t), st, discardLogger()))
 
 	jwtResp := doPAT(t, app, http.MethodGet, "/api/v1/me", "Bearer not.a.jwt")
 	require.Equal(t, http.StatusUnauthorized, jwtResp.StatusCode)
 	want := readBody(t, jwtResp)
 
-	revoked, _ := issuePAT(t, pats, func(r *PATRecord) { r.Revoked = true })
-	expired, _ := issuePAT(t, pats, func(r *PATRecord) { r.ExpiresAt = time.Now().Add(-time.Minute) })
-	valid, _ := issuePAT(t, pats, nil)
+	expired, _ := issuePAT(t, st, func(r *dbgen.GetActiveAPITokenByPrefixRow) {
+		r.ExpiresAt = pgtype.Timestamptz{Time: time.Now().Add(-time.Minute), Valid: true}
+	})
+	valid, _ := issuePAT(t, st, nil)
 	// Same prefix, different secret.
 	wrongSecret := valid[:len(valid)-4] + "AAAA"
 	if wrongSecret == valid {
@@ -218,7 +198,6 @@ func TestMiddleware_InvalidPATsAre401LikeBadJWT(t *testing.T) {
 	require.NoError(t, err)
 
 	for name, raw := range map[string]string{
-		"revoked":       revoked,
 		"expired":       expired,
 		"wrong secret":  wrongSecret,
 		"unknown":       unknown.Token,
@@ -230,25 +209,23 @@ func TestMiddleware_InvalidPATsAre401LikeBadJWT(t *testing.T) {
 		require.Equal(t, http.StatusUnauthorized, resp.StatusCode, name)
 		require.Equal(t, want, readBody(t, resp), name)
 	}
-	require.Empty(t, pats.touched, "a rejected token is never stamped")
+	require.Empty(t, st.touched, "a rejected token is never stamped")
 }
 
-func TestMiddleware_PATWithoutVerifierIs401(t *testing.T) {
-	pats := &fakePATs{}
-	raw, _ := issuePAT(t, pats, nil)
+func TestMiddleware_PATWithoutStoreIs401(t *testing.T) {
+	raw, _ := issuePAT(t, &fakeStore{}, nil)
 	app := newPATApp(NewMiddleware(newTestTokens(t), nil, discardLogger()))
 
 	resp := doPAT(t, app, http.MethodGet, "/api/v1/me", "Bearer "+raw)
 	_ = resp.Body.Close()
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-	require.Empty(t, pats.lookedUp)
 }
 
 func TestMiddleware_PATStoreErrorIs500(t *testing.T) {
-	pats := &fakePATs{err: errors.New("db down")}
+	st := &fakeStore{lookupErr: errors.New("db down")}
 	p, err := GeneratePAT()
 	require.NoError(t, err)
-	app := newPATApp(NewMiddleware(newTestTokens(t), nil, discardLogger()).WithPATs(pats))
+	app := newPATApp(NewMiddleware(newTestTokens(t), st, discardLogger()))
 
 	resp := doPAT(t, app, http.MethodGet, "/api/v1/me", "Bearer "+p.Token)
 	_ = resp.Body.Close()
@@ -256,10 +233,9 @@ func TestMiddleware_PATStoreErrorIs500(t *testing.T) {
 }
 
 func TestMiddleware_PATBlockedOffReadSurface(t *testing.T) {
-	pats := &fakePATs{}
-	raw, _ := issuePAT(t, pats, nil)
-	g := &fakeGroups{}
-	app := newPATApp(NewMiddleware(newTestTokens(t), g, discardLogger()).WithPATs(pats))
+	st := &fakeStore{}
+	raw, _ := issuePAT(t, st, nil)
+	app := newPATApp(NewMiddleware(newTestTokens(t), st, discardLogger()))
 
 	for _, r := range []struct{ method, path string }{
 		{http.MethodPost, "/api/documents"},
@@ -271,12 +247,12 @@ func TestMiddleware_PATBlockedOffReadSurface(t *testing.T) {
 		_ = resp.Body.Close()
 		require.Equal(t, http.StatusForbidden, resp.StatusCode, "%s %s", r.method, r.path)
 	}
-	require.False(t, g.called, "a blocked PAT never reaches group loading")
+	require.Empty(t, st.touched, "a blocked PAT is never stamped")
 }
 
 func TestMiddleware_JWTUnchangedAndReachesWriteRoutes(t *testing.T) {
 	tk := newTestTokens(t)
-	app := newPATApp(NewMiddleware(tk, nil, discardLogger()).WithPATs(&fakePATs{}))
+	app := newPATApp(NewMiddleware(tk, &fakeStore{}, discardLogger()))
 	uid := uuid.New()
 	raw, _, err := tk.Issue(uid.String(), "user@example.com")
 	require.NoError(t, err)
@@ -286,7 +262,7 @@ func TestMiddleware_JWTUnchangedAndReachesWriteRoutes(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	var got Identity
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
-	require.Equal(t, uid.String(), got.UserID)
+	require.Equal(t, uid, got.UserID)
 	require.Equal(t, MethodSession, got.Method)
 	require.Empty(t, got.TokenID)
 }

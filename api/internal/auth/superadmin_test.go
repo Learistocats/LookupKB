@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -10,24 +9,10 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/require"
 )
 
-// fakeDirectory is a group store that also implements SuperAdminLoader.
-type fakeDirectory struct {
-	fakeGroups
-	super    bool
-	superErr error
-	superHit int
-}
-
-func (f *fakeDirectory) GetUserIsSuperAdmin(_ context.Context, _ pgtype.UUID) (bool, error) {
-	f.superHit++
-	return f.super, f.superErr
-}
-
-func identityFor(t *testing.T, store GroupLister) (int, Identity) {
+func identityFor(t *testing.T, store Store) (int, Identity) {
 	t.Helper()
 	tk := newTestTokens(t)
 	app := newTestApp(NewMiddleware(tk, store, discardLogger()))
@@ -43,11 +28,11 @@ func identityFor(t *testing.T, store GroupLister) (int, Identity) {
 }
 
 func TestMiddleware_LoadsSuperAdminPerRequest(t *testing.T) {
-	d := &fakeDirectory{super: true}
+	d := &fakeStore{super: true}
 	status, id := identityFor(t, d)
 	require.Equal(t, http.StatusOK, status)
 	require.True(t, id.IsSuperAdmin)
-	require.Equal(t, 1, d.superHit, "flag is read from the store on every request")
+	require.Equal(t, 1, d.superHits, "flag is read from the store on every request")
 
 	d.super = false // revoked: honored on the very next request
 	_, id = identityFor(t, d)
@@ -55,18 +40,16 @@ func TestMiddleware_LoadsSuperAdminPerRequest(t *testing.T) {
 }
 
 func TestMiddleware_SuperAdminDefaultsFalse(t *testing.T) {
-	// No store, or a store without the capability: never an admin.
+	// No store: never an admin.
 	_, id := identityFor(t, nil)
 	require.False(t, id.IsSuperAdmin)
-	_, id = identityFor(t, &fakeGroups{})
-	require.False(t, id.IsSuperAdmin)
 	// Subject no longer exists.
-	_, id = identityFor(t, &fakeDirectory{superErr: pgx.ErrNoRows})
+	_, id = identityFor(t, &fakeStore{superErr: pgx.ErrNoRows})
 	require.False(t, id.IsSuperAdmin)
 }
 
 func TestMiddleware_SuperAdminLoadErrorIs500(t *testing.T) {
-	status, _ := identityFor(t, &fakeDirectory{superErr: errors.New("db down")})
+	status, _ := identityFor(t, &fakeStore{superErr: errors.New("db down")})
 	require.Equal(t, http.StatusInternalServerError, status)
 }
 
@@ -86,6 +69,6 @@ func TestRequireSuperAdmin(t *testing.T) {
 		return resp.StatusCode
 	}
 	require.Equal(t, http.StatusForbidden, run(nil))
-	require.Equal(t, http.StatusForbidden, run(&Identity{UserID: "u"}))
-	require.Equal(t, http.StatusNoContent, run(&Identity{UserID: "u", IsSuperAdmin: true}))
+	require.Equal(t, http.StatusForbidden, run(&Identity{}))
+	require.Equal(t, http.StatusNoContent, run(&Identity{IsSuperAdmin: true}))
 }

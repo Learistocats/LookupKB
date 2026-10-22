@@ -12,17 +12,20 @@ import (
 	"github.com/Learistocats/LookupKB/api/internal/config"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/require"
 )
 
-// fakeDirectory backs the real auth middleware: no groups, and a configurable
-// super-admin flag (the per-request DB re-check).
+// fakeDirectory backs the real auth middleware with a configurable super-admin
+// flag (the per-request DB re-check).
 type fakeDirectory struct{ super bool }
 
-func (f *fakeDirectory) ListUserGroupIDs(context.Context, pgtype.UUID) ([]pgtype.UUID, error) {
-	return nil, nil
+func (f *fakeDirectory) GetActiveAPITokenByPrefix(context.Context, string) (dbgen.GetActiveAPITokenByPrefixRow, error) {
+	return dbgen.GetActiveAPITokenByPrefixRow{}, pgx.ErrNoRows
 }
+
+func (f *fakeDirectory) TouchAPITokenLastUsed(context.Context, pgtype.UUID) error { return nil }
 
 func (f *fakeDirectory) GetUserIsSuperAdmin(context.Context, pgtype.UUID) (bool, error) {
 	return f.super, nil

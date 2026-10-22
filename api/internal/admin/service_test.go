@@ -228,7 +228,9 @@ func (f *fakeDB) GetTagByID(_ context.Context, id pgtype.UUID) (dbgen.Tag, error
 	return t, nil
 }
 
-func (f *fakeDB) GetSetting(context.Context, string) ([]byte, error) { return nil, pgx.ErrNoRows }
+func (f *fakeDB) GetSettings(context.Context, []string) ([]dbgen.GetSettingsRow, error) {
+	return nil, nil
+}
 
 func (f *fakeDB) GetUserByEmail(_ context.Context, email string) (dbgen.User, error) {
 	for _, u := range f.users {

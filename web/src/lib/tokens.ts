@@ -1,4 +1,4 @@
-// Personal Access Token settings logic (LOO-42). Pure so the settings page's
+// Personal Access Token settings logic. Pure so the settings page's
 // form parsing and status rules are unit-tested; the API is authoritative and
 // re-validates everything.
 

@@ -1,8 +1,21 @@
+import { createSubscriber } from 'svelte/reactivity';
+
+const subscribe = createSubscriber((update) => {
+	const t = setInterval(update, 60_000);
+	return () => clearInterval(t);
+});
+
+/** The current time, re-read every minute by whichever effect or template calls it. */
+export function now(): number {
+	subscribe();
+	return Date.now();
+}
+
 // Compact relative times for lists ("now", "5m", "3h", "2d", then a date).
-export function relativeTime(iso: string, now: number = Date.now()): string {
-	const then = Date.parse(iso);
+export function relativeTime(when: string | number, at: number = Date.now()): string {
+	const then = typeof when === 'number' ? when : Date.parse(when);
 	if (Number.isNaN(then)) return '';
-	const s = Math.max(0, Math.floor((now - then) / 1000));
+	const s = Math.max(0, Math.floor((at - then) / 1000));
 	if (s < 60) return 'now';
 	const m = Math.floor(s / 60);
 	if (m < 60) return `${m}m`;

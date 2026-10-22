@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/Learistocats/LookupKB/api/internal/access"
@@ -59,12 +58,13 @@ func TestSearch_ForwardsQueryAndVerifiedCaller(t *testing.T) {
 	require.Len(t, got.Hits, 1)
 }
 
-func TestSearch_TruncatesLongQueries(t *testing.T) {
-	svc := &fakeSearch{}
-	s := newSearchServer(t, svc)
-	resp := doReq(t, s, http.MethodGet, "/api/search?q="+strings.Repeat("a", 500), "")
-	_ = resp.Body.Close()
-	require.Len(t, svc.q, maxQueryRunes)
+func TestSearch_BadLimitOrOffsetIs400(t *testing.T) {
+	s := newSearchServer(t, &fakeSearch{})
+	for _, q := range []string{"limit=abc", "limit=-1", "offset=x", "offset=-5"} {
+		resp := doReq(t, s, http.MethodGet, "/api/search?q=x&"+q, "")
+		_ = resp.Body.Close()
+		require.Equal(t, http.StatusBadRequest, resp.StatusCode, q)
+	}
 }
 
 func TestSearch_EngineDownIs503(t *testing.T) {
@@ -74,7 +74,7 @@ func TestSearch_EngineDownIs503(t *testing.T) {
 	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 }
 
-// LOO-34: allowlisted client filters and facets are parsed and forwarded; the
+// allowlisted client filters and facets are parsed and forwarded; the
 // caller identity still comes only from the token (a client author_id is a
 // narrowing filter, never the access identity).
 func TestSearch_ForwardsFiltersAndFacets(t *testing.T) {
@@ -98,7 +98,7 @@ func TestSearch_ForwardsFiltersAndFacets(t *testing.T) {
 	require.Contains(t, got, "facets")
 }
 
-// Without ?facets the response keeps its pre-LOO-34 shape (no facets key).
+// Without ?facets the response keeps its original shape (no facets key).
 func TestSearch_NoFacetsKeyByDefault(t *testing.T) {
 	s := newSearchServer(t, &fakeSearch{res: search.Result{Hits: []search.Hit{}}})
 	resp := doReq(t, s, http.MethodGet, "/api/search?q=x", "")

@@ -22,9 +22,7 @@ type AddDocumentTagParams struct {
 	TagID      pgtype.UUID `json:"tag_id"`
 }
 
-// Attach a tag to a document. ON CONFLICT DO NOTHING keeps the apply idempotent if
-// the pair already exists (the usage_count increment is issued separately, only
-// for tags the diff determined are genuinely new to the document).
+// Idempotent; the usage_count increment is issued separately for genuinely new tags.
 func (q *Queries) AddDocumentTag(ctx context.Context, arg AddDocumentTagParams) error {
 	_, err := q.db.Exec(ctx, addDocumentTag, arg.DocumentID, arg.TagID)
 	return err
@@ -36,8 +34,7 @@ SET usage_count = GREATEST(0, usage_count - 1)
 WHERE id = $1
 `
 
-// Lower a tag's counter by one, clamped at zero so a bookkeeping slip can never
-// drive the popularity counter negative (mislead autocomplete ranking).
+// Clamped at zero so a bookkeeping slip can never go negative.
 func (q *Queries) DecrementTagUsage(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, decrementTagUsage, id)
 	return err
@@ -49,7 +46,7 @@ FROM tags
 WHERE id = $1
 `
 
-// Resolve a tag id (admin tag-policy revoke) to its label for the confirm prompt.
+// Resolves a tag id to its label for the admin confirm prompt.
 func (q *Queries) GetTagByID(ctx context.Context, id pgtype.UUID) (Tag, error) {
 	row := q.db.QueryRow(ctx, getTagByID, id)
 	var i Tag
@@ -69,7 +66,6 @@ SET usage_count = usage_count + 1
 WHERE id = $1
 `
 
-// Bump a tag's live published-usage counter by one (a document newly using it).
 func (q *Queries) IncrementTagUsage(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, incrementTagUsage, id)
 	return err
@@ -87,8 +83,7 @@ type ListDocumentTagsRow struct {
 	Slug string      `json:"slug"`
 }
 
-// The tags currently attached to a document, used as the diff source when
-// re-applying a document's tag set (SetDocumentTags).
+// Diff source when re-applying a document's tag set.
 func (q *Queries) ListDocumentTags(ctx context.Context, documentID pgtype.UUID) ([]ListDocumentTagsRow, error) {
 	rows, err := q.db.Query(ctx, listDocumentTags, documentID)
 	if err != nil {
@@ -120,7 +115,7 @@ type RemoveDocumentTagParams struct {
 	TagID      pgtype.UUID `json:"tag_id"`
 }
 
-// Detach a tag from a document (paired with DecrementTagUsage in the same tx).
+// Paired with DecrementTagUsage in the same tx.
 func (q *Queries) RemoveDocumentTag(ctx context.Context, arg RemoveDocumentTagParams) error {
 	_, err := q.db.Exec(ctx, removeDocumentTag, arg.DocumentID, arg.TagID)
 	return err
@@ -156,17 +151,13 @@ type SearchTagsRow struct {
 	IsProtected bool               `json:"is_protected"`
 }
 
-// Tag vocabulary queries (F6, 03-data-model.md `tags`/`document_tags`). Tag slugs
-// are normalized in Go (internal/tags.Normalize) before they reach any of these,
-// so the DB only ever sees canonical lowercase-kebab slugs. usage_count reflects
-// LIVE published usage and is maintained by the increment/decrement queries below,
-// driven by the transactional SetDocumentTags apply (internal/tags/store.go).
-// Autocomplete: match tags whose slug contains the (already-normalized) pattern,
-// most-used first (AC-6.1). The pattern is built in Go as '%slug%'; Normalize
-// strips LIKE metacharacters (% _), so there is no injection risk.
-// excluded_ids are the protected tags the caller lacks (access.Policy, LOO-33):
-// they are never suggested. is_protected lets the publish dialog tell the author
-// an entry carrying the tag will be restricted.
+// Tag slugs are normalized in Go (internal/tags.Normalize) before reaching these
+// queries. usage_count reflects live published usage and is maintained by the
+// increment/decrement queries via tags.ApplyDocumentTags.
+// Autocomplete, most-used first. The pattern is built in Go as '%slug%'; Normalize
+// strips LIKE metacharacters, so there is no injection risk. excluded_ids are the
+// protected tags the caller lacks; is_protected lets the publish dialog warn that
+// the entry will be restricted.
 func (q *Queries) SearchTags(ctx context.Context, arg SearchTagsParams) ([]SearchTagsRow, error) {
 	rows, err := q.db.Query(ctx, searchTags, arg.Pattern, arg.ExcludedIds, arg.MaxRows)
 	if err != nil {
@@ -207,9 +198,8 @@ type UpsertTagParams struct {
 	Label string `json:"label"`
 }
 
-// Get-or-create a tag by its canonical slug. ON CONFLICT DO UPDATE (not DO
-// NOTHING) so the existing row is returned on conflict. usage_count is deliberately
-// NOT touched here — membership changes maintain it (see Increment/DecrementTagUsage).
+// Get-or-create by slug. DO UPDATE (not DO NOTHING) so the existing row is returned.
+// usage_count is deliberately untouched; see Increment/DecrementTagUsage.
 func (q *Queries) UpsertTag(ctx context.Context, arg UpsertTagParams) (Tag, error) {
 	row := q.db.QueryRow(ctx, upsertTag, arg.Slug, arg.Label)
 	var i Tag

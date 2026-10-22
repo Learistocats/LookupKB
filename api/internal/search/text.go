@@ -59,7 +59,7 @@ var paragraphElements = map[string]bool{
 }
 
 // ReadableTextFromHTML is TextFromHTML for a human or agent reader (the public
-// API's ?format=text, MCP get_document; LOO-38): the same tokenizer walk over the
+// API's ?format=text, MCP get_document): the same tokenizer walk over the
 // published, sanitized HTML with the same skipped elements, but block boundaries
 // become line breaks (a blank line between paragraphs), list items get a "- "
 // marker and <pre> content keeps its whitespace. The output is plain text.

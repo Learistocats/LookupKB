@@ -1,11 +1,7 @@
-// Super-admin tag-policy client logic (LOO-56, F10). Granting a group a tag that
-// no group holds yet turns it into a *protected* tag; removing the last grant makes
-// it public again. The API refuses both with 409 {"error":"needs_confirmation"}
-// unless the caller confirms, so this module: calls the same-origin proxy without
-// confirmation, asks the admin on a 409, and retries with the confirm flag.
-//
-// Pure (fetchFn and the prompt are injected) so it is unit-testable; the page only
-// supplies a dialog-backed `ask`. The API is authoritative for every rule here.
+// Tag-policy client logic: the first grant of a tag protects it, and removing the
+// last grant makes it public again. The API answers 409 needs_confirmation for
+// both; we ask the admin and retry with the confirm flag.
+// Pure (fetchFn and the prompt are injected) so it is unit-testable.
 
 /** A tag in a group's policy, as the API returns it. */
 export interface TagGrant {

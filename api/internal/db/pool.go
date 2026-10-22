@@ -1,6 +1,6 @@
 // Package db owns the PostgreSQL connection pool, embedded schema migrations,
 // and (via the generated dbgen subpackage) type-safe queries. Postgres is
-// LookupKB's authoritative store (01-architecture.md §2).
+// LookupKB's authoritative store.
 package db
 
 import (

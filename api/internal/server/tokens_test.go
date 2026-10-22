@@ -11,6 +11,7 @@ import (
 
 	"github.com/Learistocats/LookupKB/api/internal/auth"
 	"github.com/Learistocats/LookupKB/api/internal/config"
+	"github.com/Learistocats/LookupKB/api/internal/db"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -18,11 +19,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeTokenStore is an in-memory TokenStore that also serves as the PAT
-// verifier, so a token minted through POST /api/tokens authenticates for real.
+// fakeTokenStore is an in-memory TokenStore that also serves as the auth store, so a token minted through POST /api/tokens authenticates for real.
 type fakeTokenStore struct {
 	rows      map[uuid.UUID]*storedToken
-	activeCap int64
 	revokeArg dbgen.RevokeMyAPITokenParams
 }
 
@@ -32,10 +31,19 @@ type storedToken struct {
 }
 
 func newFakeTokenStore() *fakeTokenStore {
-	return &fakeTokenStore{rows: map[uuid.UUID]*storedToken{}, activeCap: -1}
+	return &fakeTokenStore{rows: map[uuid.UUID]*storedToken{}}
 }
 
 func (f *fakeTokenStore) CreateAPIToken(_ context.Context, arg dbgen.CreateAPITokenParams) (dbgen.CreateAPITokenRow, error) {
+	var active int64
+	for _, r := range f.rows {
+		if r.row.UserID == arg.UserID && !r.row.RevokedAt.Valid {
+			active++
+		}
+	}
+	if active >= arg.MaxActive {
+		return dbgen.CreateAPITokenRow{}, pgx.ErrNoRows
+	}
 	id := uuid.New()
 	row := dbgen.CreateAPITokenRow{
 		ID:        pgUUID(id),
@@ -47,19 +55,6 @@ func (f *fakeTokenStore) CreateAPIToken(_ context.Context, arg dbgen.CreateAPITo
 	}
 	f.rows[id] = &storedToken{row: row, hash: arg.TokenHash}
 	return row, nil
-}
-
-func (f *fakeTokenStore) CountActiveAPITokens(_ context.Context, userID pgtype.UUID) (int64, error) {
-	if f.activeCap >= 0 {
-		return f.activeCap, nil
-	}
-	var n int64
-	for _, r := range f.rows {
-		if r.row.UserID == userID && !r.row.RevokedAt.Valid {
-			n++
-		}
-	}
-	return n, nil
 }
 
 func (f *fakeTokenStore) ListMyAPITokens(_ context.Context, userID pgtype.UUID) ([]dbgen.ListMyAPITokensRow, error) {
@@ -86,26 +81,29 @@ func (f *fakeTokenStore) RevokeMyAPIToken(_ context.Context, arg dbgen.RevokeMyA
 	return arg.ID, nil
 }
 
-// LookupPAT / TouchPAT make the fake an auth.PATVerifier.
-func (f *fakeTokenStore) LookupPAT(_ context.Context, prefix string) (auth.PATRecord, error) {
+// The rest of auth.Store, so a token minted through POST /api/tokens authenticates.
+func (f *fakeTokenStore) GetActiveAPITokenByPrefix(_ context.Context, prefix string) (dbgen.GetActiveAPITokenByPrefixRow, error) {
 	for _, r := range f.rows {
 		if r.row.Prefix == prefix && !r.row.RevokedAt.Valid {
-			return auth.PATRecord{
-				ID: uuid.UUID(r.row.ID.Bytes), UserID: uuid.UUID(r.row.UserID.Bytes),
-				Email: "user@example.com", Hash: r.hash,
+			return dbgen.GetActiveAPITokenByPrefixRow{
+				ID: r.row.ID, UserID: r.row.UserID, TokenHash: r.hash, Email: "user@example.com",
 			}, nil
 		}
 	}
-	return auth.PATRecord{}, auth.ErrPATNotFound
+	return dbgen.GetActiveAPITokenByPrefixRow{}, pgx.ErrNoRows
 }
 
-func (f *fakeTokenStore) TouchPAT(context.Context, uuid.UUID) error { return nil }
+func (f *fakeTokenStore) TouchAPITokenLastUsed(context.Context, pgtype.UUID) error { return nil }
+
+func (f *fakeTokenStore) GetUserIsSuperAdmin(context.Context, pgtype.UUID) (bool, error) {
+	return false, nil
+}
 
 func newTokenServer(t *testing.T, store *fakeTokenStore) *Server {
 	t.Helper()
 	cfg, err := config.Load()
 	require.NoError(t, err)
-	mw := auth.NewMiddleware(testTokens, nil, slogDiscard()).WithPATs(store)
+	mw := auth.NewMiddleware(testTokens, store, slogDiscard())
 	return New(cfg, slogDiscard(), "test", WithAuth(mw), WithTokens(store), WithDocuments(&fakeDocStore{}))
 }
 
@@ -185,12 +183,17 @@ func TestCreateToken_Validation(t *testing.T) {
 
 func TestCreateToken_CapsActiveTokens(t *testing.T) {
 	store := newFakeTokenStore()
-	store.activeCap = maxActiveTokens
+	for range maxActiveTokens {
+		_, err := store.CreateAPIToken(context.Background(), dbgen.CreateAPITokenParams{
+			UserID: pgUUID(callerUUID), Name: "t", MaxActive: maxActiveTokens,
+		})
+		require.NoError(t, err)
+	}
 	s := newTokenServer(t, store)
 	resp := doReq(t, s, http.MethodPost, "/api/tokens", `{"name":"one too many"}`)
 	_ = resp.Body.Close()
 	require.Equal(t, http.StatusConflict, resp.StatusCode)
-	require.Empty(t, store.rows)
+	require.Len(t, store.rows, maxActiveTokens)
 }
 
 func TestRevokeToken_OwnAndForeignAndMissing(t *testing.T) {
@@ -199,7 +202,7 @@ func TestRevokeToken_OwnAndForeignAndMissing(t *testing.T) {
 
 	// A token owned by someone else.
 	foreign, err := store.CreateAPIToken(context.Background(), dbgen.CreateAPITokenParams{
-		UserID: pgUUID(uuid.New()), Name: "theirs", Prefix: "zzzzzzzz", TokenHash: "h",
+		UserID: pgUUID(uuid.New()), Name: "theirs", Prefix: "zzzzzzzz", TokenHash: "h", MaxActive: maxActiveTokens,
 	})
 	require.NoError(t, err)
 
@@ -209,14 +212,14 @@ func TestRevokeToken_OwnAndForeignAndMissing(t *testing.T) {
 		b, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, string(b)
 	}
-	fc, fb := revoke(formatUUID(foreign.ID))
+	fc, fb := revoke(db.FormatUUID(foreign.ID))
 	mc, mb := revoke(uuid.NewString())
 	require.Equal(t, http.StatusNotFound, fc)
 	require.Equal(t, http.StatusNotFound, mc)
 	require.Equal(t, mb, fb, "not-yours and missing must be indistinguishable")
 	require.False(t, store.rows[uuid.UUID(foreign.ID.Bytes)].row.RevokedAt.Valid)
 	bc, _ := revoke("not-a-uuid")
-	require.Equal(t, http.StatusNotFound, bc)
+	require.Equal(t, http.StatusBadRequest, bc)
 
 	mine := createToken(t, s, `{"name":"mine"}`)
 	resp := doReq(t, s, http.MethodDelete, "/api/tokens/"+mine.ID, "")

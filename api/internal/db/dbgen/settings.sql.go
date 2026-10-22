@@ -9,21 +9,34 @@ import (
 	"context"
 )
 
-const getSetting = `-- name: GetSetting :one
-
-SELECT value
+const getSettings = `-- name: GetSettings :many
+SELECT key, value
 FROM settings
-WHERE key = $1
+WHERE key = ANY ($1::text[])
 `
 
-// Admin-tunable key/value limits (03-data-model.md §1 `settings`). This is the
-// first reader of the settings table; the metadata-gate ticket (LOO-14) adds
-// more keys (title/description limits) alongside the tag limits key LOO-15 uses.
-// Fetch a single settings value (jsonb) by key. Returns pgx.ErrNoRows when the
-// key is unset, which callers treat as "use defaults" (see tags.LoadLimits).
-func (q *Queries) GetSetting(ctx context.Context, key string) ([]byte, error) {
-	row := q.db.QueryRow(ctx, getSetting, key)
-	var value []byte
-	err := row.Scan(&value)
-	return value, err
+type GetSettingsRow struct {
+	Key   string `json:"key"`
+	Value []byte `json:"value"`
+}
+
+// Settings rows for the given keys; unset keys are simply absent (callers use defaults).
+func (q *Queries) GetSettings(ctx context.Context, keys []string) ([]GetSettingsRow, error) {
+	rows, err := q.db.Query(ctx, getSettings, keys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetSettingsRow
+	for rows.Next() {
+		var i GetSettingsRow
+		if err := rows.Scan(&i.Key, &i.Value); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

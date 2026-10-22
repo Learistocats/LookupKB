@@ -16,10 +16,9 @@ import (
 	appdb "github.com/Learistocats/LookupKB/api/internal/db"
 )
 
-// TestTagUsageLifecycle drives the reusable SetDocumentTags/ClearDocumentTags apply
-// directly through the publish / edit-republish / unpublish scenarios the publish
-// gate (LOO-14/LOO-17) will invoke, asserting that document_tags membership and
-// each tag's usage_count stay in sync — usage_count tracks LIVE published usage.
+// TestTagUsageLifecycle drives ApplyDocumentTags through the publish /
+// edit-republish / unpublish scenarios, asserting that document_tags membership
+// and each tag's usage_count stay in sync.
 func TestTagUsageLifecycle(t *testing.T) {
 	ctx := context.Background()
 
@@ -33,7 +32,6 @@ func TestTagUsageLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)
 	q := dbgen.New(pool)
-	store := tags.New(pool)
 
 	author, err := q.CreateUser(ctx, dbgen.CreateUserParams{Email: "author-sub@example.com", PasswordHash: "x"})
 	require.NoError(t, err)
@@ -55,43 +53,43 @@ func TestTagUsageLifecycle(t *testing.T) {
 	}
 
 	// --- publish doc1 with two tags (input is un-normalized) ---
-	require.NoError(t, store.SetDocumentTags(ctx, doc1.ID, []string{"Go", "PostgreSQL"}))
+	setTags(t, ctx, pool, doc1.ID, []string{"Go", "PostgreSQL"})
 	require.Equal(t, 2, docTagCount(doc1.ID))
 	require.Equal(t, 1, usage("go"), "normalized + counted")
 	require.Equal(t, 1, usage("postgresql"))
 
 	// --- re-publish doc1 unchanged: idempotent, no count drift ---
-	require.NoError(t, store.SetDocumentTags(ctx, doc1.ID, []string{"go", "postgresql"}))
+	setTags(t, ctx, pool, doc1.ID, []string{"go", "postgresql"})
 	require.Equal(t, 2, docTagCount(doc1.ID))
 	require.Equal(t, 1, usage("go"))
 	require.Equal(t, 1, usage("postgresql"))
 
 	// --- edit-republish doc1: swap postgresql → search ---
-	require.NoError(t, store.SetDocumentTags(ctx, doc1.ID, []string{"go", "search"}))
+	setTags(t, ctx, pool, doc1.ID, []string{"go", "search"})
 	require.Equal(t, 2, docTagCount(doc1.ID))
 	require.Equal(t, 1, usage("go"), "kept tag unchanged")
 	require.Equal(t, 0, usage("postgresql"), "removed tag decremented")
 	require.Equal(t, 1, usage("search"), "added tag incremented")
 
 	// --- publish doc2 sharing the "go" tag: shared count rises to 2 ---
-	require.NoError(t, store.SetDocumentTags(ctx, doc2.ID, []string{"go"}))
+	setTags(t, ctx, pool, doc2.ID, []string{"go"})
 	require.Equal(t, 2, usage("go"), "shared across two published docs")
 
 	// --- unpublish doc1: its tags detach, counts drop, doc2's "go" survives ---
-	require.NoError(t, store.ClearDocumentTags(ctx, doc1.ID))
+	setTags(t, ctx, pool, doc1.ID, nil)
 	require.Equal(t, 0, docTagCount(doc1.ID))
 	require.Equal(t, 1, usage("go"), "only doc2 still uses it")
 	require.Equal(t, 0, usage("search"))
 
 	// --- clamp: unpublishing doc2 cannot drive a counter negative ---
-	require.NoError(t, store.ClearDocumentTags(ctx, doc2.ID))
+	setTags(t, ctx, pool, doc2.ID, nil)
 	require.Equal(t, 0, usage("go"))
-	require.NoError(t, store.ClearDocumentTags(ctx, doc2.ID), "clearing an already-empty doc is a no-op")
+	setTags(t, ctx, pool, doc2.ID, nil)
 	require.Equal(t, 0, usage("go"), "clamped at zero, never negative")
 }
 
 // TestSearchTags_AutocompleteRanking proves substring autocomplete returns matches
-// ordered by usage_count (AC-6.1) and that an empty query returns popular tags.
+// ordered by usage_count and that an empty query returns popular tags.
 func TestSearchTags_AutocompleteRanking(t *testing.T) {
 	ctx := context.Background()
 
@@ -113,9 +111,9 @@ func TestSearchTags_AutocompleteRanking(t *testing.T) {
 	d1, _ := q.CreateDraft(ctx, dbgen.CreateDraftParams{Slug: "d1", AuthorID: author.ID})
 	d2, _ := q.CreateDraft(ctx, dbgen.CreateDraftParams{Slug: "d2", AuthorID: author.ID})
 	d3, _ := q.CreateDraft(ctx, dbgen.CreateDraftParams{Slug: "d3", AuthorID: author.ID})
-	require.NoError(t, store.SetDocumentTags(ctx, d1.ID, []string{"api"}))
-	require.NoError(t, store.SetDocumentTags(ctx, d2.ID, []string{"api", "api-gateway"}))
-	require.NoError(t, store.SetDocumentTags(ctx, d3.ID, []string{"unrelated"}))
+	setTags(t, ctx, pool, d1.ID, []string{"api"})
+	setTags(t, ctx, pool, d2.ID, []string{"api", "api-gateway"})
+	setTags(t, ctx, pool, d3.ID, []string{"unrelated"})
 
 	got, err := store.SearchTags(ctx, "api", 10, access.Caller{UserID: author.ID})
 	require.NoError(t, err)

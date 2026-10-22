@@ -1,14 +1,22 @@
--- Personal Access Tokens (03-data-model.md §1 `api_tokens`, 10-public-api.md §2).
+-- Personal Access Tokens.
 -- token_hash is the hex SHA-256 of the full token — the ONLY persisted form of the
 -- secret. No query here returns token_hash except the verifier's lookup.
 
 -- name: CreateAPIToken :one
 -- Issue a token for its owner and record the audit row in the same statement (one
 -- implicit transaction). The audit metadata carries the display prefix and name,
--- never the secret or its hash.
+-- never the secret or its hash. The per-user cap is enforced in the INSERT itself:
+-- at the cap nothing is inserted and the query returns no row (pgx.ErrNoRows).
 WITH t AS (
     INSERT INTO api_tokens (user_id, name, token_hash, prefix, expires_at)
-    VALUES (@user_id, @name, @token_hash, @prefix, @expires_at)
+    SELECT @user_id::uuid, @name::text, @token_hash::text, @prefix::text, @expires_at::timestamptz
+    WHERE (
+        SELECT count(*)
+        FROM api_tokens
+        WHERE user_id = @user_id::uuid
+          AND revoked_at IS NULL
+          AND (expires_at IS NULL OR expires_at > now())
+    ) < @max_active::bigint
     RETURNING id, user_id, name, prefix, created_at, last_used_at, expires_at, revoked_at
 ), a AS (
     INSERT INTO audit_log (actor_id, action, target_type, target_id, metadata)
@@ -19,19 +27,11 @@ WITH t AS (
 SELECT id, user_id, name, prefix, created_at, last_used_at, expires_at, revoked_at
 FROM t;
 
--- name: CountActiveAPITokens :one
--- Active (not revoked, not expired) tokens a user holds — bounds issuance.
-SELECT count(*)
-FROM api_tokens
-WHERE user_id = $1
-  AND revoked_at IS NULL
-  AND (expires_at IS NULL OR expires_at > now());
-
 -- name: GetActiveAPITokenByPrefix :one
 -- The verifier's lookup: an active token by its non-secret prefix, with the owner's
--- email. Revoked/expired tokens yield no row. The caller still compares token_hash
+-- email and super-admin flag. Revoked/expired tokens yield no row. The caller still compares token_hash
 -- in constant time (the prefix alone proves nothing).
-SELECT t.id, t.user_id, t.token_hash, t.expires_at, t.revoked_at, t.last_used_at, u.email
+SELECT t.id, t.user_id, t.token_hash, t.expires_at, t.revoked_at, t.last_used_at, u.email, u.is_super_admin
 FROM api_tokens t
 JOIN users u ON u.id = t.user_id
 WHERE t.prefix = $1
@@ -64,9 +64,7 @@ WITH r AS (
 SELECT id FROM r;
 
 -- name: TouchAPITokenLastUsed :exec
--- Record usage, throttled: only writes when last_used_at is unset or older than a
--- minute, so a busy token does not cost a row write per request.
+-- Throttled by the caller (auth middleware).
 UPDATE api_tokens
 SET last_used_at = now()
-WHERE id = $1
-  AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute');
+WHERE id = $1;

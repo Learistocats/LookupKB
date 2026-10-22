@@ -1,13 +1,10 @@
-// Package tags owns LookupKB's tag vocabulary (F6): the single normalization
-// rule, reusable limit validation, the autocomplete query, and live usage_count
-// maintenance. Tags are the *only* organizing structure in the KB (no folders,
-// 00-overview.md §1), so normalization must be deterministic and applied
-// identically everywhere or near-duplicate tags ("api" vs "-api-") fragment the
-// search facets later.
+// Package tags owns LookupKB's tag vocabulary: the single normalization rule,
+// limit validation, the autocomplete query, and live usage_count maintenance.
+// Tags are the only organizing structure in the KB, so normalization must be
+// deterministic and applied identically everywhere or near-duplicates ("api" vs
+// "-api-") fragment the search facets.
 //
-// This file is the pure logic (no database): Normalize and Validate. The publish
-// gate (LOO-14) calls Validate; the store (store.go) calls Normalize on every
-// create/match path.
+// This file is the pure logic (no database): Normalize and Validate.
 package tags
 
 import (
@@ -49,7 +46,7 @@ func Normalize(raw string) string {
 	return b.String()
 }
 
-// Limits are the admin-tunable tag bounds (00-overview.md §6). Lengths are
+// Limits are the admin-tunable tag bounds. Lengths are
 // measured in runes, not bytes, so multi-byte tags are not unfairly rejected.
 type Limits struct {
 	MinTags int `json:"min_tags"`
@@ -58,14 +55,12 @@ type Limits struct {
 	MaxLen  int `json:"max_len"`
 }
 
-// DefaultLimits are the safe defaults from 00-overview.md §6: 1–8 tags per
-// document, each 2–32 characters. LoadLimits (settings.go) overrides these from
-// the settings table when configured.
+// DefaultLimits allow 1–8 tags per document, each 2–32 characters. LoadLimits
+// overrides these from the settings table.
 var DefaultLimits = Limits{MinTags: 1, MaxTags: 8, MinLen: 2, MaxLen: 32}
 
-// ValidationError aggregates every tag limit violation so the publish gate
-// (LOO-14) can surface per-field errors (AC-6.3) rather than failing on the
-// first problem. It is returned by Validate when the normalized set is invalid.
+// ValidationError aggregates every tag limit violation so the author sees all of
+// them at once. Validate returns it when the normalized set is invalid.
 type ValidationError struct {
 	Violations []string
 }
@@ -78,9 +73,8 @@ func (e *ValidationError) Error() string {
 // limits. It returns the canonical slug set (order-preserving, deduped) and, when
 // the set violates the limits, a *ValidationError listing every problem.
 //
-// This is the reusable gate the publish handler calls — never trust a client's
-// own count/length checks (06-security.md §6). Blank/whitespace tags normalize to
-// "" and are dropped before counting, so "  " does not smuggle in an empty tag.
+// Never trust a client's own count/length checks. Blank tags normalize to "" and
+// are dropped before counting.
 func Validate(limits Limits, raw []string) ([]string, error) {
 	seen := make(map[string]struct{}, len(raw))
 	normalized := make([]string, 0, len(raw))

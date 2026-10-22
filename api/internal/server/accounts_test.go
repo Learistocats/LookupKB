@@ -45,6 +45,10 @@ func (f *fakeUserStore) GetUserByEmail(_ context.Context, email string) (dbgen.U
 	return u, nil
 }
 
+func (f *fakeUserStore) ListUserGroupIDs(context.Context, pgtype.UUID) ([]pgtype.UUID, error) {
+	return nil, nil
+}
+
 func (f *fakeUserStore) TouchUserLastSeen(_ context.Context, _ pgtype.UUID) error {
 	f.touched = true
 	return nil

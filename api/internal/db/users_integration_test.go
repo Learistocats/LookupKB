@@ -43,9 +43,9 @@ func TestUsers(t *testing.T) {
 	require.Equal(t, "23505", pgErr.Code)
 
 	require.NoError(t, q.TouchUserLastSeen(ctx, created.ID))
-	byID, err := q.GetUserByID(ctx, created.ID)
-	require.NoError(t, err)
-	require.True(t, byID.LastSeenAt.Valid)
+	var seen bool
+	require.NoError(t, pool.QueryRow(ctx, "SELECT last_seen_at IS NOT NULL FROM users WHERE id=$1", created.ID).Scan(&seen))
+	require.True(t, seen)
 
 	// Group membership.
 	gids, err := q.ListUserGroupIDs(ctx, created.ID)
