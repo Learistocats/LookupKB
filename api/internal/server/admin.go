@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/Learistocats/LookupKB/api/internal/admin"
+	"github.com/Learistocats/LookupKB/api/internal/db"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -56,11 +57,11 @@ type adminGroupDetailResponse struct {
 }
 
 func newAdminUser(id pgtype.UUID, email string, displayName *string, isSuperAdmin bool) adminUserResponse {
-	return adminUserResponse{ID: formatUUID(id), Email: email, DisplayName: displayName, IsSuperAdmin: isSuperAdmin}
+	return adminUserResponse{ID: db.FormatUUID(id), Email: email, DisplayName: displayName, IsSuperAdmin: isSuperAdmin}
 }
 
 func toAdminGroup(g dbgen.Group) adminGroupResponse {
-	return adminGroupResponse{ID: formatUUID(g.ID), Name: g.Name, CreatedAt: formatTime(g.CreatedAt)}
+	return adminGroupResponse{ID: db.FormatUUID(g.ID), Name: g.Name, CreatedAt: db.FormatTime(g.CreatedAt)}
 }
 
 // registerAdminRoutes mounts /api/admin/* behind RequireSuperAdmin. The caller
@@ -88,7 +89,7 @@ func (s *Server) handleAdminListGroups(c *fiber.Ctx) error {
 	for i, r := range rows {
 		mc, tc := r.MemberCount, r.TagCount
 		out[i] = adminGroupResponse{
-			ID: formatUUID(r.ID), Name: r.Name, CreatedAt: formatTime(r.CreatedAt),
+			ID: db.FormatUUID(r.ID), Name: r.Name, CreatedAt: db.FormatTime(r.CreatedAt),
 			MemberCount: &mc, TagCount: &tc,
 		}
 	}
@@ -133,7 +134,7 @@ func (s *Server) handleAdminGetGroup(c *fiber.Ctx) error {
 		out.Members[i] = newAdminUser(m.ID, m.Email, m.DisplayName, m.IsSuperAdmin)
 	}
 	for i, t := range d.Tags {
-		out.Tags[i] = adminTagGrantResponse{TagID: formatUUID(t.TagID), Slug: t.Slug, Label: t.Label, CreatedAt: formatTime(t.CreatedAt)}
+		out.Tags[i] = adminTagGrantResponse{TagID: db.FormatUUID(t.TagID), Slug: t.Slug, Label: t.Label, CreatedAt: db.FormatTime(t.CreatedAt)}
 	}
 	return c.JSON(out)
 }
@@ -238,7 +239,7 @@ func (s *Server) handleAdminGrantTag(c *fiber.Ctx) error {
 	if err != nil {
 		return s.adminError(c, err)
 	}
-	return c.Status(fiber.StatusCreated).JSON(adminTagGrantResponse{TagID: formatUUID(t.ID), Slug: t.Slug, Label: t.Label})
+	return c.Status(fiber.StatusCreated).JSON(adminTagGrantResponse{TagID: db.FormatUUID(t.ID), Slug: t.Slug, Label: t.Label})
 }
 
 func (s *Server) handleAdminRevokeTag(c *fiber.Ctx) error {

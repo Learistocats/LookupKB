@@ -130,7 +130,7 @@ func (s *Server) handleLogin(c *fiber.Ctx) error {
 }
 
 func (s *Server) issueSession(c *fiber.Ctx, status int, user dbgen.User) error {
-	id := formatUUID(user.ID)
+	id := db.FormatUUID(user.ID)
 	token, exp, err := s.tokens.Issue(id, user.Email)
 	if err != nil {
 		s.log.ErrorContext(c.UserContext(), "issue token failed", "error", err.Error())

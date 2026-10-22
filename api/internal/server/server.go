@@ -249,7 +249,7 @@ func (s *Server) handleMe(c *fiber.Ctx) error {
 	id, ok := auth.IdentityFromCtx(c)
 	if !ok {
 		// The middleware guarantees this, but never assume auth state.
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+		return errJSON(c, fiber.StatusUnauthorized, "unauthorized")
 	}
 	groups := []string{}
 	if s.users != nil {

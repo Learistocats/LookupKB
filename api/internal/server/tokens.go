@@ -63,10 +63,10 @@ type tokenResponse struct {
 
 func newTokenResponse(id pgtype.UUID, name, prefix string, created, lastUsed, expires, revoked pgtype.Timestamptz) tokenResponse {
 	return tokenResponse{
-		ID:         formatUUID(id),
+		ID:         db.FormatUUID(id),
 		Name:       name,
 		Prefix:     prefix,
-		CreatedAt:  formatTime(created),
+		CreatedAt:  db.FormatTime(created),
 		LastUsedAt: optTime(lastUsed),
 		ExpiresAt:  optTime(expires),
 		RevokedAt:  optTime(revoked),
@@ -77,7 +77,7 @@ func optTime(t pgtype.Timestamptz) *string {
 	if !t.Valid {
 		return nil
 	}
-	s := formatTime(t)
+	s := db.FormatTime(t)
 	return &s
 }
 
@@ -164,7 +164,7 @@ func (s *Server) handleCreateToken(c *fiber.Ctx) error {
 			s.log.ErrorContext(ctx, "create api token failed", "error", err.Error())
 			return internalError(c)
 		}
-		s.log.InfoContext(ctx, "api token created", "token_id", formatUUID(row.ID), "prefix", row.Prefix)
+		s.log.InfoContext(ctx, "api token created", "token_id", db.FormatUUID(row.ID), "prefix", row.Prefix)
 		resp := newTokenResponse(row.ID, row.Name, row.Prefix, row.CreatedAt, row.LastUsedAt, row.ExpiresAt, row.RevokedAt)
 		resp.Token = pat.Token
 		return c.Status(fiber.StatusCreated).JSON(resp)
@@ -190,7 +190,7 @@ func (s *Server) handleRevokeToken(c *fiber.Ctx) error {
 		s.log.ErrorContext(c.UserContext(), "revoke api token failed", "error", err.Error())
 		return internalError(c)
 	}
-	s.log.InfoContext(c.UserContext(), "api token revoked", "token_id", formatUUID(id))
+	s.log.InfoContext(c.UserContext(), "api token revoked", "token_id", db.FormatUUID(id))
 	return c.SendStatus(fiber.StatusNoContent)
 }
 

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/Learistocats/LookupKB/api/internal/access"
+	"github.com/Learistocats/LookupKB/api/internal/db"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/Learistocats/LookupKB/api/internal/search"
 	"github.com/google/uuid"
@@ -126,12 +127,12 @@ func (s *Service) Get(ctx context.Context, caller access.Caller, slug string) (D
 func newSummary(slug string, title, description *string, tags []string, author string, publishedAt, updatedAt pgtype.Timestamptz) Summary {
 	return Summary{
 		Slug:              slug,
-		Title:             deref(title),
-		Description:       deref(description),
-		Tags:              nonNil(tags),
+		Title:             db.Deref(title),
+		Description:       db.Deref(description),
+		Tags:              db.NonNil(tags),
 		AuthorDisplayName: author,
-		PublishedAt:       formatTime(publishedAt),
-		UpdatedAt:         formatTime(updatedAt),
+		PublishedAt:       db.FormatTime(publishedAt),
+		UpdatedAt:         db.FormatTime(updatedAt),
 	}
 }
 
@@ -240,25 +241,4 @@ func decodeCursor(c string) (pgtype.Timestamptz, pgtype.UUID, error) {
 		return pgtype.Timestamptz{}, pgtype.UUID{}, ErrInvalidCursor
 	}
 	return pgtype.Timestamptz{Time: time.UnixMicro(micros).UTC(), Valid: true}, pgtype.UUID{Bytes: id, Valid: true}, nil
-}
-
-func formatTime(t pgtype.Timestamptz) string {
-	if !t.Valid {
-		return ""
-	}
-	return t.Time.UTC().Format(time.RFC3339)
-}
-
-func deref(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
-}
-
-func nonNil(s []string) []string {
-	if s == nil {
-		return []string{}
-	}
-	return s
 }

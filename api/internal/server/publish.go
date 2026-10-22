@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/Learistocats/LookupKB/api/internal/db"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/Learistocats/LookupKB/api/internal/publish"
 	"github.com/gofiber/fiber/v2"
@@ -40,13 +41,13 @@ type publishedResponse struct {
 
 func toPublishedResponse(d dbgen.Document) publishedResponse {
 	return publishedResponse{
-		ID:          formatUUID(d.ID),
+		ID:          db.FormatUUID(d.ID),
 		Slug:        d.Slug,
 		Status:      string(d.Status),
 		Title:       d.Title,
 		Description: d.Description,
-		PublishedAt: formatTime(d.PublishedAt),
-		UpdatedAt:   formatTime(d.UpdatedAt),
+		PublishedAt: db.FormatTime(d.PublishedAt),
+		UpdatedAt:   db.FormatTime(d.UpdatedAt),
 	}
 }
 

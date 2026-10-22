@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/Learistocats/LookupKB/api/internal/db"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -202,29 +203,18 @@ func (w *Worker) apply(ctx context.Context, ops []dbgen.ClaimIndexOpsRow) []erro
 
 // Projection maps a published document row to its index document.
 func Projection(r dbgen.GetIndexProjectionsRow) IndexDoc {
-	tags := r.Tags
-	if tags == nil {
-		tags = []string{}
-	}
 	return IndexDoc{
 		ID:          uuid.UUID(r.ID.Bytes).String(),
 		Slug:        r.Slug,
-		Title:       deref(r.Title),
-		Description: deref(r.Description),
-		BodyText:    TextFromHTML(deref(r.RenderedHtml)),
-		Tags:        tags,
+		Title:       db.Deref(r.Title),
+		Description: db.Deref(r.Description),
+		BodyText:    TextFromHTML(db.Deref(r.RenderedHtml)),
+		Tags:        db.NonNil(r.Tags),
 		Author:      r.Author,
 		AuthorID:    uuid.UUID(r.AuthorID.Bytes).String(),
 		CreatedAt:   r.CreatedAt.Time.Unix(),
 		PublishedAt: r.PublishedAt.Time.Unix(),
 	}
-}
-
-func deref(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }
 
 func sleep(ctx context.Context, d time.Duration) bool {

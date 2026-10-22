@@ -6,6 +6,7 @@ import (
 	"github.com/Learistocats/LookupKB/api/internal/access"
 	"github.com/Learistocats/LookupKB/api/internal/auth"
 	"github.com/Learistocats/LookupKB/api/internal/catalog"
+	"github.com/Learistocats/LookupKB/api/internal/db"
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -58,7 +59,7 @@ func (s *Server) handleReadDocument(c *fiber.Ctx) error {
 	}
 	resp := toReadResponse(doc)
 	if caller.UserID == doc.AuthorID {
-		resp.ID = formatUUID(doc.ID)
+		resp.ID = db.FormatUUID(doc.ID)
 	}
 	return c.JSON(resp)
 }
@@ -87,7 +88,7 @@ func (s *Server) readPublished(c *fiber.Ctx, caller access.Caller, slug string) 
 func (s *Server) accessCaller(c *fiber.Ctx) (access.Caller, error) {
 	id, ok := auth.IdentityFromCtx(c)
 	if !ok {
-		return access.Caller{}, c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
+		return access.Caller{}, errJSON(c, fiber.StatusUnauthorized, "unauthorized")
 	}
 	return id.Caller(), nil
 }

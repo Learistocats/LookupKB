@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Learistocats/LookupKB/api/internal/db"
 	"github.com/Learistocats/LookupKB/api/internal/auth"
 	"github.com/Learistocats/LookupKB/api/internal/config"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
@@ -211,7 +212,7 @@ func TestRevokeToken_OwnAndForeignAndMissing(t *testing.T) {
 		b, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, string(b)
 	}
-	fc, fb := revoke(formatUUID(foreign.ID))
+	fc, fb := revoke(db.FormatUUID(foreign.ID))
 	mc, mb := revoke(uuid.NewString())
 	require.Equal(t, http.StatusNotFound, fc)
 	require.Equal(t, http.StatusNotFound, mc)

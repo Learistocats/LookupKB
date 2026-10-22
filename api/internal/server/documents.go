@@ -53,14 +53,14 @@ type draftResponse struct {
 
 func toDraftResponse(d dbgen.Document) draftResponse {
 	return draftResponse{
-		ID:          formatUUID(d.ID),
+		ID:          db.FormatUUID(d.ID),
 		Slug:        d.Slug,
 		Status:      string(d.Status),
 		Title:       d.Title,
 		Description: d.Description,
 		SourceMd:    d.SourceMd,
-		CreatedAt:   formatTime(d.CreatedAt),
-		UpdatedAt:   formatTime(d.UpdatedAt),
+		CreatedAt:   db.FormatTime(d.CreatedAt),
+		UpdatedAt:   db.FormatTime(d.UpdatedAt),
 	}
 }
 
@@ -75,11 +75,11 @@ type draftListItem struct {
 
 func toDraftListItem(r dbgen.ListDraftsRow) draftListItem {
 	return draftListItem{
-		ID:        formatUUID(r.ID),
+		ID:        db.FormatUUID(r.ID),
 		Slug:      r.Slug,
 		Status:    string(r.Status),
 		Title:     r.Title,
-		UpdatedAt: formatTime(r.UpdatedAt),
+		UpdatedAt: db.FormatTime(r.UpdatedAt),
 	}
 }
 
@@ -248,11 +248,6 @@ func parseUUID(s string) (pgtype.UUID, error) {
 	}
 	return pgtype.UUID{Bytes: u, Valid: true}, nil
 }
-
-var (
-	formatUUID = db.FormatUUID
-	formatTime = db.FormatTime
-)
 
 func errJSON(c *fiber.Ctx, status int, msg string) error {
 	return c.Status(status).JSON(fiber.Map{"error": msg})

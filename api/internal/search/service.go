@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Learistocats/LookupKB/api/internal/access"
+	"github.com/Learistocats/LookupKB/api/internal/db"
 )
 
 // Hit is one sanitized search result. TitleHTML and Snippet contain only escaped
@@ -135,17 +136,13 @@ func (s *Service) Search(ctx context.Context, query Query, caller access.Caller)
 		}
 	}
 	for _, h := range resp.Hits {
-		tags := h.Tags
-		if tags == nil {
-			tags = []string{}
-		}
 		out.Hits = append(out.Hits, Hit{
 			Slug:        h.Slug,
 			Title:       h.Title,
 			TitleHTML:   markHTML(orDefault(h.Formatted.Title, h.Title)),
 			Description: h.Description,
 			Snippet:     markHTML(pickSnippet(h, req.Q != "")),
-			Tags:        tags,
+			Tags:        db.NonNil(h.Tags),
 			Author:      h.Author,
 			PublishedAt: time.Unix(h.PublishedAt, 0).UTC().Format(time.RFC3339),
 		})
