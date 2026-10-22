@@ -1,14 +1,13 @@
 -- Local groups (03-data-model.md §1 `groups`, `group_members`). Membership is
--- authoritative here; it feeds the per-request ACL decision (M3).
+-- authoritative here; access decisions read it in SQL (access.sql).
 
 -- name: ListUserGroupIDs :many
--- The caller's group ids, loaded by the auth middleware on every request so an
--- access decision never relies on a stale token claim.
+-- The caller's group ids (for GET /api/v1/me).
 SELECT group_id
 FROM group_members
 WHERE user_id = $1;
 
--- ── Admin group management (LOO-56, F10) ─────────────────────────────────────
+-- ── Admin group management ─────────────────────────────────────
 -- Every mutation below is called by internal/admin inside a transaction that also
 -- writes the matching audit_log row.
 
@@ -65,7 +64,7 @@ WHERE group_id = $1
 
 -- ── Group tag policy (group_tag_grants) ──────────────────────────────────────
 -- A tag with >= 1 grant is a protected tag. These queries maintain the policy;
--- enforcement reads it through access.sql (LOO-33).
+-- enforcement reads it through access.sql.
 
 -- name: ListGroupTagGrants :many
 SELECT t.id AS tag_id, t.slug, t.label, gt.created_at

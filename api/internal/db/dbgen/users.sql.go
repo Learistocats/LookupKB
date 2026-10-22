@@ -85,8 +85,8 @@ WHERE id = $1
 `
 
 // ── Super-admin role ─────────────────────────────────────────────────────────
-// Loaded by the auth middleware on every request (never a token claim), so a
-// revoke takes effect on the caller's next request.
+// Read by the auth middleware on every session request (never a token claim),
+// so a revoke takes effect on the caller's next request.
 func (q *Queries) GetUserIsSuperAdmin(ctx context.Context, id pgtype.UUID) (bool, error) {
 	row := q.db.QueryRow(ctx, getUserIsSuperAdmin, id)
 	var is_super_admin bool

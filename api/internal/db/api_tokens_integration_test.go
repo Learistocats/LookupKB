@@ -77,15 +77,11 @@ func TestAPITokens(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 1, n)
 
-	// last_used_at: stamped once, then throttled within the minute.
+	// last_used_at is stamped (throttling lives in the auth middleware).
 	require.NoError(t, q.TouchAPITokenLastUsed(ctx, created.ID))
 	first, err := q.GetActiveAPITokenByPrefix(ctx, pat.Prefix)
 	require.NoError(t, err)
 	require.True(t, first.LastUsedAt.Valid)
-	require.NoError(t, q.TouchAPITokenLastUsed(ctx, created.ID))
-	second, err := q.GetActiveAPITokenByPrefix(ctx, pat.Prefix)
-	require.NoError(t, err)
-	require.Equal(t, first.LastUsedAt.Time, second.LastUsedAt.Time)
 
 	// Revoke is owner-scoped: another user cannot, the owner can, once.
 	_, err = q.RevokeMyAPIToken(ctx, dbgen.RevokeMyAPITokenParams{ID: created.ID, UserID: other.ID})

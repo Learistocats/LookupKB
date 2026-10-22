@@ -25,12 +25,13 @@ const (
 	maxDisplayNameRune = 100
 )
 
-// UserStore is the subset of the generated queries the signup/login handlers
+// UserStore is the subset of the generated queries the signup/login and /me handlers
 // need. *dbgen.Queries satisfies it; tests use a fake.
 type UserStore interface {
 	CreateUser(ctx context.Context, arg dbgen.CreateUserParams) (dbgen.User, error)
 	GetUserByEmail(ctx context.Context, email string) (dbgen.User, error)
 	TouchUserLastSeen(ctx context.Context, id pgtype.UUID) error
+	ListUserGroupIDs(ctx context.Context, userID pgtype.UUID) ([]pgtype.UUID, error)
 }
 
 type credentialsRequest struct {

@@ -18,8 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeTokenStore is an in-memory TokenStore that also serves as the PAT
-// verifier, so a token minted through POST /api/tokens authenticates for real.
+// fakeTokenStore is an in-memory TokenStore that also serves as the auth store, so a token minted through POST /api/tokens authenticates for real.
 type fakeTokenStore struct {
 	rows      map[uuid.UUID]*storedToken
 	activeCap int64
@@ -86,26 +85,29 @@ func (f *fakeTokenStore) RevokeMyAPIToken(_ context.Context, arg dbgen.RevokeMyA
 	return arg.ID, nil
 }
 
-// LookupPAT / TouchPAT make the fake an auth.PATVerifier.
-func (f *fakeTokenStore) LookupPAT(_ context.Context, prefix string) (auth.PATRecord, error) {
+// The rest of auth.Store, so a token minted through POST /api/tokens authenticates.
+func (f *fakeTokenStore) GetActiveAPITokenByPrefix(_ context.Context, prefix string) (dbgen.GetActiveAPITokenByPrefixRow, error) {
 	for _, r := range f.rows {
 		if r.row.Prefix == prefix && !r.row.RevokedAt.Valid {
-			return auth.PATRecord{
-				ID: uuid.UUID(r.row.ID.Bytes), UserID: uuid.UUID(r.row.UserID.Bytes),
-				Email: "user@example.com", Hash: r.hash,
+			return dbgen.GetActiveAPITokenByPrefixRow{
+				ID: r.row.ID, UserID: r.row.UserID, TokenHash: r.hash, Email: "user@example.com",
 			}, nil
 		}
 	}
-	return auth.PATRecord{}, auth.ErrPATNotFound
+	return dbgen.GetActiveAPITokenByPrefixRow{}, pgx.ErrNoRows
 }
 
-func (f *fakeTokenStore) TouchPAT(context.Context, uuid.UUID) error { return nil }
+func (f *fakeTokenStore) TouchAPITokenLastUsed(context.Context, pgtype.UUID) error { return nil }
+
+func (f *fakeTokenStore) GetUserIsSuperAdmin(context.Context, pgtype.UUID) (bool, error) {
+	return false, nil
+}
 
 func newTokenServer(t *testing.T, store *fakeTokenStore) *Server {
 	t.Helper()
 	cfg, err := config.Load()
 	require.NoError(t, err)
-	mw := auth.NewMiddleware(testTokens, nil, slogDiscard()).WithPATs(store)
+	mw := auth.NewMiddleware(testTokens, store, slogDiscard())
 	return New(cfg, slogDiscard(), "test", WithAuth(mw), WithTokens(store), WithDocuments(&fakeDocStore{}))
 }
 

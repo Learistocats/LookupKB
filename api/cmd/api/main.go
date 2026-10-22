@@ -32,7 +32,6 @@ import (
 
 // The auth middleware loads users.is_super_admin through this optional
 // capability of its group store; assert the real store keeps providing it.
-var _ auth.SuperAdminLoader = (*dbgen.Queries)(nil)
 
 // version is stamped at build time via -ldflags "-X main.version=...".
 var version = "dev"
@@ -208,24 +207,17 @@ func run(cfg config.Config, version string) error {
 		if err != nil {
 			return err
 		}
-		var groups auth.GroupLister
-		var pats auth.PATVerifier
+		var authStore auth.Store
 		if pool != nil {
-			groups = q
+			authStore = q
 			// Signup/login need the users table, so they exist only with a database.
 			opts = append(opts, server.WithAccounts(q, tokens))
-			// Personal Access Tokens: verification + management need api_tokens.
-			// Without a pool the verifier stays nil and every PAT is rejected.
-			pats = auth.NewDBPATStore(q)
+			// Without a pool the auth store stays nil: no super-admins, every PAT rejected.
 			opts = append(opts, server.WithTokens(q))
 		} else {
-			log.Warn("auth enabled without a database; signup/login, group lookup and PATs are disabled")
+			log.Warn("auth enabled without a database; signup/login and PATs are disabled")
 		}
-		mw := auth.NewMiddleware(tokens, groups, log)
-		if pats != nil {
-			mw.WithPATs(pats)
-		}
-		opts = append(opts, server.WithAuth(mw))
+		opts = append(opts, server.WithAuth(auth.NewMiddleware(tokens, authStore, log)))
 		log.Info("token authentication enabled", "token_ttl", cfg.AuthTokenTTL.String())
 	} else {
 		log.Warn("LOOKUPKB_AUTH_SECRET is empty; protected routes are disabled")

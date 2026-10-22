@@ -31,8 +31,6 @@ import (
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/Learistocats/LookupKB/api/internal/search"
 	"github.com/google/jsonschema-go/jsonschema"
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -360,11 +358,7 @@ func callerFrom(ctx context.Context) (access.Caller, error) {
 	if !ok {
 		return access.Caller{}, errUnauthenticated
 	}
-	uid, err := uuid.Parse(id.UserID)
-	if err != nil {
-		return access.Caller{}, errUnauthenticated
-	}
-	return access.Caller{UserID: pgtype.UUID{Bytes: uid, Valid: true}, IsSuperAdmin: id.IsSuperAdmin}, nil
+	return id.Caller(), nil
 }
 
 // toolError maps a service error to the message the agent sees (an isError tool
