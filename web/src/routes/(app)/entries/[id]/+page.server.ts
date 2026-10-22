@@ -1,10 +1,7 @@
-// Entry editor. All API calls go server-side with the caller's bearer (never
-// exposed to the browser). `load` reads the working copy back from Postgres —
-// reloading this page is the round-trip persistence proof — and the `save`
-// action is the no-JS fallback for autosave.
+// Entry editor. The `save` action is the no-JS fallback for client autosave.
 import { error, fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-import { apiFetch } from '$lib/server/api';
+import { apiFetch, apiJson } from '$lib/server/api';
 import { saveEntry } from '$lib/server/entries';
 import { NEW_ENTRY_ID } from '$lib/entries';
 
@@ -20,21 +17,14 @@ export type Draft = {
 };
 
 export const load: PageServerLoad = async ({ locals, params }) => {
-	// `/entries/new` is an entry with no row yet: it is created on its first
-	// non-blank save, so opening the editor and leaving never leaves an empty draft.
+	// `/entries/new` has no row yet: it is created on its first non-blank save.
 	if (params.id === NEW_ENTRY_ID) return { draft: null as Draft | null };
 
 	const res = await apiFetch(locals.accessToken, `/api/drafts/${params.id}`);
-	// 404 covers both "no such draft" and "not yours" — the API never leaks which
-	// (ownership is enforced server-side, AC-2.3).
-	if (res.status === 404) error(404, 'Entry not found');
-	if (!res.ok) error(502, `Could not load this entry (API ${res.status})`);
-	return { draft: (await res.json()) as Draft };
+	return { draft: await apiJson<Draft>(res, 'Entry') };
 };
 
 export const actions: Actions = {
-	// Persist the working copy in place (AC-2.2): title and source are optional and
-	// empty/partial metadata saves with no validation gate (publish-time is M1).
 	save: async ({ locals, params, request }) => {
 		const form = await request.formData();
 		const body = {
@@ -52,12 +42,11 @@ export const actions: Actions = {
 		// A new entry now exists: continue on its real URL.
 		if (params.id === NEW_ENTRY_ID) redirect(303, `/entries/${result.draft.id}`);
 
-		return { saved: true, draft: result.draft as unknown as Draft };
+		return { saved: true };
 	}
 };
 
-// emptyToNull maps a missing/blank form field to null so empty metadata persists
-// as SQL NULL rather than an empty string.
+// Blank fields persist as SQL NULL rather than an empty string.
 function emptyToNull(v: FormDataEntryValue | null): string | null {
 	if (typeof v !== 'string') return null;
 	return v.length > 0 ? v : null;

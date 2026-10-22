@@ -16,7 +16,7 @@ export const defaultTagLimits: TagLimits = { minTags: 1, maxTags: 8, minLen: 2, 
 
 /**
  * A tag suggestion from the autocomplete endpoint. `protected` is true when a
- * group tag policy grants the tag (LOO-33): an entry carrying it is visible only
+ * group tag policy grants the tag: an entry carrying it is visible only
  * to members of those groups (and its author). Protected tags the caller has no
  * access to are never suggested.
  */
@@ -82,7 +82,7 @@ export function validateTags(
 /**
  * searchTags calls the server-side autocomplete proxy (which attaches the bearer
  * and forwards to the Go API). fetchFn is injectable for tests. Path is /tags/search
- * (NOT /api/*) to avoid the dev-time Vite /api proxy that forwards straight to Go.
+ * (see lib/server/api.ts for why not /api/*).
  */
 export async function searchTags(
 	q: string,
