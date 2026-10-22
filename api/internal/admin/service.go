@@ -1,30 +1,27 @@
-// Package admin is the super-admin management surface (LOO-56, F10): local groups,
-// their membership, their authorized tag policy (group_tag_grants) and the
-// super-admin role itself.
+// Package admin is the super-admin management surface: local groups, their
+// membership, their authorized tag policy (group_tag_grants) and the super-admin
+// role itself.
 //
-// Every mutation runs in ONE transaction together with its audit_log row, so an
-// audited fact can never be lost and a failed audit write rolls the change back.
-// The HTTP layer (internal/server/admin.go) only maps inputs/errors; all rules live
-// here so they are unit-testable with a fake Queries (no database).
+// Every mutation runs in one transaction together with its audit_log row, so a
+// failed audit write rolls the change back. The HTTP layer (internal/server/admin.go)
+// only maps inputs/errors; the rules live here and are tested with a fake Queries.
 //
-// Protected-tag ENFORCEMENT (who may read/publish an entry carrying a granted tag)
-// lives in internal/access (LOO-33); this package only maintains the policy.
+// Protected-tag enforcement lives in internal/access; this package only maintains
+// the policy.
 package admin
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/Learistocats/LookupKB/api/internal/db"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/Learistocats/LookupKB/api/internal/tags"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -32,7 +29,7 @@ import (
 // MaxGroupNameRunes bounds a group name (after trimming).
 const MaxGroupNameRunes = 100
 
-// Audit action names (03-data-model.md §1 audit_log).
+// Audit action names.
 const (
 	ActionGroupCreate       = "group.create"
 	ActionGroupRename       = "group.rename"
@@ -90,7 +87,7 @@ type Queries interface {
 	CountTagGrants(ctx context.Context, tagID pgtype.UUID) (int64, error)
 	UpsertTag(ctx context.Context, arg dbgen.UpsertTagParams) (dbgen.Tag, error)
 	GetTagByID(ctx context.Context, id pgtype.UUID) (dbgen.Tag, error)
-	GetSetting(ctx context.Context, key string) ([]byte, error)
+	GetSettings(ctx context.Context, keys []string) ([]dbgen.GetSettingsRow, error)
 	// users
 	GetUserByEmail(ctx context.Context, email string) (dbgen.User, error)
 	ListUsers(ctx context.Context) ([]dbgen.ListUsersRow, error)
@@ -101,8 +98,7 @@ type Queries interface {
 	InsertAuditLog(ctx context.Context, arg dbgen.InsertAuditLogParams) error
 }
 
-// TxFunc runs fn inside one transaction: commit when fn returns nil, roll back
-// otherwise.
+// TxFunc runs fn inside one transaction: commit on nil, roll back otherwise.
 type TxFunc func(ctx context.Context, fn func(q Queries) error) error
 
 // Service implements the admin rules.
@@ -179,7 +175,7 @@ func (s *Service) CreateGroup(ctx context.Context, actor pgtype.UUID, rawName st
 			return groupWriteErr(err, "create group")
 		}
 		out = g
-		return audit(ctx, q, actor, ActionGroupCreate, "group", formatUUID(g.ID), map[string]any{"name": name})
+		return db.WriteAudit(ctx, q, actor, ActionGroupCreate, "group", db.FormatUUID(g.ID), map[string]any{"name": name})
 	})
 	return out, err
 }
@@ -201,7 +197,7 @@ func (s *Service) RenameGroup(ctx context.Context, actor, id pgtype.UUID, rawNam
 			return groupWriteErr(err, "rename group")
 		}
 		out = g
-		return audit(ctx, q, actor, ActionGroupRename, "group", formatUUID(id), map[string]any{"from": before.Name, "to": name})
+		return db.WriteAudit(ctx, q, actor, ActionGroupRename, "group", db.FormatUUID(id), map[string]any{"from": before.Name, "to": name})
 	})
 	return out, err
 }
@@ -220,7 +216,7 @@ func (s *Service) DeleteGroup(ctx context.Context, actor, id pgtype.UUID) error 
 		if n == 0 {
 			return ErrNotFound
 		}
-		return audit(ctx, q, actor, ActionGroupDelete, "group", formatUUID(id), map[string]any{"name": g.Name})
+		return db.WriteAudit(ctx, q, actor, ActionGroupDelete, "group", db.FormatUUID(id), map[string]any{"name": g.Name})
 	})
 }
 
@@ -248,7 +244,7 @@ func (s *Service) AddMember(ctx context.Context, actor, groupID pgtype.UUID, ema
 		if n == 0 {
 			return nil // already a member
 		}
-		return audit(ctx, q, actor, ActionGroupMemberAdd, "group", formatUUID(groupID), map[string]any{"user_id": formatUUID(u.ID)})
+		return db.WriteAudit(ctx, q, actor, ActionGroupMemberAdd, "group", db.FormatUUID(groupID), map[string]any{"user_id": db.FormatUUID(u.ID)})
 	})
 	return out, err
 }
@@ -263,7 +259,7 @@ func (s *Service) RemoveMember(ctx context.Context, actor, groupID, userID pgtyp
 		if n == 0 {
 			return ErrNotFound
 		}
-		return audit(ctx, q, actor, ActionGroupMemberRemove, "group", formatUUID(groupID), map[string]any{"user_id": formatUUID(userID)})
+		return db.WriteAudit(ctx, q, actor, ActionGroupMemberRemove, "group", db.FormatUUID(groupID), map[string]any{"user_id": db.FormatUUID(userID)})
 	})
 }
 
@@ -280,7 +276,7 @@ func (s *Service) GrantTag(ctx context.Context, actor, groupID pgtype.UUID, rawT
 	err := s.inTx(ctx, func(q Queries) error {
 		limits, err := tags.LoadLimits(ctx, q)
 		if err != nil {
-			return fmt.Errorf("load tag limits: %w", err)
+			return err
 		}
 		if n := utf8.RuneCountInString(slug); n < limits.MinLen || n > limits.MaxLen {
 			return &ValidationError{Message: fmt.Sprintf("tag must be %d-%d characters", limits.MinLen, limits.MaxLen)}
@@ -308,8 +304,8 @@ func (s *Service) GrantTag(ctx context.Context, actor, groupID pgtype.UUID, rawT
 		if n == 0 {
 			return nil // already granted to this group
 		}
-		return audit(ctx, q, actor, ActionGroupTagGrant, "group", formatUUID(groupID), map[string]any{
-			"tag_id":      formatUUID(tag.ID),
+		return db.WriteAudit(ctx, q, actor, ActionGroupTagGrant, "group", db.FormatUUID(groupID), map[string]any{
+			"tag_id":      db.FormatUUID(tag.ID),
 			"tag":         tag.Slug,
 			"first_grant": count == 0,
 		})
@@ -340,8 +336,8 @@ func (s *Service) RevokeTag(ctx context.Context, actor, groupID, tagID pgtype.UU
 		if count <= 1 && !confirm {
 			return &NeedsConfirmationError{Tag: tag.Label} // rolls the delete back
 		}
-		return audit(ctx, q, actor, ActionGroupTagRevoke, "group", formatUUID(groupID), map[string]any{
-			"tag_id":     formatUUID(tagID),
+		return db.WriteAudit(ctx, q, actor, ActionGroupTagRevoke, "group", db.FormatUUID(groupID), map[string]any{
+			"tag_id":     db.FormatUUID(tagID),
 			"tag":        tag.Slug,
 			"last_grant": count <= 1,
 		})
@@ -374,7 +370,7 @@ func (s *Service) SetSuperAdmin(ctx context.Context, actor, userID pgtype.UUID, 
 			return notFoundOr(err, "set super-admin")
 		}
 		out = row
-		return audit(ctx, q, actor, ActionUserSuperAdminSet, "user", formatUUID(userID), map[string]any{"value": value})
+		return db.WriteAudit(ctx, q, actor, ActionUserSuperAdminSet, "user", db.FormatUUID(userID), map[string]any{"value": value})
 	})
 	return out, err
 }
@@ -395,7 +391,7 @@ func (s *Service) SetSuperAdminByEmail(ctx context.Context, email string, value 
 			return notFoundOr(err, "set super-admin")
 		}
 		out = row
-		return audit(ctx, q, pgtype.UUID{}, ActionUserSuperAdminSet, "user", formatUUID(row.ID), map[string]any{
+		return db.WriteAudit(ctx, q, pgtype.UUID{}, ActionUserSuperAdminSet, "user", db.FormatUUID(row.ID), map[string]any{
 			"value":  value,
 			"source": "cli",
 		})
@@ -419,24 +415,6 @@ func ValidateGroupName(raw string) (string, error) {
 	return name, nil
 }
 
-// audit writes one audit_log row on the caller's transaction.
-func audit(ctx context.Context, q Queries, actor pgtype.UUID, action, targetType, targetID string, meta map[string]any) error {
-	raw, err := json.Marshal(meta)
-	if err != nil {
-		raw = []byte("{}")
-	}
-	if err := q.InsertAuditLog(ctx, dbgen.InsertAuditLogParams{
-		ActorID:    actor,
-		Action:     action,
-		TargetType: targetType,
-		TargetID:   &targetID,
-		Metadata:   raw,
-	}); err != nil {
-		return fmt.Errorf("write audit log: %w", err)
-	}
-	return nil
-}
-
 func notFoundOr(err error, what string) error {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
@@ -445,16 +423,8 @@ func notFoundOr(err error, what string) error {
 }
 
 func groupWriteErr(err error, what string) error {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+	if db.IsUniqueViolation(err) {
 		return ErrGroupNameTaken
 	}
 	return notFoundOr(err, what)
-}
-
-func formatUUID(u pgtype.UUID) string {
-	if !u.Valid {
-		return ""
-	}
-	return uuid.UUID(u.Bytes).String()
 }

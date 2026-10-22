@@ -35,7 +35,7 @@ func mustTokens() *auth.Tokens {
 type fakeDocStore struct {
 	createArg dbgen.CreateDraftParams
 	saveArg   dbgen.SaveDraftParams
-	getArg    dbgen.GetDraftParams
+	getArg    dbgen.GetOwnedDocumentParams
 	listArg   pgtype.UUID
 
 	createDoc dbgen.Document
@@ -47,9 +47,6 @@ type fakeDocStore struct {
 	saveErr   error
 	getErr    error
 	listErr   error
-
-	setRenderedArg dbgen.SetRenderedHTMLParams
-	setRenderedErr error
 
 	mineRows  []dbgen.ListMyDocumentsRow
 	tagLabels []string
@@ -87,7 +84,7 @@ func (f *fakeDocStore) SaveDraft(_ context.Context, arg dbgen.SaveDraftParams) (
 	return f.saveDoc, f.saveErr
 }
 
-func (f *fakeDocStore) GetDraft(_ context.Context, arg dbgen.GetDraftParams) (dbgen.Document, error) {
+func (f *fakeDocStore) GetOwnedDocument(_ context.Context, arg dbgen.GetOwnedDocumentParams) (dbgen.Document, error) {
 	f.getArg = arg
 	return f.getDoc, f.getErr
 }
@@ -95,13 +92,6 @@ func (f *fakeDocStore) GetDraft(_ context.Context, arg dbgen.GetDraftParams) (db
 func (f *fakeDocStore) ListDrafts(_ context.Context, authorID pgtype.UUID) ([]dbgen.ListDraftsRow, error) {
 	f.listArg = authorID
 	return f.listRows, f.listErr
-}
-
-// SetRenderedHTML satisfies DocumentStore. No handler calls it yet (the publish
-// gate, LOO-14, wires it), so the fake only records the last args for future use.
-func (f *fakeDocStore) SetRenderedHTML(_ context.Context, arg dbgen.SetRenderedHTMLParams) error {
-	f.setRenderedArg = arg
-	return f.setRenderedErr
 }
 
 func (f *fakeDocStore) ListMyDocuments(_ context.Context, authorID pgtype.UUID) ([]dbgen.ListMyDocumentsRow, error) {

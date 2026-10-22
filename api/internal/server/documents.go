@@ -5,10 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"time"
 
 	"github.com/Learistocats/LookupKB/api/internal/access"
 	"github.com/Learistocats/LookupKB/api/internal/auth"
+	"github.com/Learistocats/LookupKB/api/internal/db"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -18,21 +18,14 @@ import (
 
 // DocumentStore is the subset of the generated queries the document routes need.
 // *dbgen.Queries satisfies it; kept as an interface so the handlers are testable
-// without a database. The draft queries are owner-scoped (author_id) and never
-// touch versions/index/status — see internal/db/queries/documents.sql.
-//
-// SetRenderedHTML is the write path to documents.rendered_html for the sanitized
-// publish-time HTML (LOO-16). It has no handler yet: the publish gate (LOO-14)
-// composes render.RenderAndSanitize output into its publish transaction and calls
-// it there. The seam ships now so that ticket has nothing to retrofit here.
+// without a database. The draft queries are owner-scoped (author_id).
 type DocumentStore interface {
 	CreateDraft(ctx context.Context, arg dbgen.CreateDraftParams) (dbgen.Document, error)
 	SaveDraft(ctx context.Context, arg dbgen.SaveDraftParams) (dbgen.Document, error)
-	GetDraft(ctx context.Context, arg dbgen.GetDraftParams) (dbgen.Document, error)
+	GetOwnedDocument(ctx context.Context, arg dbgen.GetOwnedDocumentParams) (dbgen.Document, error)
 	ListDrafts(ctx context.Context, authorID pgtype.UUID) ([]dbgen.ListDraftsRow, error)
 	ListMyDocuments(ctx context.Context, authorID pgtype.UUID) ([]dbgen.ListMyDocumentsRow, error)
 	ListDocumentTagLabels(ctx context.Context, documentID pgtype.UUID) ([]string, error)
-	SetRenderedHTML(ctx context.Context, arg dbgen.SetRenderedHTMLParams) error
 	// GetPublishedBySlug is the hot read path (F8): a published doc by slug, NOT
 	// owner-scoped (public reads), with author/version/tags joined. status guard
 	// makes a draft/unpublished slug indistinguishable from a missing one (404).
@@ -167,7 +160,7 @@ func (s *Server) handleSaveDraft(c *fiber.Ctx) error {
 	return c.JSON(toDraftResponse(doc))
 }
 
-// handleGetDraft returns the caller's own draft. GetDraft is scoped to
+// handleGetDraft returns the caller's own draft. GetOwnedDocument is scoped to
 // author_id, so another user's draft (or a missing/soft-deleted one) yields no
 // row → 404. The not-found response is identical for "not yours" and "does not
 // exist" so ownership is never leaked to a probing second user.
@@ -181,7 +174,7 @@ func (s *Server) handleGetDraft(c *fiber.Ctx) error {
 		return err
 	}
 
-	doc, err := s.documents.GetDraft(c.UserContext(), dbgen.GetDraftParams{
+	doc, err := s.documents.GetOwnedDocument(c.UserContext(), dbgen.GetOwnedDocumentParams{
 		ID:       docID,
 		AuthorID: authorID,
 	})
@@ -199,10 +192,7 @@ func (s *Server) handleGetDraft(c *fiber.Ctx) error {
 		return internalError(c)
 	}
 	resp := toDraftResponse(doc)
-	resp.Tags = tags
-	if resp.Tags == nil {
-		resp.Tags = []string{}
-	}
+	resp.Tags = db.NonNil(tags)
 	return c.JSON(resp)
 }
 
@@ -301,19 +291,10 @@ func parseUUID(s string) (pgtype.UUID, error) {
 	return pgtype.UUID{Bytes: u, Valid: true}, nil
 }
 
-func formatUUID(u pgtype.UUID) string {
-	if !u.Valid {
-		return ""
-	}
-	return uuid.UUID(u.Bytes).String()
-}
-
-func formatTime(t pgtype.Timestamptz) string {
-	if !t.Valid {
-		return ""
-	}
-	return t.Time.UTC().Format(time.RFC3339)
-}
+var (
+	formatUUID = db.FormatUUID
+	formatTime = db.FormatTime
+)
 
 func badRequest(c *fiber.Ctx, msg string) error {
 	return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": msg})

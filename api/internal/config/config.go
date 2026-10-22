@@ -107,11 +107,6 @@ func (c Config) MigrateDSN() string {
 	return c.DatabaseURL
 }
 
-// IsProduction reports whether the API runs in a production-like environment.
-func (c Config) IsProduction() bool {
-	return c.Env == "production"
-}
-
 // AuthEnabled reports whether token authentication is configured. When the
 // secret is empty the API boots without protected routes (dev/tests), the same
 // pattern as an empty DatabaseURL disabling the pool.

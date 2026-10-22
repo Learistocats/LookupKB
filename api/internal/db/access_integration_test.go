@@ -83,7 +83,7 @@ func TestAccessQueries(t *testing.T) {
 
 	// A public tag in use, plus two protected tags granted to different groups.
 	doc := newDoc(t, ctx, pool, actor, "d1")
-	require.NoError(t, store.SetDocumentTags(ctx, doc, []string{"public-tag"}))
+	setTags(t, ctx, pool, doc, []string{"public-tag"})
 	g1, err := adm.CreateGroup(ctx, actor, "g1")
 	require.NoError(t, err)
 	g2, err := adm.CreateGroup(ctx, actor, "g2")

@@ -5,7 +5,6 @@ package db_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
@@ -14,11 +13,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	appdb "github.com/Learistocats/LookupKB/api/internal/db"
-	"github.com/Learistocats/LookupKB/api/internal/render"
 )
 
 // TestDraftRoundTrip proves the walking-skeleton persistence path (LOO-11):
-// CreateDraft → SaveDraft → GetDraft round-trips through Postgres, the save is
+// CreateDraft → SaveDraft → GetOwnedDocument round-trips through Postgres, the save is
 // scoped to the owner, and a different author cannot read the draft.
 func TestDraftRoundTrip(t *testing.T) {
 	ctx := context.Background()
@@ -65,21 +63,21 @@ func TestDraftRoundTrip(t *testing.T) {
 	require.Equal(t, dbgen.DocumentStatusDraft, saved.Status, "save must never flip status")
 
 	// --- read back: exactly what was last saved (Postgres persistence) ---
-	got, err := q.GetDraft(ctx, dbgen.GetDraftParams{ID: created.ID, AuthorID: author.ID})
+	got, err := q.GetOwnedDocument(ctx, dbgen.GetOwnedDocumentParams{ID: created.ID, AuthorID: author.ID})
 	require.NoError(t, err)
 	require.NotNil(t, got.SourceMd)
 	require.Equal(t, body, *got.SourceMd)
 	require.Equal(t, title, *got.Title)
 
 	// --- ownership: a different author sees no row on read or save (AC-2.3) ---
-	_, err = q.GetDraft(ctx, dbgen.GetDraftParams{ID: created.ID, AuthorID: other.ID})
+	_, err = q.GetOwnedDocument(ctx, dbgen.GetOwnedDocumentParams{ID: created.ID, AuthorID: other.ID})
 	require.True(t, errors.Is(err, pgx.ErrNoRows), "another author must not read the draft")
 
 	_, err = q.SaveDraft(ctx, dbgen.SaveDraftParams{ID: created.ID, AuthorID: other.ID, SourceMd: &body})
 	require.True(t, errors.Is(err, pgx.ErrNoRows), "another author must not write the draft")
 
 	// The draft is untouched after the rejected cross-author write.
-	stillOurs, err := q.GetDraft(ctx, dbgen.GetDraftParams{ID: created.ID, AuthorID: author.ID})
+	stillOurs, err := q.GetOwnedDocument(ctx, dbgen.GetOwnedDocumentParams{ID: created.ID, AuthorID: author.ID})
 	require.NoError(t, err)
 	require.Equal(t, body, *stillOurs.SourceMd)
 
@@ -105,59 +103,4 @@ func TestDraftRoundTrip(t *testing.T) {
 	theirs, err := q.ListDrafts(ctx, other.ID)
 	require.NoError(t, err)
 	require.Empty(t, theirs, "another author's workspace must not list this draft")
-}
-
-// TestSetRenderedHTMLCachesSanitized proves the LOO-16 producer guarantee end to
-// end: what render.RenderAndSanitize produces is exactly what lands in
-// documents.rendered_html, and the persisted, readable HTML is fully sanitized —
-// no unsanitized author HTML ever touches the DB (06-security.md §2; ticket AC
-// "verify rendered_html is fully sanitized before it's ever readable").
-func TestSetRenderedHTMLCachesSanitized(t *testing.T) {
-	ctx := context.Background()
-
-	pgc := startTestPostgres(t, ctx)
-	dsn, err := pgc.ConnectionString(ctx, "sslmode=disable")
-	require.NoError(t, err)
-
-	bootstrapRoles(t, ctx, dsn)
-	require.NoError(t, appdb.RunMigrations(ctx, dsn, "up"))
-
-	pool, err := pgxpool.New(ctx, dsn)
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
-	q := dbgen.New(pool)
-
-	author, err := q.CreateUser(ctx, dbgen.CreateUserParams{Email: "author-sub@example.com", PasswordHash: "x"})
-	require.NoError(t, err)
-
-	created, err := q.CreateDraft(ctx, dbgen.CreateDraftParams{Slug: "draft-render", AuthorID: author.ID})
-	require.NoError(t, err)
-	require.Nil(t, created.RenderedHtml, "a fresh draft has no cached HTML")
-
-	// A malicious source with both a working GFM feature and XSS payloads.
-	source := "# Notes\n\n" +
-		"<script>alert(1)</script>\n\n" +
-		"[x](javascript:alert(1)) and <img src=x onerror=alert(1)>\n\n" +
-		"| a | b |\n|--|--|\n| 1 | 2 |\n"
-
-	html, err := render.New().RenderAndSanitize(ctx, source)
-	require.NoError(t, err)
-
-	// Persist via the sole write path to rendered_html.
-	require.NoError(t, q.SetRenderedHTML(ctx, dbgen.SetRenderedHTMLParams{
-		ID:           created.ID,
-		RenderedHtml: &html,
-	}))
-
-	// Read the stored value back and assert it is the sanitized output and safe.
-	got, err := q.GetDraft(ctx, dbgen.GetDraftParams{ID: created.ID, AuthorID: author.ID})
-	require.NoError(t, err)
-	require.NotNil(t, got.RenderedHtml)
-	require.Equal(t, html, *got.RenderedHtml, "stored HTML must be exactly RenderAndSanitize output")
-
-	stored := strings.ToLower(*got.RenderedHtml)
-	for _, tok := range []string{"<script", "javascript:", "onerror="} {
-		require.NotContains(t, stored, tok, "persisted rendered_html must be sanitized")
-	}
-	require.Contains(t, stored, "<table>", "safe GFM structure survives into the DB")
 }

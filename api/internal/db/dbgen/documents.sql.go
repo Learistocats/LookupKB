@@ -27,10 +27,8 @@ type CreateDraftParams struct {
 }
 
 // Document queries: drafts, publish/unpublish and the read path. Access-policy
-// queries live in access.sql; keep
-// queries close to the feature that needs them (03-data-model.md, ticket note).
-// Insert a new draft owned by the author. slug is caller-supplied (title + short
-// id, stable across edits); status defaults to 'draft'.
+// queries live in access.sql.
+// slug is caller-supplied; status defaults to 'draft'.
 func (q *Queries) CreateDraft(ctx context.Context, arg CreateDraftParams) (Document, error) {
 	row := q.db.QueryRow(ctx, createDraft,
 		arg.Slug,
@@ -78,56 +76,14 @@ type DeleteDraftRow struct {
 	Status DocumentStatus `json:"status"`
 }
 
-// Hard-delete one of the author's own never-public documents (LOO-58): only a
-// 'draft' or 'unpublished' row may go — a published doc must be unpublished first,
-// so it yields pgx.ErrNoRows → the identical 404, like a missing or other-author
-// id. document_tags/document_acl cascade; index_outbox rows survive (no FK since
-// 00008). RETURNING status lets the caller enqueue a defensive index delete for a
-// previously-published (unpublished) doc.
+// Hard-delete one of the author's own draft/unpublished documents; a published
+// doc yields pgx.ErrNoRows (identical 404). document_tags cascade; index_outbox
+// rows survive (no FK). RETURNING status lets the caller enqueue an index delete
+// for a previously-published doc.
 func (q *Queries) DeleteDraft(ctx context.Context, arg DeleteDraftParams) (DeleteDraftRow, error) {
 	row := q.db.QueryRow(ctx, deleteDraft, arg.ID, arg.AuthorID)
 	var i DeleteDraftRow
 	err := row.Scan(&i.ID, &i.Status)
-	return i, err
-}
-
-const getDraft = `-- name: GetDraft :one
-SELECT id, slug, author_id, status, title, description, source_md, rendered_html, created_at, updated_at, published_at, search_tsv, deleted_at, published_md
-FROM documents
-WHERE id = $1
-  AND author_id = $2
-  AND deleted_at IS NULL
-`
-
-type GetDraftParams struct {
-	ID       pgtype.UUID `json:"id"`
-	AuthorID pgtype.UUID `json:"author_id"`
-}
-
-// Read one of the author's own documents for the editor, in ANY status (draft/
-// published/unpublished — there is no status filter despite the name; editing a
-// published entry loads its working copy). Owner-scoped so a cross-author or
-// missing id yields pgx.ErrNoRows → 404 (03-data-model.md §2). deleted_at IS NULL
-// excludes soft-deleted rows.
-func (q *Queries) GetDraft(ctx context.Context, arg GetDraftParams) (Document, error) {
-	row := q.db.QueryRow(ctx, getDraft, arg.ID, arg.AuthorID)
-	var i Document
-	err := row.Scan(
-		&i.ID,
-		&i.Slug,
-		&i.AuthorID,
-		&i.Status,
-		&i.Title,
-		&i.Description,
-		&i.SourceMd,
-		&i.RenderedHtml,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.PublishedAt,
-		&i.SearchTsv,
-		&i.DeletedAt,
-		&i.PublishedMd,
-	)
 	return i, err
 }
 
@@ -167,10 +123,10 @@ type GetIndexProjectionRow struct {
 	Tags         []string           `json:"tags"`
 }
 
-// Everything the search index stores for one PUBLISHED document. Built from the
-// published columns (rendered_html, not the working-copy source_md). No access
-// attributes: read access is derived from `tags` + the group tag policy at query
-// time (LOO-33), so a policy change never needs a reindex.
+// Everything the search index stores for one PUBLISHED document, built from the
+// published columns (rendered_html, not source_md). No access attributes: access
+// is derived from `tags` + the group tag policy at query time, so a policy change
+// never needs a reindex.
 func (q *Queries) GetIndexProjection(ctx context.Context, id pgtype.UUID) (GetIndexProjectionRow, error) {
 	row := q.db.QueryRow(ctx, getIndexProjection, id)
 	var i GetIndexProjectionRow
@@ -202,11 +158,9 @@ type GetOwnedDocumentParams struct {
 	AuthorID pgtype.UUID `json:"author_id"`
 }
 
-// Read one of the caller's own documents in ANY status (draft/published/
-// unpublished) — the publish gate (LOO-14) needs the working copy of an
-// already-published doc for a re-publish. (Same filter as GetDraft today; kept as
-// its own query so the editor read and the publish read can diverge.) Owner-scoped so a cross-author or missing id yields pgx.ErrNoRows
-// → an identical 404 that never leaks existence (03-data-model.md §2).
+// One of the author's own documents in ANY status, for the editor and the publish
+// gate. Owner-scoped: a cross-author or missing id yields pgx.ErrNoRows, so both
+// map to an identical 404.
 func (q *Queries) GetOwnedDocument(ctx context.Context, arg GetOwnedDocumentParams) (Document, error) {
 	row := q.db.QueryRow(ctx, getOwnedDocument, arg.ID, arg.AuthorID)
 	var i Document
@@ -268,18 +222,11 @@ type GetPublishedBySlugRow struct {
 	TagSlugs          []string           `json:"tag_slugs"`
 }
 
-// The hot read path (F8, 01-architecture.md §3.2): fetch a PUBLISHED document by
-// its slug for the rendered-HTML view. status='published' means a draft/unpublished
-// (or soft-deleted) slug yields pgx.ErrNoRows → an identical 404, never partial
-// content. Reads the cached rendered_html column — no render on this path.
-//   - JOIN users → author display name for the byline.
-//   - tags aggregated as labels for the metadata display.
-//
-// author_id and tag_slugs are selected only to feed the server-side access check
-// (access.Policy.CanRead: protected tags, LOO-33); they are NOT projected to the
-// client. published_md (the Markdown that produced rendered_html, LOO-38) feeds
-// the public API's ?format=markdown — never source_md, the working copy. One round
-// trip keeps the path fast.
+// The hot read path: a PUBLISHED document by slug. A draft/unpublished/soft-deleted
+// slug yields pgx.ErrNoRows -> an identical 404. Reads the cached rendered_html;
+// no render here. author_id and tag_slugs feed the server-side access check
+// (access.Policy.CanRead) and are not projected to the client. published_md (the
+// source rendered_html came from) feeds ?format=markdown, never source_md.
 func (q *Queries) GetPublishedBySlug(ctx context.Context, slug string) (GetPublishedBySlugRow, error) {
 	row := q.db.QueryRow(ctx, getPublishedBySlug, slug)
 	var i GetPublishedBySlugRow
@@ -346,11 +293,8 @@ type ListDraftsRow struct {
 	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
-// List the author's own drafts for their private workspace (AC-2.5). Owner-scoped
-// so no other user's drafts are ever returned (AC-2.3); status='draft' excludes
-// published/unpublished docs and deleted_at IS NULL excludes soft-deleted rows.
-// Ordered by recency (most recently edited first). Only the columns the workspace
-// list needs are projected — never source_md/rendered_html.
+// The author's own drafts, most recently edited first. Never projects
+// source_md/rendered_html.
 func (q *Queries) ListDrafts(ctx context.Context, authorID pgtype.UUID) ([]ListDraftsRow, error) {
 	rows, err := q.db.Query(ctx, listDrafts, authorID)
 	if err != nil {
@@ -394,8 +338,7 @@ type ListMyDocumentsRow struct {
 	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
-// The caller's own entries for the history panel: drafts pinned first, then
-// everything else by most recent edit. Owner-scoped; never source/HTML.
+// History panel: drafts pinned first, then by most recent edit. Never source/HTML.
 func (q *Queries) ListMyDocuments(ctx context.Context, authorID pgtype.UUID) ([]ListMyDocumentsRow, error) {
 	rows, err := q.db.Query(ctx, listMyDocuments, authorID)
 	if err != nil {
@@ -505,18 +448,15 @@ type ListPublishedDocumentsRow struct {
 	Tags              []string           `json:"tags"`
 }
 
-// One page of the public catalogue (GET /api/v1/documents, MCP list_documents;
-// LOO-38): PUBLISHED documents the caller may read, newest first, metadata only
-// (never source_md / published_md / rendered_html).
+// One page of the public catalogue (REST list, MCP list_documents): PUBLISHED
+// documents the caller may read, newest first, metadata only.
 //
-// The protected-tag rule (access.Policy, LOO-33) is applied HERE, before the
-// LIMIT, so a page is never short and never reveals a hidden entry: a row is kept
-// when the caller authored it or it carries none of the caller's denied tags
-// (denied_ids = access.Policy.DeniedIDs(); empty for an unrestricted caller).
+// The protected-tag rule is applied here, before the LIMIT, so a page is never
+// short and never reveals a hidden entry: a row is kept when the caller authored
+// it or it carries none of the caller's denied tags (access.Policy.DeniedIDs()).
 //
-// Keyset pagination on (published_at, id) DESC: the cursor is the last row of the
-// previous page; both NULL on the first page. published_at is set once at first
-// publish and never moves, so the order is stable across re-publishes.
+// Keyset pagination on (published_at, id) DESC; both cursor values are NULL on the
+// first page. published_at never moves after first publish, so the order is stable.
 func (q *Queries) ListPublishedDocuments(ctx context.Context, arg ListPublishedDocumentsParams) ([]ListPublishedDocumentsRow, error) {
 	rows, err := q.db.Query(ctx, listPublishedDocuments,
 		arg.CallerID,
@@ -578,18 +518,14 @@ type PublishDocumentParams struct {
 	AuthorID     pgtype.UUID `json:"author_id"`
 }
 
-// Flip a document to 'published' with its just-validated metadata and freshly
-// rendered HTML, inside the publish transaction (LOO-14). First-publish semantics
-// are encoded in SQL so they cannot race a concurrent read-modify-write:
-//   - published_at = COALESCE(published_at, now()) — set once, never overwritten
-//     on re-publish (breaks "first published" sort order otherwise).
-//   - slug = CASE WHEN published_at IS NULL THEN @slug ELSE slug END — the ugly
-//     draft-<hex> placeholder is replaced with the title-derived slug on the FIRST
-//     publish only, then stays stable across edits (03-data-model.md §1 `slug`).
-//   - published_md is the exact source rendered_html was rendered from (LOO-38),
-//     so the published Markdown never drifts with later working-copy saves.
+// Flip a document to 'published' inside the publish transaction. First-publish
+// semantics live in SQL so they cannot race a read-modify-write:
+//   - published_at is set once and never overwritten on re-publish.
+//   - slug is replaced by the title-derived one on the first publish only.
+//   - published_md is the exact source rendered_html came from, so it never
+//     drifts with later working-copy saves.
 //
-// Owner-scoped (author_id) so it can never publish another author's document.
+// Owner-scoped.
 func (q *Queries) PublishDocument(ctx context.Context, arg PublishDocumentParams) (Document, error) {
 	row := q.db.QueryRow(ctx, publishDocument,
 		arg.Title,
@@ -640,9 +576,8 @@ type SaveDraftParams struct {
 	SourceMd    *string     `json:"source_md"`
 }
 
-// Overwrite the working copy in place (saves are not versioned). Scoped to
-// author_id so an author can only save their own document. Any status: editing a
-// published entry changes only the working copy — rendered_html and the search
+// Overwrite the working copy in place. Owner-scoped; any status: editing a
+// published entry changes only the working copy, rendered_html and the search
 // index change on the next (re-)publish.
 func (q *Queries) SaveDraft(ctx context.Context, arg SaveDraftParams) (Document, error) {
 	row := q.db.QueryRow(ctx, saveDraft,
@@ -672,28 +607,6 @@ func (q *Queries) SaveDraft(ctx context.Context, arg SaveDraftParams) (Document,
 	return i, err
 }
 
-const setRenderedHTML = `-- name: SetRenderedHTML :exec
-UPDATE documents
-SET rendered_html = $2,
-    updated_at    = now()
-WHERE id = $1
-`
-
-type SetRenderedHTMLParams struct {
-	ID           pgtype.UUID `json:"id"`
-	RenderedHtml *string     `json:"rendered_html"`
-}
-
-// Cache the publish-time sanitized HTML into the documents.rendered_html column.
-// This is the ONLY write path to documents.rendered_html, and the value MUST be
-// render.RenderAndSanitize output — no unsanitized HTML ever reaches this column
-// (06-security.md §2; LOO-16). Status / published_at transitions are the
-// publish gate's job (LOO-14); this primitive only caches the HTML.
-func (q *Queries) SetRenderedHTML(ctx context.Context, arg SetRenderedHTMLParams) error {
-	_, err := q.db.Exec(ctx, setRenderedHTML, arg.ID, arg.RenderedHtml)
-	return err
-}
-
 const unpublishDocument = `-- name: UnpublishDocument :one
 UPDATE documents
 SET status       = 'unpublished',
@@ -711,13 +624,9 @@ type UnpublishDocumentParams struct {
 	AuthorID pgtype.UUID `json:"author_id"`
 }
 
-// Revert a published document to author-only 'unpublished' visibility (AC-5.6).
-// Only a currently-published doc can be unpublished (status='published' guard), so
-// a draft/already-unpublished/other-author id yields pgx.ErrNoRows → 404.
-// published_at and rendered_html are left intact — unpublish removes the doc from
-// the index-eligible state, it does not erase its content. published_md is cleared
-// (LOO-38): only a published entry has a published source; the next publish
-// writes it afresh.
+// Only a currently-published doc can be unpublished; anything else yields
+// pgx.ErrNoRows. published_at and rendered_html are kept; published_md is cleared
+// (only a published entry has one).
 func (q *Queries) UnpublishDocument(ctx context.Context, arg UnpublishDocumentParams) (Document, error) {
 	row := q.db.QueryRow(ctx, unpublishDocument, arg.ID, arg.AuthorID)
 	var i Document

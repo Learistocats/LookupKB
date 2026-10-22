@@ -8,11 +8,11 @@ import (
 	"unicode/utf8"
 
 	"github.com/Learistocats/LookupKB/api/internal/auth"
+	"github.com/Learistocats/LookupKB/api/internal/db"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/limiter"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -147,8 +147,7 @@ func (s *Server) handleCreateToken(c *fiber.Ctx) error {
 			Prefix:    pat.Prefix,
 			ExpiresAt: expires,
 		})
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" && attempt < 2 {
+		if db.IsUniqueViolation(err) && attempt < 2 {
 			continue
 		}
 		if err != nil {

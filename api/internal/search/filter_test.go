@@ -1,6 +1,7 @@
 package search
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Learistocats/LookupKB/api/internal/access"
+	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/require"
@@ -18,38 +20,57 @@ func caller() (access.Caller, string) {
 	return access.Caller{UserID: pgtype.UUID{Bytes: u, Valid: true}}, u.String()
 }
 
+type fakeDenied []access.Tag
+
+func (d fakeDenied) ListDeniedProtectedTags(context.Context, pgtype.UUID) ([]dbgen.ListDeniedProtectedTagsRow, error) {
+	rows := make([]dbgen.ListDeniedProtectedTagsRow, len(d))
+	for i, t := range d {
+		rows[i] = dbgen.ListDeniedProtectedTagsRow{ID: t.ID, Slug: t.Slug, Label: t.Label}
+	}
+	return rows, nil
+}
+
+// policy resolves a caller's policy through access.Load with a fixed denied set.
+func policy(c access.Caller, denied []access.Tag) access.Policy {
+	p, err := access.Load(context.Background(), fakeDenied(denied), c)
+	if err != nil {
+		panic(err)
+	}
+	return p
+}
+
 func tag(slug, label string) access.Tag {
 	return access.Tag{ID: pgtype.UUID{Bytes: uuid.New(), Valid: true}, Slug: slug, Label: label}
 }
 
 func TestAccessFilter_DeniedTags(t *testing.T) {
 	c, me := caller()
-	f, err := AccessFilter(access.NewPolicy(c, []access.Tag{tag("hr", "hr"), tag("reeflect", "reeflect")}))
+	f, err := accessFilter(policy(c, []access.Tag{tag("hr", "hr"), tag("reeflect", "reeflect")}))
 	require.NoError(t, err)
 	require.Equal(t, `author_id = "`+me+`" OR tags NOT IN ["hr", "reeflect"]`, f)
 }
 
 func TestAccessFilter_LabelAndSlugBothDenied(t *testing.T) {
 	c, me := caller()
-	f, err := AccessFilter(access.NewPolicy(c, []access.Tag{tag("reeflect", "Reeflect")}))
+	f, err := accessFilter(policy(c, []access.Tag{tag("reeflect", "Reeflect")}))
 	require.NoError(t, err)
 	require.Equal(t, `author_id = "`+me+`" OR tags NOT IN ["Reeflect", "reeflect"]`, f)
 }
 
 func TestAccessFilter_UnrestrictedHasNoFilter(t *testing.T) {
 	c, _ := caller()
-	f, err := AccessFilter(access.NewPolicy(c, nil))
+	f, err := accessFilter(policy(c, nil))
 	require.NoError(t, err)
 	require.Empty(t, f, "nothing denied: every published entry is visible")
 
 	c.IsSuperAdmin = true
-	f, err = AccessFilter(access.NewPolicy(c, []access.Tag{tag("hr", "hr")}))
+	f, err = accessFilter(policy(c, []access.Tag{tag("hr", "hr")}))
 	require.NoError(t, err)
 	require.Empty(t, f, "super-admin sees everything")
 }
 
 func TestAccessFilter_ZeroPolicyFailsClosed(t *testing.T) {
-	_, err := AccessFilter(access.Policy{})
+	_, err := accessFilter(access.Policy{})
 	require.Error(t, err)
 }
 
@@ -57,7 +78,7 @@ func TestAccessFilter_ZeroPolicyFailsClosed(t *testing.T) {
 // quote cannot terminate the string and open a new clause.
 func TestAccessFilter_EscapesQuotes(t *testing.T) {
 	c, me := caller()
-	f, err := AccessFilter(access.NewPolicy(c, []access.Tag{tag("x", `x" OR author_id EXISTS OR tags = "y`)}))
+	f, err := accessFilter(policy(c, []access.Tag{tag("x", `x" OR author_id EXISTS OR tags = "y`)}))
 	require.NoError(t, err)
 	require.Equal(t, `author_id = "`+me+`" OR tags NOT IN ["x\" OR author_id EXISTS OR tags = \"y", "x"]`, f)
 }
@@ -67,7 +88,7 @@ func TestAccessFilter_EscapesQuotes(t *testing.T) {
 func TestAccessFilter_UnrepresentableLabelFailsClosed(t *testing.T) {
 	c, _ := caller()
 	for _, bad := range []string{`back\slash`, `trail\`, "ctl\x01", "nl\n"} {
-		_, err := AccessFilter(access.NewPolicy(c, []access.Tag{tag("ok", bad)}))
+		_, err := accessFilter(policy(c, []access.Tag{tag("ok", bad)}))
 		require.Error(t, err, bad)
 	}
 }
@@ -83,7 +104,7 @@ func TestQuoteFilterValue(t *testing.T) {
 func TestBuildFilter_ClientFiltersAreSeparateANDedElements(t *testing.T) {
 	c, me := caller()
 	author := uuid.NewString()
-	p := access.NewPolicy(c, []access.Tag{tag("hr", "hr")})
+	p := policy(c, []access.Tag{tag("hr", "hr")})
 	got, err := buildFilter(p, Filters{
 		Tags:          []string{"go", `x") OR (author_id EXISTS`},
 		AuthorID:      author,
@@ -107,8 +128,8 @@ func TestBuildFilter_ClientFiltersAreSeparateANDedElements(t *testing.T) {
 // sends, the access expression is present verbatim as its own array element.
 func TestBuildFilter_ClientCannotWidenAccess(t *testing.T) {
 	c, _ := caller()
-	p := access.NewPolicy(c, []access.Tag{tag("hr", "hr")})
-	want, err := AccessFilter(p)
+	p := policy(c, []access.Tag{tag("hr", "hr")})
+	want, err := accessFilter(p)
 	require.NoError(t, err)
 
 	attempts := []Filters{
@@ -130,7 +151,7 @@ func TestBuildFilter_ClientCannotWidenAccess(t *testing.T) {
 
 func TestBuildFilter_RejectsInvalidClientFilters(t *testing.T) {
 	c, _ := caller()
-	p := access.NewPolicy(c, nil)
+	p := policy(c, nil)
 	bad := []Filters{
 		{AuthorID: `x" OR author_id EXISTS`},
 		{PublishedFrom: "yesterday"},
