@@ -11,6 +11,20 @@
 
 name: lookupkb
 
+x-hardened: &hardened
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+
+# Read-only root fs, no capabilities (app containers only).
+x-locked: &locked
+  <<: *hardened
+  read_only: true
+  cap_drop:
+    - ALL
+
+x-api-image: &api-image ${LOOKUPKB_IMAGE_PREFIX:-}lookupkb-api:${LOOKUPKB_VERSION:-dev}
+
 services:
   # ---- Application ----------------------------------------------------------
   api:
@@ -18,8 +32,8 @@ services:
       context: ../api
       args:
         VERSION: ${LOOKUPKB_VERSION:-dev}
-    image: ${LOOKUPKB_IMAGE_PREFIX:-}lookupkb-api:${LOOKUPKB_VERSION:-dev}
-    restart: unless-stopped
+    image: *api-image
+    <<: *locked
     environment:
       LOOKUPKB_ENV: ${LOOKUPKB_ENV:-development}
       LOOKUPKB_API_PORT: "8080"
@@ -35,13 +49,10 @@ services:
       LOOKUPKB_AUTH_TOKEN_TTL: ${LOOKUPKB_AUTH_TOKEN_TTL:-168h}
       # Shared login/signup rate-limit counters.
       LOOKUPKB_VALKEY_URL: redis://valkey:6379/0
-      # /readyz dependency probes (AC-11.1). Internal service URLs assembled here
-      # (never in .env). Postgres/Valkey/Meili/Kroki/Garage gate readiness.
+      # Internal service URLs are assembled here (never in .env).
       LOOKUPKB_MEILI_URL: http://meilisearch:7700
       # Indexing + search key (server-side only; never sent to the browser).
       LOOKUPKB_MEILI_KEY: ${MEILI_MASTER_KEY}
-      LOOKUPKB_KROKI_URL: http://kroki:8000
-      LOOKUPKB_GARAGE_ADMIN_URL: http://garage:3903
       # Browser origins allowed on /mcp (empty: none; native MCP clients need none).
       LOOKUPKB_MCP_ALLOWED_ORIGINS: ${LOOKUPKB_MCP_ALLOWED_ORIGINS:-}
     # Loopback-only by default: the browser talks to `web`, never to the API. Point
@@ -49,18 +60,10 @@ services:
     # runs elsewhere) to expose the public /api surface.
     ports:
       - "${LOOKUPKB_API_BIND:-127.0.0.1}:${LOOKUPKB_API_PORT:-8080}:8080"
-    read_only: true
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
     networks:
       - edge
       - data
-    # Gate the API on its datastores so /readyz (health-endpoints ticket) has a
-    # live Postgres/Meili/Garage to reach and startup is deterministic (AC-11.1).
-    # The `migrate` one-shot must complete first so the schema exists before the
-    # app (which connects as the DML-only role) starts serving.
+    # `migrate` must finish first: the app connects as the DML-only role.
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -70,12 +73,7 @@ services:
         condition: service_healthy
       meilisearch:
         condition: service_healthy
-      garage:
-        condition: service_healthy
-      kroki:
-        condition: service_started
-    # Probe /readyz (not /healthz) so the container is "healthy" only once its
-    # gating dependencies are reachable (AC-11.1).
+    # /readyz (not /healthz): healthy only once the dependencies are reachable.
     healthcheck:
       test: ["CMD", "/api", "readycheck"]
       interval: 15s
@@ -88,26 +86,17 @@ services:
           cpus: "2.0"
           memory: 256M
 
-  # One-shot schema migration. Reuses the API image (`api migrate up` runs the
-  # embedded goose migrations) and connects as the migration role that owns DDL.
-  # `api` waits for this to exit successfully (see its depends_on).
+  # One-shot schema migration with the API image (built by `api`), connecting as
+  # the DDL-owning role.
   migrate:
-    image: ${LOOKUPKB_IMAGE_PREFIX:-}lookupkb-api:${LOOKUPKB_VERSION:-dev}
-    build:
-      context: ../api
-      args:
-        VERSION: ${LOOKUPKB_VERSION:-dev}
+    image: *api-image
+    <<: *locked
     command: ["migrate", "up"]
     restart: "no"
     environment:
       LOOKUPKB_ENV: ${LOOKUPKB_ENV:-development}
       LOOKUPKB_LOG_FORMAT: ${LOOKUPKB_LOG_FORMAT:-json}
       LOOKUPKB_MIGRATE_DATABASE_URL: postgres://lookupkb_migrator:${LOOKUPKB_MIGRATOR_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-lookupkb}?sslmode=disable
-    read_only: true
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
     networks:
       - data
     depends_on:
@@ -123,15 +112,15 @@ services:
     build:
       context: ../web
     image: ${LOOKUPKB_IMAGE_PREFIX:-}lookupkb-web:${LOOKUPKB_VERSION:-dev}
-    restart: unless-stopped
+    <<: *locked
+    tmpfs:
+      - /tmp
     environment:
       # Seals the API token into the session cookie. Empty disables auth (the
       # web app then serves openly, for `pnpm dev`-style setups only).
       SESSION_COOKIE_SECRET: ${SESSION_COOKIE_SECRET:-}
       # Plain-http local use needs non-Secure cookies. Set false behind HTTPS.
       SESSION_COOKIE_INSECURE: ${SESSION_COOKIE_INSECURE:-true}
-      # Server-side API base for bearer-proxied calls (internal service address).
-      API_INTERNAL_BASE: http://api:8080
       # adapter-node: the public origin, for CSRF/redirect correctness. Set it to
       # your https URL when a host proxy terminates TLS in front of this service.
       ORIGIN: ${ORIGIN:-http://localhost:3000}
@@ -143,8 +132,6 @@ services:
       - "${LOOKUPKB_WEB_BIND:-0.0.0.0}:${LOOKUPKB_WEB_PORT:-3000}:8080"
     networks:
       - edge
-    security_opt:
-      - no-new-privileges:true
     depends_on:
       api:
         condition: service_healthy
@@ -170,13 +157,13 @@ services:
   # ---- Data stores ----------------------------------------------------------
   postgres:
     image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
-    restart: unless-stopped
+    <<: *hardened
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-lookupkb}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: ${POSTGRES_DB:-lookupkb}
       # Consumed by 20-lookupkb-roles.sh to provision the least-privilege app +
-      # migration roles the API and `api migrate` connect as (06-security.md §8).
+      # migration roles the API and `api migrate` connect as.
       LOOKUPKB_APP_DB_PASSWORD: ${LOOKUPKB_APP_DB_PASSWORD:?LOOKUPKB_APP_DB_PASSWORD is required}
       LOOKUPKB_MIGRATOR_DB_PASSWORD: ${LOOKUPKB_MIGRATOR_DB_PASSWORD:?LOOKUPKB_MIGRATOR_DB_PASSWORD is required}
     volumes:
@@ -184,8 +171,6 @@ services:
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
     networks:
       - data
-    security_opt:
-      - no-new-privileges:true
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lookupkb} -d ${POSTGRES_DB:-lookupkb}"]
       interval: 10s
@@ -199,14 +184,12 @@ services:
 
   valkey:
     image: valkey/valkey:8-alpine@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
-    restart: unless-stopped
+    <<: *hardened
     command: ["valkey-server", "--save", "60", "1", "--appendonly", "no"]
     volumes:
       - valkey_data:/data
     networks:
       - data
-    security_opt:
-      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "valkey-cli", "ping"]
       interval: 10s
@@ -220,7 +203,7 @@ services:
 
   meilisearch:
     image: getmeili/meilisearch:v1.12@sha256:c9fac23131cca4db95173d41cc50fd5639121ee381795528fdd7522d7978a7b8
-    restart: unless-stopped
+    <<: *hardened
     environment:
       MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?MEILI_MASTER_KEY is required}
       MEILI_ENV: ${MEILI_ENV:-development}
@@ -229,8 +212,6 @@ services:
       - meili_data:/meili_data
     networks:
       - data
-    security_opt:
-      - no-new-privileges:true
     # Meilisearch ships curl; probe over 127.0.0.1 (it binds IPv4 only, and
     # `localhost` resolves to ::1 in the container → connection refused).
     healthcheck:
@@ -247,19 +228,15 @@ services:
 
   kroki:
     image: yuzutech/kroki:0.28.0@sha256:710a5e8d57344769846695431ceefc02aaf908e9958c9d459171d2255ee2f7f5
-    restart: unless-stopped
+    <<: *hardened
     environment:
       KROKI_MERMAID_HOST: kroki-mermaid
       # Least privilege: only enable the diagram engines we use.
       KROKI_SAFE_MODE: secure
     networks:
       - data
-    security_opt:
-      - no-new-privileges:true
     depends_on:
       - kroki-mermaid
-    # Probe Kroki's liveness endpoint so the API can gate on a render backend
-    # that answers. Use 127.0.0.1 to avoid IPv6-loopback surprises.
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health >/dev/null || exit 1"]
       interval: 15s
@@ -274,13 +251,9 @@ services:
 
   kroki-mermaid:
     image: yuzutech/kroki-mermaid:0.28.0@sha256:e301872d57b397e1020768cfbafd3ac5d3f2c47a2615d65b9af217c832a226f4
-    restart: unless-stopped
-    expose:
-      - "8002"
+    <<: *hardened
     networks:
       - data
-    security_opt:
-      - no-new-privileges:true
     deploy:
       resources:
         limits:
@@ -289,7 +262,7 @@ services:
 
   garage:
     image: dxflrs/garage:v1.0.1@sha256:a5706cf1f3d7b349ac5133ec59ad8181b709270b75e5f2fa7b3e1a5c07d67137
-    restart: unless-stopped
+    <<: *hardened
     environment:
       GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:?GARAGE_RPC_SECRET is required}
       # Bearer tokens for the admin (:3903) and metrics endpoints. Garage reads
@@ -302,8 +275,6 @@ services:
       - garage_data:/var/lib/garage/data
     networks:
       - data
-    security_opt:
-      - no-new-privileges:true
     # The scratch image has only the garage binary; `garage status` connects
     # over RPC and returns healthy once the daemon is up (even pre-layout).
     healthcheck:
