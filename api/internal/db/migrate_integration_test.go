@@ -71,6 +71,7 @@ func TestMigrations(t *testing.T) {
 
 	// --- 00012 (LOO-38) down then up: published_md is backfilled from the working
 	// copy for published rows only ---
+	require.NoError(t, appdb.RunMigrations(ctx, migratorDSN, "down"), "00013 down must apply")
 	require.NoError(t, appdb.RunMigrations(ctx, migratorDSN, "down"), "00012 down must apply")
 	assertPublishedMDBackfill(t, ctx, superDSN, func() {
 		require.NoError(t, appdb.RunMigrations(ctx, migratorDSN, "up"), "00012 re-applies")
@@ -78,6 +79,7 @@ func TestMigrations(t *testing.T) {
 
 	// --- 00011 (LOO-33) down then up: the document ACL comes back empty, and is
 	// usable by the app role, then goes again ---
+	require.NoError(t, appdb.RunMigrations(ctx, migratorDSN, "down"), "00013 down must apply")
 	require.NoError(t, appdb.RunMigrations(ctx, migratorDSN, "down"), "00012 down must apply")
 	require.NoError(t, appdb.RunMigrations(ctx, migratorDSN, "down"), "00011 down must apply")
 	assertDocumentACLDropped(t, ctx, superDSN, false)
