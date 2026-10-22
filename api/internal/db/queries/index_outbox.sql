@@ -1,19 +1,10 @@
--- Transactional outbox for Meilisearch index ops (03-data-model.md §4,
--- 00004_index_outbox.sql). The publish gate (LOO-14) enqueues a row in the SAME
--- transaction as the status flip, so a failed Meili write can be retried without
--- losing the DB commit and a rolled-back publish never leaves a stray index op.
--- The search worker (internal/search) claims, applies and completes them.
-
 -- name: EnqueueIndexOp :exec
--- Enqueue an index operation for a document: 'upsert' on publish/re-publish,
--- 'delete' on unpublish. status defaults to 'pending' and attempts to 0 — the M2
--- worker scans (status,created_at) oldest-first.
+-- 'upsert' on publish/re-publish, 'delete' on unpublish.
 INSERT INTO index_outbox (document_id, op)
 VALUES ($1, $2);
 
 -- name: ClaimIndexOps :many
--- Atomically claim the oldest pending ops for this worker. SKIP LOCKED lets
--- several workers run without double-processing a row.
+-- SKIP LOCKED lets several workers run without double-processing a row.
 UPDATE index_outbox
 SET status = 'processing',
     updated_at = now()
@@ -45,8 +36,16 @@ SET attempts = attempts + 1,
 WHERE id = @id;
 
 -- name: RequeueStaleIndexOps :exec
--- Ops left 'processing' by a crashed worker go back to pending at startup.
+-- Ops left 'processing' by a crashed worker.
 UPDATE index_outbox
 SET status = 'pending',
     updated_at = now()
 WHERE status = 'processing';
+
+-- name: EnqueueAllPublishedUpserts :execrows
+-- Index bootstrap: queue an upsert for every published document.
+INSERT INTO index_outbox (document_id, op)
+SELECT id, 'upsert'
+FROM documents
+WHERE status = 'published'
+  AND deleted_at IS NULL;

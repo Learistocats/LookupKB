@@ -182,11 +182,9 @@ JOIN tags t ON t.id = dt.tag_id
 WHERE dt.document_id = $1
 ORDER BY t.label;
 
--- name: GetIndexProjection :one
--- Everything the search index stores for one PUBLISHED document. Built from the
--- published columns (rendered_html, not the working-copy source_md). No access
--- attributes: read access is derived from `tags` + the group tag policy at query
--- time (LOO-33), so a policy change never needs a reindex.
+-- name: GetIndexProjections :many
+-- Index documents for the given ids; only currently published documents are
+-- returned. Built from rendered_html, never the working-copy source_md.
 SELECT
     d.id,
     d.slug,
@@ -203,17 +201,10 @@ FROM documents d
 JOIN users u ON u.id = d.author_id
 LEFT JOIN document_tags dt ON dt.document_id = d.id
 LEFT JOIN tags t ON t.id = dt.tag_id
-WHERE d.id = $1
+WHERE d.id = ANY(@ids::uuid[])
   AND d.status = 'published'
   AND d.deleted_at IS NULL
 GROUP BY d.id, u.display_name, u.email;
-
--- name: ListPublishedDocumentIDs :many
--- Every published document id (search index bootstrap / rebuild).
-SELECT id
-FROM documents
-WHERE status = 'published'
-  AND deleted_at IS NULL;
 
 -- name: ListPublishedDocuments :many
 -- One page of the public catalogue (GET /api/v1/documents, MCP list_documents;

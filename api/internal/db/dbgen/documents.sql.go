@@ -131,7 +131,7 @@ func (q *Queries) GetDraft(ctx context.Context, arg GetDraftParams) (Document, e
 	return i, err
 }
 
-const getIndexProjection = `-- name: GetIndexProjection :one
+const getIndexProjections = `-- name: GetIndexProjections :many
 SELECT
     d.id,
     d.slug,
@@ -148,13 +148,13 @@ FROM documents d
 JOIN users u ON u.id = d.author_id
 LEFT JOIN document_tags dt ON dt.document_id = d.id
 LEFT JOIN tags t ON t.id = dt.tag_id
-WHERE d.id = $1
+WHERE d.id = ANY($1::uuid[])
   AND d.status = 'published'
   AND d.deleted_at IS NULL
 GROUP BY d.id, u.display_name, u.email
 `
 
-type GetIndexProjectionRow struct {
+type GetIndexProjectionsRow struct {
 	ID           pgtype.UUID        `json:"id"`
 	Slug         string             `json:"slug"`
 	Title        *string            `json:"title"`
@@ -167,26 +167,37 @@ type GetIndexProjectionRow struct {
 	Tags         []string           `json:"tags"`
 }
 
-// Everything the search index stores for one PUBLISHED document. Built from the
-// published columns (rendered_html, not the working-copy source_md). No access
-// attributes: read access is derived from `tags` + the group tag policy at query
-// time (LOO-33), so a policy change never needs a reindex.
-func (q *Queries) GetIndexProjection(ctx context.Context, id pgtype.UUID) (GetIndexProjectionRow, error) {
-	row := q.db.QueryRow(ctx, getIndexProjection, id)
-	var i GetIndexProjectionRow
-	err := row.Scan(
-		&i.ID,
-		&i.Slug,
-		&i.Title,
-		&i.Description,
-		&i.RenderedHtml,
-		&i.AuthorID,
-		&i.CreatedAt,
-		&i.PublishedAt,
-		&i.Author,
-		&i.Tags,
-	)
-	return i, err
+// Index documents for the given ids; only currently published documents are
+// returned. Built from rendered_html, never the working-copy source_md.
+func (q *Queries) GetIndexProjections(ctx context.Context, ids []pgtype.UUID) ([]GetIndexProjectionsRow, error) {
+	rows, err := q.db.Query(ctx, getIndexProjections, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetIndexProjectionsRow
+	for rows.Next() {
+		var i GetIndexProjectionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Slug,
+			&i.Title,
+			&i.Description,
+			&i.RenderedHtml,
+			&i.AuthorID,
+			&i.CreatedAt,
+			&i.PublishedAt,
+			&i.Author,
+			&i.Tags,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getOwnedDocument = `-- name: GetOwnedDocument :one
@@ -415,34 +426,6 @@ func (q *Queries) ListMyDocuments(ctx context.Context, authorID pgtype.UUID) ([]
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listPublishedDocumentIDs = `-- name: ListPublishedDocumentIDs :many
-SELECT id
-FROM documents
-WHERE status = 'published'
-  AND deleted_at IS NULL
-`
-
-// Every published document id (search index bootstrap / rebuild).
-func (q *Queries) ListPublishedDocumentIDs(ctx context.Context) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, listPublishedDocumentIDs)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []pgtype.UUID
-	for rows.Next() {
-		var id pgtype.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
