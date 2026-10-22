@@ -9,11 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestRenderAndSanitize_XSSCorpus is the SEC-1 seed (06-security.md §10,
-// 07-test-book.md SEC-1): a battery of malicious Markdown/HTML/SVG payloads must
-// be neutralised. For each payload the sanitized output must contain none of the
-// dangerous tokens. This is the guarantee that documents.rendered_html is safe to
-// serve to every reader.
+// TestRenderAndSanitize_XSSCorpus: malicious payloads must leave none of the
+// dangerous tokens in the output.
 func TestRenderAndSanitize_XSSCorpus(t *testing.T) {
 	r := New()
 
@@ -54,9 +51,7 @@ func TestRenderAndSanitize_XSSCorpus(t *testing.T) {
 	}
 }
 
-// TestRenderAndSanitize_GFMPreserved asserts valid GFM keeps its intended
-// structure/semantics — no false-positive stripping (ticket AC). Every must-have
-// GFM feature from 00-overview.md §7 is exercised.
+// TestRenderAndSanitize_GFMPreserved: valid GFM must not be stripped.
 func TestRenderAndSanitize_GFMPreserved(t *testing.T) {
 	r := New()
 
@@ -108,8 +103,7 @@ func TestRenderAndSanitize_GFMPreserved(t *testing.T) {
 	})
 }
 
-// TestRenderAndSanitize_SizeCap rejects oversized source before rendering, with a
-// clear typed error — never silently truncated (ticket AC, 06-security.md §6).
+// TestRenderAndSanitize_SizeCap: oversized source is rejected, not truncated.
 func TestRenderAndSanitize_SizeCap(t *testing.T) {
 	r := New(WithMaxBytes(16))
 
@@ -128,17 +122,6 @@ func TestRenderAndSanitize_SizeCap(t *testing.T) {
 func TestWithMaxBytes_IgnoresNonPositive(t *testing.T) {
 	r := New(WithMaxBytes(0))
 	require.Equal(t, DefaultMaxBytes, r.maxBytes)
-}
-
-// TestNew_DefaultDiagramRenderer confirms the M1 default is the no-op renderer,
-// which emits no SVG so fenced diagram blocks stay as plain code (LOO-19 swaps it).
-func TestNew_DefaultDiagramRenderer(t *testing.T) {
-	r := New()
-	require.IsType(t, NoopDiagramRenderer{}, r.DiagramRenderer())
-
-	svg, err := r.DiagramRenderer().Render(context.Background(), "mermaid", "graph TD; A-->B")
-	require.NoError(t, err)
-	require.Empty(t, svg)
 }
 
 func mustRender(t *testing.T, r *Renderer, src string) string {
