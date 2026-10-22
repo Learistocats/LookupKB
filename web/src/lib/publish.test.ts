@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { publishDraft, unpublishDraft, accessLine } from './publish';
+import { publishDraft, unpublishDraft, accessLine, type FieldError } from './publish';
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
