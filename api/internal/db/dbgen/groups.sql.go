@@ -248,7 +248,7 @@ FROM group_members
 WHERE user_id = $1
 `
 
-// Local groups (03-data-model.md §1 `groups`, `group_members`). Membership is
+// Local groups. Membership is
 // authoritative here; access decisions read it in SQL (access.sql).
 // The caller's group ids (for GET /api/v1/me).
 func (q *Queries) ListUserGroupIDs(ctx context.Context, userID pgtype.UUID) ([]pgtype.UUID, error) {
