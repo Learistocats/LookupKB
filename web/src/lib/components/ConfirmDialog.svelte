@@ -1,12 +1,9 @@
 <!--
-  ConfirmDialog — the generic "are you sure?" modal on a native <dialog>. The parent
+  ConfirmDialog — generic "are you sure?" modal on a native <dialog>. The parent
   owns the action: it binds `open`, handles `onConfirm` (showing `busy` while it
   works) and `onCancel` (also fired by Esc / the dialog closing). `danger` styles
-  the confirm button as destructive. Optional `children` render between the message
-  and the buttons for richer prompts (the publish metadata form uses it).
-
-  Presentational and generic on purpose: reused by draft delete (LOO-58), publish,
-  and later prompts such as "make this tag protected?".
+  the confirm button as destructive; `children` render between the message and the
+  buttons for richer prompts.
 -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
@@ -76,7 +73,7 @@
 			type="button"
 			class="btn"
 			class:btn-primary={!danger}
-			class:confirm-danger={danger}
+			class:btn-danger={danger}
 			onclick={onConfirm}
 			disabled={busy}
 		>
@@ -124,6 +121,7 @@
 		margin: 0;
 		color: var(--fg-muted);
 		font-size: var(--text-sm);
+		overflow-wrap: anywhere;
 	}
 
 	.actions {
@@ -131,18 +129,5 @@
 		justify-content: flex-end;
 		gap: 0.5rem;
 		margin-top: 0.25rem;
-	}
-
-	.confirm-danger {
-		color: var(--danger);
-		border-color: var(--danger);
-		background: var(--danger-soft);
-	}
-
-	.confirm-danger:hover:not(:disabled) {
-		color: var(--danger);
-		border-color: var(--danger);
-		background: var(--danger-soft);
-		filter: brightness(0.96);
 	}
 </style>

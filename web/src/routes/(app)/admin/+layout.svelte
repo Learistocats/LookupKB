@@ -10,9 +10,9 @@
 	];
 </script>
 
-<div class="admin">
+<div class="admin page-column">
 	<header>
-		<h1>Admin</h1>
+		<h1 class="page-title">Admin</h1>
 		<nav aria-label="Admin sections">
 			{#each tabs as t (t.href)}
 				<a
@@ -28,8 +28,7 @@
 
 <style>
 	.admin {
-		max-width: 48rem;
-		margin: 0 auto;
+		--column: 48rem;
 		padding: 2.5rem 1rem 4rem;
 		display: grid;
 		gap: 1.5rem;
@@ -41,13 +40,6 @@
 		align-items: baseline;
 		justify-content: space-between;
 		gap: 0.75rem;
-	}
-
-	h1 {
-		margin: 0;
-		font-size: var(--text-xl);
-		font-weight: 700;
-		letter-spacing: -0.01em;
 	}
 
 	nav {
@@ -73,22 +65,7 @@
 		color: var(--fg);
 	}
 
-	/* Shared admin building blocks for the child pages. */
-	.admin :global(.card) {
-		display: grid;
-		gap: 0.75rem;
-		padding: 1.25rem;
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		background: var(--surface);
-	}
-
-	.admin :global(.card h2) {
-		margin: 0;
-		font-size: var(--text-md);
-		font-weight: 650;
-	}
-
+	/* Shared by the admin child pages. */
 	.admin :global(.inline-form) {
 		display: flex;
 		flex-wrap: wrap;
@@ -101,41 +78,9 @@
 		min-width: 12rem;
 	}
 
-	.admin :global(.rows) {
-		list-style: none;
-		margin: 0;
-		padding: 0;
-		display: grid;
-	}
-
-	.admin :global(.rows > li) {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 0.5rem;
-		padding: 0.5rem 0;
-		border-top: 1px solid var(--border);
-		font-size: var(--text-sm);
-	}
-
-	.admin :global(.rows > li:first-child) {
-		border-top: none;
-	}
-
 	.admin :global(.grow) {
 		flex: 1;
 		min-width: 0;
 		overflow-wrap: anywhere;
-	}
-
-	.admin :global(.muted) {
-		color: var(--fg-subtle);
-		font-size: var(--text-sm);
-	}
-
-	.admin :global(.empty) {
-		margin: 0;
-		color: var(--fg-subtle);
-		font-size: var(--text-sm);
 	}
 </style>

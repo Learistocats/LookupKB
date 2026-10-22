@@ -1,13 +1,12 @@
 <!--
-  MarkdownEditor — CodeMirror 6 editor with Obsidian-like live preview (LOO-12,
-  AC-3.1/3.2/3.6). All editor logic lives in $lib/editor/* so it is unit-tested
-  headlessly; this component is thin glue (the TagInput.svelte convention).
+  MarkdownEditor — CodeMirror 6 editor with Obsidian-like live preview. Editor
+  logic lives in $lib/editor/* (unit-tested headlessly); this is thin glue.
 
   Progressive enhancement: SSR renders a plain <textarea name={name}> that is both
-  the form field the save action reads AND the no-JS fallback. On mount (client only)
-  CodeMirror is created and the textarea is visually hidden; `value` stays two-way
-  bound so the form always submits the current source. Preview is client-side and
-  author-only — only raw source_md is ever persisted (never preview HTML).
+  the form field the save action reads and the no-JS fallback. On mount CodeMirror
+  is created and the textarea visually hidden; `value` stays two-way bound so the
+  form always submits the current source. Preview is client-side and author-only;
+  only raw source_md is ever persisted.
 -->
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
