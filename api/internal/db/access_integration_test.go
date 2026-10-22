@@ -192,7 +192,7 @@ func TestMeiliNotInSemantics(t *testing.T) {
 	require.Equal(t, int64(1), res.Facets["tags"]["b"])
 }
 
-// TestProtectedTagsEndToEnd is the LOO-33/LOO-39 matrix through the real HTTP
+// TestProtectedTagsEndToEnd is the matrix through the real HTTP
 // server, Postgres, the outbox worker and Meilisearch.
 func TestProtectedTagsEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

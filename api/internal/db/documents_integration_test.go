@@ -15,7 +15,7 @@ import (
 	appdb "github.com/Learistocats/LookupKB/api/internal/db"
 )
 
-// TestDraftRoundTrip proves the walking-skeleton persistence path (LOO-11):
+// TestDraftRoundTrip proves the walking-skeleton persistence path:
 // CreateDraft → SaveDraft → GetOwnedDocument round-trips through Postgres, the save is
 // scoped to the owner, and a different author cannot read the draft.
 func TestDraftRoundTrip(t *testing.T) {
@@ -39,7 +39,7 @@ func TestDraftRoundTrip(t *testing.T) {
 	other, err := q.CreateUser(ctx, dbgen.CreateUserParams{Email: "other-sub@example.com", PasswordHash: "x"})
 	require.NoError(t, err)
 
-	// --- create: a bare draft with no metadata (AC-2.1) ---
+	// --- create: a bare draft with no metadata ---
 	created, err := q.CreateDraft(ctx, dbgen.CreateDraftParams{
 		Slug:     "draft-roundtrip",
 		AuthorID: author.ID,
@@ -49,7 +49,7 @@ func TestDraftRoundTrip(t *testing.T) {
 	require.Nil(t, created.Title, "no metadata required to create")
 	require.Nil(t, created.SourceMd)
 
-	// --- save: overwrite the working copy in place (AC-2.2) ---
+	// --- save: overwrite the working copy in place ---
 	title := "My Draft"
 	body := "# Hello\n\nsome markdown"
 	saved, err := q.SaveDraft(ctx, dbgen.SaveDraftParams{
@@ -69,7 +69,7 @@ func TestDraftRoundTrip(t *testing.T) {
 	require.Equal(t, body, *got.SourceMd)
 	require.Equal(t, title, *got.Title)
 
-	// --- ownership: a different author sees no row on read or save (AC-2.3) ---
+	// --- ownership: a different author sees no row on read or save ---
 	_, err = q.GetOwnedDocument(ctx, dbgen.GetOwnedDocumentParams{ID: created.ID, AuthorID: other.ID})
 	require.True(t, errors.Is(err, pgx.ErrNoRows), "another author must not read the draft")
 
@@ -86,14 +86,14 @@ func TestDraftRoundTrip(t *testing.T) {
 	require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM documents").Scan(&count))
 	require.Equal(t, 1, count)
 
-	// AC-2.4 / T-2.3: a draft save must NEVER enqueue a search-index write. Indexing
+	// a draft save must NEVER enqueue a search-index write. Indexing
 	// is publish-only (05-search-and-indexing.md §4) — there is no draft-save outbox
 	// path at all, so after create + save the outbox is still empty.
 	var outbox int
 	require.NoError(t, pool.QueryRow(ctx, "SELECT count(*) FROM index_outbox").Scan(&outbox))
 	require.Zero(t, outbox, "drafts must never enqueue an index_outbox row")
 
-	// AC-2.5: the workspace list returns the author's own draft, and never another
+	// the workspace list returns the author's own draft, and never another
 	// author's — the `other` user's list is empty even though a draft exists.
 	mine, err := q.ListDrafts(ctx, author.ID)
 	require.NoError(t, err)

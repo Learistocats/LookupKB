@@ -61,7 +61,7 @@ func main() {
 		os.Exit(migrate(cfg, version))
 	}
 
-	// `api admin grant|revoke <email>` bootstraps the super-admin role (LOO-56):
+	// `api admin grant|revoke <email>` bootstraps the super-admin role:
 	// the first admin cannot be appointed through the API, and the shell-less
 	// image cannot run psql, so the binary does it.
 	if len(os.Args) > 1 && os.Args[1] == "admin" {
@@ -272,8 +272,7 @@ func run(cfg config.Config, version string) error {
 }
 
 // registerDependencyChecks wires the Meilisearch /readyz probe when its URL is
-// configured. Kroki and Garage are provisioned but unused, so they do not gate
-// readiness. The probe is bounded by cfg.ReadinessTimeout and cached for
+// configured. The probe is bounded by cfg.ReadinessTimeout and cached for
 // cfg.ReadinessCacheTTL.
 func registerDependencyChecks(cfg config.Config, srv *server.Server, log *slog.Logger) {
 	url := cfg.MeiliHealthURL()

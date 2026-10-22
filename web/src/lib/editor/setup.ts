@@ -1,4 +1,4 @@
-// Assembles the full CodeMirror 6 extension set for the entry editor (LOO-12).
+// Assembles the full CodeMirror 6 extension set for the entry editor.
 // Imported dynamically (client-only) by MarkdownEditor.svelte so CodeMirror lands in
 // its own chunk and never runs during SSR.
 import { EditorView, keymap, placeholder } from '@codemirror/view';
@@ -22,7 +22,7 @@ export interface EditorOptions {
 
 // createEditorExtensions builds the extension list. GFM (tables, task lists,
 // strikethrough, autolinks) comes from markdownLanguage; `codeLanguages: languages`
-// lazily loads per-language grammars for fenced-code highlighting (AC-3.2).
+// lazily loads per-language grammars for fenced-code highlighting.
 export function createEditorExtensions(opts: EditorOptions): Extension[] {
 	return [
 		markdown({ base: markdownLanguage, codeLanguages: languages }),

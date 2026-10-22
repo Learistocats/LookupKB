@@ -28,7 +28,7 @@ function sliceMark(doc: string, d: PreviewDecoration) {
 	return 'from' in d && 'to' in d ? doc.slice(d.from, d.to) : '';
 }
 
-describe('computePreviewDecorations — inline formatting (AC-3.1)', () => {
+describe('computePreviewDecorations — inline formatting', () => {
 	it('styles a heading and hides its "# " marker', () => {
 		const doc = pad('# Title');
 		const ds = decos(doc);

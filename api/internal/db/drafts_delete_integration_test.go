@@ -34,7 +34,7 @@ func publishDoc(t *testing.T, ctx context.Context, pool *pgxpool.Pool, author, d
 	require.Empty(t, fieldErrs)
 }
 
-// TestDeleteDraft covers LOO-58 end-to-end through the real drafts service: only
+// TestDeleteDraft covers delete end-to-end through the real drafts service: only
 // the owner's draft/unpublished rows go; missing, foreign and published ids are
 // the same ErrNotFound and leave everything untouched.
 func TestDeleteDraft(t *testing.T) {

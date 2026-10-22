@@ -1,4 +1,4 @@
-// Markdown formatting commands + keymap for the editor (LOO-12, AC-3.6).
+// Markdown formatting commands + keymap for the editor.
 //
 // The wrap/link logic is pure (operates on EditorState, returns a TransactionSpec)
 // so it is unit-tested headlessly; the exported Commands are thin view.dispatch

@@ -213,7 +213,7 @@ func TestSaveDraft_PersistsBodyScopedToCaller(t *testing.T) {
 	require.Equal(t, "# hello", *store.saveArg.SourceMd)
 }
 
-// AC-2.2: an empty/partial metadata save must succeed with no validation error.
+// an empty/partial metadata save must succeed with no validation error.
 func TestSaveDraft_EmptyBodySucceeds(t *testing.T) {
 	id := uuid.New()
 	store := &fakeDocStore{saveDoc: draftDoc(id, "")}
@@ -244,7 +244,7 @@ func TestGetDraft_ReturnsOwnDraft(t *testing.T) {
 	require.Equal(t, "# persisted", *got.SourceMd)
 }
 
-// AC-2.5: the workspace list is owner-scoped — the handler must pass the caller's
+// the workspace list is owner-scoped — the handler must pass the caller's
 // internal id as the author filter, and it returns the store's rows projected to
 // the light list shape (title-or-null + updated time; never source_md).
 func TestListDrafts_ScopedToCaller(t *testing.T) {
@@ -274,7 +274,7 @@ func TestListDrafts_ScopedToCaller(t *testing.T) {
 }
 
 // An empty workspace returns a JSON array ([]), never null, so the client renders
-// uniformly (AC-2.5).
+// uniformly.
 func TestListDrafts_EmptyReturnsArray(t *testing.T) {
 	store := &fakeDocStore{listRows: nil}
 	s := newDraftServer(t, store)

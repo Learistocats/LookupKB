@@ -74,7 +74,7 @@ func TestSearch_EngineDownIs503(t *testing.T) {
 	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 }
 
-// LOO-34: allowlisted client filters and facets are parsed and forwarded; the
+// allowlisted client filters and facets are parsed and forwarded; the
 // caller identity still comes only from the token (a client author_id is a
 // narrowing filter, never the access identity).
 func TestSearch_ForwardsFiltersAndFacets(t *testing.T) {
@@ -98,7 +98,7 @@ func TestSearch_ForwardsFiltersAndFacets(t *testing.T) {
 	require.Contains(t, got, "facets")
 }
 
-// Without ?facets the response keeps its pre-LOO-34 shape (no facets key).
+// Without ?facets the response keeps its original shape (no facets key).
 func TestSearch_NoFacetsKeyByDefault(t *testing.T) {
 	s := newSearchServer(t, &fakeSearch{res: search.Result{Hits: []search.Hit{}}})
 	resp := doReq(t, s, http.MethodGet, "/api/search?q=x", "")

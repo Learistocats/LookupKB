@@ -32,7 +32,7 @@ type Config struct {
 
 	// DatabaseURL is the pgx connection string the runtime uses, connecting as
 	// the least-privilege application role (DML only). Empty disables the pool
-	// so the skeleton/tests boot without a database.
+	// so tests boot without a database.
 	DatabaseURL string `env:"LOOKUPKB_DATABASE_URL"`
 
 	// MigrateDatabaseURL is the connection string used by `api migrate`,
@@ -49,7 +49,7 @@ type Config struct {
 	DBConnectTimeout  time.Duration `env:"LOOKUPKB_DB_CONNECT_TIMEOUT" envDefault:"5s"`
 
 	// AuthSecret is the HS256 secret the API signs and verifies its own access
-	// tokens with (≥32 bytes). Empty disables authentication so the skeleton/tests
+	// tokens with (≥32 bytes). Empty disables authentication so tests
 	// boot without it — no protected routes are registered (mirrors the
 	// empty-DatabaseURL behaviour).
 	AuthSecret string `env:"LOOKUPKB_AUTH_SECRET"`

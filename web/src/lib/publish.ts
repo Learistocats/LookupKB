@@ -5,7 +5,7 @@
 // unit-testable and the dialog stays presentational.
 //
 // Client-side hints (validateTags, length checks) are UX only; the SERVER is always
-// authoritative and re-validates everything (06-security.md §6).
+// authoritative and re-validates everything.
 
 /** A single per-field validation error, matching the Go handler's 422 body. */
 export interface FieldError {

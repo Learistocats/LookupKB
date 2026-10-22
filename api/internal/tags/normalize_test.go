@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestNormalize covers T-6.2: arbitrary author input maps to a canonical
+// TestNormalize covers arbitrary author input maps to a canonical
 // lowercase-kebab slug across mixed case, whitespace, unicode and punctuation.
 func TestNormalize(t *testing.T) {
 	cases := map[string]string{
@@ -49,7 +49,7 @@ func TestValidate_Normalizes(t *testing.T) {
 	require.Equal(t, []string{"my-tag", "second"}, got, "case-variant duplicate collapses")
 }
 
-// TestValidate_CountBounds covers AC-6.3: fewer than min or more than max tags is
+// TestValidate_CountBounds covers fewer than min or more than max tags is
 // rejected with a clear violation.
 func TestValidate_CountBounds(t *testing.T) {
 	limits := Limits{MinTags: 1, MaxTags: 3, MinLen: 2, MaxLen: 32}

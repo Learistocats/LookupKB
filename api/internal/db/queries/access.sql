@@ -1,4 +1,4 @@
--- Protected-tag access policy (LOO-33, 03-data-model.md §2). A tag is *protected*
+-- Protected-tag access policy. A tag is *protected*
 -- iff at least one group_tag_grants row references it; a caller is *granted* a
 -- protected tag iff they belong to a group that grants it. This file is the ONE
 -- place the denied set is defined in SQL; internal/access turns it into the read /

@@ -1,4 +1,4 @@
-// Obsidian-style Markdown live preview for CodeMirror 6 (LOO-12, AC-3.1).
+// Obsidian-style Markdown live preview for CodeMirror 6.
 //
 // The decoration *computation* is a pure function over EditorState
 // (computePreviewDecorations) that returns plain descriptors, so it is unit-tested
@@ -10,8 +10,8 @@
 // any line that intersects the selection, where the raw markup is revealed so the
 // author can edit it (Obsidian's active-line behaviour).
 //
-// This module is the single, isolated extension point M4 grows for diagram / math /
-// SMILES block widgets — add new descriptor kinds here, not in the core wiring.
+// This module is the single extension point for block widgets (diagram, math, …) —
+// add new descriptor kinds here, not in the core wiring.
 import type { EditorState } from '@codemirror/state';
 import {
 	Decoration,

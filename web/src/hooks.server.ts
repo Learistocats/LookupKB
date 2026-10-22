@@ -1,5 +1,5 @@
 // The auth gate. On every request this resolves the encrypted session cookie and
-// redirects unauthenticated users to /login (AC-1.1). There is no refresh: once
+// redirects unauthenticated users to /login. There is no refresh: once
 // the API token expires the user signs in again. Auth is skipped entirely when no
 // session secret is configured, so `pnpm dev` works without a backend (mirrors
 // the API). Also sets the baseline security headers the edge proxy used to add.

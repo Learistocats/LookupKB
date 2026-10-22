@@ -199,7 +199,7 @@ func v1SearchSlugs(t *testing.T, h *apiHarness, authz, q string) []string {
 	return out
 }
 
-// TestPublicReadAPI is the LOO-38 matrix: PAT and session both work; protected
+// TestPublicReadAPI is the matrix: PAT and session both work; protected
 // tags hide an entry from a PAT by slug (identical 404), list and search; the
 // published Markdown is the published source, not a later draft edit; drafts
 // never appear; a revoked PAT is 401.

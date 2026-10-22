@@ -101,7 +101,7 @@ func TestListTags_RequiresAuth(t *testing.T) {
 	require.Equal(t, 401, resp.StatusCode)
 }
 
-// LOO-33: the store gets the verified caller (to hide protected tags they lack)
+// the store gets the verified caller (to hide protected tags they lack)
 // and each suggestion carries the protected flag for the publish dialog.
 func TestListTags_ForwardsCallerAndProtectedFlag(t *testing.T) {
 	store := &fakeTagStore{rows: []dbgen.SearchTagsRow{

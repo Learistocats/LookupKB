@@ -38,7 +38,7 @@ func publishedRow(authorID uuid.UUID) dbgen.GetPublishedBySlugRow {
 	}
 }
 
-// AC-8.1/8.5: a public published doc returns its cached HTML plus the display
+// a public published doc returns its cached HTML plus the display
 // metadata (author, published date, tags). The handler passes the slug
 // through unchanged and never exposes source_md or author_id.
 func TestReadDocument_PublicReturnsRenderedHTMLAndMetadata(t *testing.T) {
@@ -106,7 +106,7 @@ func TestReadDocument_UnpublishedSlugIs404(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
-// AC-8.4 / LOO-33: an entry carrying a protected tag the caller is not granted is
+// an entry carrying a protected tag the caller is not granted is
 // denied with the SAME 404 body as a missing doc — no title/existence leak.
 func TestReadDocument_ProtectedTagNotGrantedIs404(t *testing.T) {
 	denied := &fakeDocStore{getBySlugRow: publishedRow(uuid.New()), deniedSlugs: []string{"kubernetes"}}

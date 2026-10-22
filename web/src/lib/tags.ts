@@ -1,6 +1,6 @@
-// Tag helpers for the authoring UI (F6). Normalization and validation mirror the
+// Tag helpers for the authoring UI. Normalization and validation mirror the
 // Go server rules (internal/tags) for immediate client feedback, but the server is
-// always authoritative — never trust these counts at publish (06-security.md §6).
+// always authoritative — never trust these counts at publish.
 // Logic lives here (not inline in the component) so it is unit-testable and the
 // component stays thin.
 
@@ -11,7 +11,7 @@ export interface TagLimits {
 	maxLen: number;
 }
 
-/** defaultTagLimits mirror the server DefaultLimits (00-overview.md §6). */
+/** defaultTagLimits mirror the server DefaultLimits. */
 export const defaultTagLimits: TagLimits = { minTags: 1, maxTags: 8, minLen: 2, maxLen: 32 };
 
 /**

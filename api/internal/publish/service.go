@@ -135,7 +135,7 @@ func (s *Service) Publish(ctx context.Context, in Input) (*Result, []FieldError,
 		Title:        &title,
 		Description:  &description,
 		RenderedHtml: &html,
-		// The exact source rendered above, decoupled from later working-copy saves.
+		// The exact source rendered above, decoupled from subsequent working-copy saves.
 		PublishedMd: &source,
 		Slug:        slug,
 		ID:          in.DocID,

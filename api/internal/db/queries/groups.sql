@@ -1,4 +1,4 @@
--- Local groups (03-data-model.md §1 `groups`, `group_members`). Membership is
+-- Local groups. Membership is
 -- authoritative here; access decisions read it in SQL (access.sql).
 
 -- name: ListUserGroupIDs :many
