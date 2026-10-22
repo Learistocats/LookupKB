@@ -1,15 +1,11 @@
 <!--
-  PublishDialog — the F5 publish confirm step (AC-5.1/5.2). The repo's first modal.
-  It is the SECOND click of a genuinely two-step flow: the editor's "Publish" button
-  opens this dialog showing the metadata about to be published (title, description,
-  tags, who can see it — derived from protected tags, LOO-33); the author reviews/edits it and must click "Confirm publish"
-  — a distinct action — before the document changes state.
+  PublishDialog — the deliberate second click of publishing: the editor's "Publish"
+  button opens it showing the metadata about to go live (title, description, tags,
+  who can see it); the author edits it and confirms.
 
-  Presentational: it binds the metadata and renders any server per-field errors
-  inline; the page owns the publish request (see $lib/publish). On a 422 the page
-  feeds `fieldErrors` back in and keeps the dialog open, so the document stays a
-  draft and the editor content is preserved. The modal chrome (native <dialog>,
-  header, Cancel/Confirm) is the shared ConfirmDialog; this adds the metadata form.
+  Presentational: it binds the metadata and renders server per-field errors inline;
+  the page owns the publish request (see $lib/publish). On a 422 the page feeds
+  `fieldErrors` back in and keeps the dialog open. Modal chrome is ConfirmDialog.
 -->
 <script lang="ts">
 	import ConfirmDialog from './ConfirmDialog.svelte';
@@ -38,15 +34,13 @@
 		onCancel: () => void;
 	} = $props();
 
-	// Which selected tags are protected (LOO-33), reported by TagInput.
 	let protectedTags = $state<string[]>([]);
 
-	// Per-field lookup for inline errors beside the offending input.
 	function errorsFor(field: string): string[] {
 		return fieldErrors.filter((e) => e.field === field).map((e) => e.message);
 	}
 
-	// Errors not tied to an editable field (e.g. the document being too large).
+	// Errors not tied to an editable field (e.g. document too large).
 	let otherErrors = $derived(
 		fieldErrors.filter((e) => !['title', 'description', 'tags'].includes(e.field))
 	);

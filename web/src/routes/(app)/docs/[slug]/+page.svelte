@@ -13,7 +13,7 @@
 	{#if doc.description}<meta name="description" content={doc.description} />{/if}
 </svelte:head>
 
-<article class="reader">
+<article class="reader page-column">
 	<header>
 		<div class="top">
 			<a class="back" href="/">
@@ -30,7 +30,6 @@
 		{#if doc.description}
 			<p class="lede">{doc.description}</p>
 		{/if}
-		<!-- Minimal metadata (AC-8.5): author, published date, tags. -->
 		<div class="byline">
 			{#if doc.author_display_name}
 				<span>{doc.author_display_name}</span>
@@ -48,11 +47,9 @@
 	</header>
 
 	<!--
-		{@html} is SAFE here and ONLY here: `rendered_html` is produced exclusively by
-		the server publish pipeline (goldmark → bluemonday strict allowlist, see
-		api/internal/render), sanitized once at publish and cached. Do NOT add a
-		client-side sanitize pass, and do NOT reuse {@html} for content that did not
-		come through that pipeline.
+		{@html} is safe here only because `rendered_html` comes exclusively from the
+		server publish pipeline (goldmark → bluemonday allowlist, api/internal/render).
+		Don't add a client-side sanitize pass or reuse {@html} for other content.
 	-->
 	<!-- eslint-disable-next-line svelte/no-at-html-tags -- server-sanitized publish output; see the note above -->
 	<div class="prose doc-content">{@html doc.rendered_html}</div>
@@ -60,8 +57,7 @@
 
 <style>
 	.reader {
-		max-width: 42rem;
-		margin: 0 auto;
+		--column: 42rem;
 		padding: 2rem 1.5rem 6rem;
 	}
 

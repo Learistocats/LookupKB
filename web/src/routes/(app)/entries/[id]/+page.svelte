@@ -5,43 +5,45 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import MarkdownEditor from '$lib/components/MarkdownEditor.svelte';
 	import PublishDialog from '$lib/components/PublishDialog.svelte';
-	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-	import { createAutosave, type Autosave, type AutosaveState } from '$lib/autosave';
+	import DeleteEntryDialog from '$lib/components/DeleteEntryDialog.svelte';
+	import { createAutosave, saveIndicator, type Autosave, type AutosaveState } from '$lib/autosave';
+	import { now } from '$lib/time';
 	import { publishDraft, unpublishDraft, type FieldError } from '$lib/publish';
 	import { isBlankEntry, type WorkingCopy } from '$lib/entries';
-	import { canDeleteEntry, deleteEntry, DELETE_CONFIRM_MESSAGE } from '$lib/drafts';
+	import { canDeleteEntry } from '$lib/drafts';
 	import type { PageData, ActionData } from './$types';
 
 	let { data, form }: { data: PageData; form: ActionData } = $props();
 
-	// Seed the editable fields once from the working copy loaded from Postgres.
-	// A new entry (`/entries/new`, draft === null) has no row yet: `id` stays null
-	// until its first non-blank save creates it, so an untouched entry never exists.
+	// Seeded once: the layout remounts this page per entry. A new entry
+	// (`/entries/new`) has no row yet; `id` stays null until its first non-blank save.
 	// svelte-ignore state_referenced_locally
-	let id = $state<string | null>(data.draft?.id ?? null);
-	// svelte-ignore state_referenced_locally
-	let title = $state(data.draft?.title ?? '');
-	// svelte-ignore state_referenced_locally
-	let description = $state(data.draft?.description ?? '');
-	// svelte-ignore state_referenced_locally
-	let source = $state(data.draft?.source_md ?? '');
-	// svelte-ignore state_referenced_locally
-	let status = $state(data.draft?.status ?? 'draft');
-	// svelte-ignore state_referenced_locally
-	let slug = $state(data.draft?.slug ?? '');
-	// Tags attached at the last publish prefill the (re-)publish dialog.
-	// svelte-ignore state_referenced_locally
-	let tags = $state<string[]>(data.draft?.tags ?? []);
+	const seed = data.draft;
+	const entry = $state({
+		id: seed?.id ?? null,
+		title: seed?.title ?? '',
+		description: seed?.description ?? '',
+		source: seed?.source_md ?? '',
+		status: seed?.status ?? 'draft',
+		slug: seed?.slug ?? '',
+		tags: seed?.tags ?? []
+	} as {
+		id: string | null;
+		title: string;
+		description: string;
+		source: string;
+		status: string;
+		slug: string;
+		tags: string[];
+	});
 
-	// Publish confirm flow (F5): the button opens the dialog, "Publish"/"Update"
-	// inside it is the deliberate second click. The server re-validates everything.
 	let publishOpen = $state(false);
 	let publishing = $state(false);
 	let fieldErrors = $state<FieldError[]>([]);
 	let publishError = $state('');
 	let justPublished = $state(false);
 
-	const isPublished = $derived(status === 'published');
+	const isPublished = $derived(entry.status === 'published');
 
 	function openPublish() {
 		fieldErrors = [];
@@ -55,14 +57,18 @@
 		try {
 			// Publish renders the server-held working copy, so flush pending edits first.
 			await autosaver?.flush();
-			if (!id) {
+			if (!entry.id) {
 				publishError = 'Write something before publishing.';
 				return;
 			}
-			const outcome = await publishDraft(id, { title, description, tags });
+			const outcome = await publishDraft(entry.id, {
+				title: entry.title,
+				description: entry.description,
+				tags: entry.tags
+			});
 			if (outcome.ok) {
-				status = outcome.doc.status;
-				slug = outcome.doc.slug;
+				entry.status = outcome.doc.status;
+				entry.slug = outcome.doc.slug;
 				fieldErrors = [];
 				publishOpen = false;
 				justPublished = true;
@@ -81,9 +87,8 @@
 		publishing = true;
 		publishError = '';
 		try {
-			if (!id) return;
-			const doc = await unpublishDraft(id);
-			status = doc.status;
+			if (!entry.id) return;
+			entry.status = (await unpublishDraft(entry.id)).status;
 			justPublished = false;
 			void invalidate('app:entries');
 		} catch (e) {
@@ -93,90 +98,59 @@
 		}
 	}
 
-	// Delete (LOO-58): offered for a persisted draft/unpublished entry, behind a
-	// confirm dialog. Once deleted, autosave is torn down so neither a pending save
-	// nor the leave-flush can hit the gone row, then we leave the editor.
 	let deleteOpen = $state(false);
-	let deleting = $state(false);
-	let deleteError = $state('');
 	let deleted = false;
+	const deletable = $derived(canDeleteEntry(entry.id, entry.status));
 
-	const deletable = $derived(canDeleteEntry(id, status));
-
-	function openDelete() {
-		deleteError = '';
-		deleteOpen = true;
+	// Tear autosave down first so neither a pending save nor the leave-flush hits the gone row.
+	async function onDeleted() {
+		deleted = true;
+		autosaver?.destroy();
+		await goto('/');
 	}
 
-	async function confirmDelete() {
-		if (!id) return;
-		deleting = true;
-		deleteError = '';
-		try {
-			await deleteEntry(id);
-			deleted = true;
-			autosaver?.destroy();
-			deleteOpen = false;
-			void invalidate('app:entries');
-			await goto('/');
-		} catch (e) {
-			deleteError = e instanceof Error ? e.message : 'Deleting failed. Try again.';
-		} finally {
-			deleting = false;
-		}
-	}
-
-	type Snapshot = WorkingCopy;
-
-	// Client autosave (AC-2.6). The no-JS <form> still works on its own; once
-	// hydrated, edits stream into the scheduler and the indicator follows it.
 	let save = $state<AutosaveState>({ status: 'idle', lastSavedAt: null });
-	let autosaver: Autosave<Snapshot> | undefined;
+	let autosaver: Autosave<WorkingCopy> | undefined;
 	let hydrated = $state(false);
 	let armed = false; // skip the first post-hydration effect run (the seed, not an edit)
-	let nowTick = $state(Date.now());
+	let savedTitle = seed?.title ?? null; // the history panel lists titles
 
-	function snapshot(): Snapshot {
+	function snapshot(): WorkingCopy {
 		return {
-			title: title.length ? title : null,
-			description: description.length ? description : null,
-			source_md: source.length ? source : null
+			title: entry.title.length ? entry.title : null,
+			description: entry.description.length ? entry.description : null,
+			source_md: entry.source.length ? entry.source : null
 		};
 	}
 
-	// Persist via the same-origin proxy (attaches the bearer server-side). Any
-	// status saves: on a published entry this edits the working copy, and readers
-	// keep seeing the published version until "Update". Throwing on non-OK drives
-	// the scheduler's error state — a false "saved" would silently lose data.
-	//
-	// A new entry is created by its first non-blank save (the proxy creates the row
-	// and returns it); until then there is nothing to persist.
-	async function persist(snap: Snapshot): Promise<void> {
-		if (!id && isBlankEntry(snap)) return;
-		const res = await fetch(`/entries/${id ?? 'new'}/save`, {
+	// Saves via the same-origin proxy (which attaches the bearer). Any status saves:
+	// on a published entry this edits the working copy until "Update". Throwing on
+	// non-OK drives the scheduler's error state; a false "saved" would lose data.
+	async function persist(snap: WorkingCopy): Promise<void> {
+		if (!entry.id && isBlankEntry(snap)) return;
+		const res = await fetch(`/entries/${entry.id ?? 'new'}/save`, {
 			method: 'PUT',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify(snap)
 		});
 		if (!res.ok) throw new Error(`save failed (${res.status})`);
-		if (!id) {
-			id = ((await res.json()) as { id: string }).id;
-			// Swap the URL to the real entry without reloading the editor (a reload
-			// or a shared link then opens the persisted draft).
-			replaceState(`/entries/${id}`, {});
+		const created = !entry.id;
+		if (created) {
+			entry.id = ((await res.json()) as { id: string }).id;
+			// Swap the URL without reloading the editor.
+			replaceState(`/entries/${entry.id}`, {});
 		}
 		justPublished = false;
-		void invalidate('app:entries');
+		if (created || snap.title !== savedTitle) void invalidate('app:entries');
+		savedTitle = snap.title;
 	}
 
 	onMount(() => {
-		autosaver = createAutosave<Snapshot>({ save: persist, onState: (s) => (save = s) });
+		autosaver = createAutosave<WorkingCopy>({ save: persist, onState: (s) => (save = s) });
 		hydrated = true;
-		const tick = setInterval(() => (nowTick = Date.now()), 1000);
 		const onUnload = () => void autosaver?.flush();
 		window.addEventListener('beforeunload', onUnload);
 		return () => {
-			clearInterval(tick);
 			window.removeEventListener('beforeunload', onUnload);
 			autosaver?.destroy();
 		};
@@ -195,8 +169,8 @@
 	});
 
 	// Never lose the last keystrokes on a route change. With edits pending, hold the
-	// navigation until the save lands, then continue: navigating while the save is in
-	// flight would let its panel refresh (invalidate) cancel the navigation.
+	// navigation until the save lands: navigating mid-save would let its panel refresh
+	// (invalidate) cancel the navigation.
 	beforeNavigate((nav) => {
 		if (!autosaver || deleted) return;
 		const pending = save.status === 'dirty' || save.status === 'saving';
@@ -212,46 +186,21 @@
 		});
 	});
 
-	function relativeSaved(at: number, now: number): string {
-		const s = Math.max(0, Math.floor((now - at) / 1000));
-		if (s < 3) return 'just now';
-		if (s < 60) return `${s}s ago`;
-		return `${Math.floor(s / 60)}m ago`;
-	}
-
-	let indicator = $derived.by(() => {
-		if (!id && save.status !== 'saving' && save.status !== 'error') {
-			return { text: 'Not saved until you write something', cls: 'idle' };
-		}
-		switch (save.status) {
-			case 'saving':
-				return { text: 'Saving…', cls: 'saving' };
-			case 'dirty':
-				return { text: 'Unsaved changes', cls: 'dirty' };
-			case 'error':
-				return { text: 'Couldn’t save — retrying', cls: 'error' };
-			case 'saved':
-				return { text: `Saved ${relativeSaved(save.lastSavedAt ?? nowTick, nowTick)}`, cls: 'ok' };
-			default:
-				return save.lastSavedAt
-					? { text: `Saved ${relativeSaved(save.lastSavedAt, nowTick)}`, cls: 'ok' }
-					: { text: 'All changes saved', cls: 'idle' };
-		}
-	});
+	const indicator = $derived(saveIndicator(save, !!entry.id, now()));
 
 	const statusChip = $derived(
-		!id
+		!entry.id
 			? { text: 'New', cls: '' }
-			: status === 'draft'
+			: entry.status === 'draft'
 				? { text: 'Draft', cls: 'chip-draft' }
-				: status === 'published'
+				: entry.status === 'published'
 					? { text: 'Published', cls: 'chip-ok' }
 					: { text: 'Unpublished', cls: '' }
 	);
 </script>
 
 <svelte:head>
-	<title>{title || 'Untitled'} · LookupKB</title>
+	<title>{entry.title || 'Untitled'} · LookupKB</title>
 </svelte:head>
 
 <header class="topbar">
@@ -276,14 +225,14 @@
 				<button
 					type="button"
 					class="btn btn-ghost btn-danger"
-					onclick={openDelete}
-					disabled={deleting || publishing}
+					onclick={() => (deleteOpen = true)}
+					disabled={publishing}
 				>
 					<Icon name="trash" size={16} /> Delete
 				</button>
 			{/if}
 			{#if isPublished}
-				<a class="btn btn-ghost" href={`/docs/${slug}`}>
+				<a class="btn btn-ghost" href={`/docs/${entry.slug}`}>
 					<Icon name="eye" size={16} /> View
 				</a>
 				<button
@@ -307,7 +256,7 @@
 </header>
 
 <form
-	class="page"
+	class="page page-column"
 	method="POST"
 	action="?/save"
 	use:enhance={({ cancel }) => {
@@ -327,7 +276,7 @@
 		id="title"
 		class="title"
 		name="title"
-		bind:value={title}
+		bind:value={entry.title}
 		placeholder="Untitled"
 		autocomplete="off"
 	/>
@@ -336,13 +285,13 @@
 		id="description"
 		class="description"
 		name="description"
-		bind:value={description}
+		bind:value={entry.description}
 		placeholder="Add a one-line description"
 		autocomplete="off"
 	/>
 
 	<MarkdownEditor
-		bind:value={source}
+		bind:value={entry.source}
 		name="source_md"
 		label="Content (Markdown)"
 		placeholder="Start writing in Markdown…"
@@ -358,29 +307,16 @@
 {#if hydrated}
 	<PublishDialog
 		bind:open={publishOpen}
-		bind:title
-		bind:description
-		bind:tags
+		bind:title={entry.title}
+		bind:description={entry.description}
+		bind:tags={entry.tags}
 		{fieldErrors}
 		busy={publishing}
 		confirmLabel={isPublished ? 'Update' : 'Publish'}
 		onConfirm={confirmPublish}
 		onCancel={() => (publishOpen = false)}
 	/>
-	<ConfirmDialog
-		bind:open={deleteOpen}
-		title="Delete draft"
-		message={DELETE_CONFIRM_MESSAGE}
-		confirmLabel="Delete"
-		danger
-		busy={deleting}
-		onConfirm={confirmDelete}
-		onCancel={() => (deleteOpen = false)}
-	>
-		{#if deleteError}
-			<p class="error-text">{deleteError}</p>
-		{/if}
-	</ConfirmDialog>
+	<DeleteEntryDialog bind:open={deleteOpen} id={entry.id} {onDeleted} />
 {/if}
 
 <style>
@@ -423,8 +359,6 @@
 	}
 
 	.page {
-		max-width: 46rem;
-		margin: 0 auto;
 		padding: 3rem 1.5rem 6rem;
 		display: grid;
 		gap: 0.25rem;

@@ -1,18 +1,17 @@
 <!--
-  Sidebar — the history panel: the caller's own entries, drafts pinned on top and
-  marked as such, then everything else by last edit. Collapsed by default and
-  toggled by the handle centered on the left edge (or ⌘/Ctrl + \). On narrow
-  screens it overlays the page with a scrim and closes after navigating.
-  Draft and unpublished items carry a delete action (LOO-58) behind a confirm.
+  Sidebar — the history panel: the caller's own entries, drafts pinned on top, then
+  everything else by last edit. Collapsed by default and toggled by the handle on the
+  left edge (or ⌘/Ctrl + \). On narrow screens it overlays the page with a scrim and
+  closes after navigating. Draft and unpublished items can be deleted behind a confirm.
 -->
 <script lang="ts">
 	import { page } from '$app/state';
-	import { afterNavigate, goto, invalidate } from '$app/navigation';
+	import { afterNavigate, goto } from '$app/navigation';
 	import Icon from './Icon.svelte';
-	import ConfirmDialog from './ConfirmDialog.svelte';
-	import { canDeleteEntry, deleteEntry, DELETE_CONFIRM_MESSAGE } from '$lib/drafts';
-	import { relativeTime } from '$lib/time';
-	import { applyTheme, nextTheme, type ThemePref } from '$lib/theme';
+	import DeleteEntryDialog from './DeleteEntryDialog.svelte';
+	import { canDeleteEntry } from '$lib/drafts';
+	import { now, relativeTime } from '$lib/time';
+	import { PANEL_COOKIE, applyTheme, nextTheme, setPrefCookie, type ThemePref } from '$lib/theme';
 	import type { EntrySummary } from '$lib/entries';
 
 	let {
@@ -29,6 +28,8 @@
 		open?: boolean;
 	} = $props();
 
+	const NARROW = '(max-width: 899px)';
+
 	const drafts = $derived(entries.filter((e) => e.status === 'draft'));
 	const others = $derived(entries.filter((e) => e.status !== 'draft'));
 
@@ -39,15 +40,9 @@
 	};
 	const themeIcon = { system: 'monitor', light: 'sun', dark: 'moon' } as const;
 
-	let now = $state(Date.now());
-	$effect(() => {
-		const t = setInterval(() => (now = Date.now()), 60_000);
-		return () => clearInterval(t);
-	});
-
 	function setOpen(v: boolean) {
 		open = v;
-		document.cookie = `lkb_panel=${v ? 1 : 0}; path=/; max-age=31536000; samesite=lax`;
+		setPrefCookie(PANEL_COOKIE, v ? 1 : 0);
 	}
 
 	function cycleTheme() {
@@ -64,77 +59,61 @@
 		return p === `/entries/${e.id}` || p === `/docs/${e.slug}`;
 	}
 
-	// Delete (LOO-58): the entry awaiting confirmation, if any.
 	let pendingDelete = $state<EntrySummary | null>(null);
 	let confirmOpen = $state(false);
-	let deleting = $state(false);
-	let deleteError = $state('');
 
 	function askDelete(e: EntrySummary) {
 		pendingDelete = e;
-		deleteError = '';
 		confirmOpen = true;
 	}
 
-	function cancelDelete() {
-		if (deleting) return;
-		confirmOpen = false;
+	async function onDeleted() {
+		const wasOpen = pendingDelete && isActive(pendingDelete);
 		pendingDelete = null;
-	}
-
-	async function confirmDelete() {
-		const target = pendingDelete;
-		if (!target) return;
-		deleting = true;
-		deleteError = '';
-		try {
-			await deleteEntry(target.id);
-			const wasOpen = isActive(target);
-			confirmOpen = false;
-			pendingDelete = null;
-			void invalidate('app:entries');
-			if (wasOpen) await goto('/');
-		} catch (err) {
-			deleteError = err instanceof Error ? err.message : 'Deleting failed. Try again.';
-		} finally {
-			deleting = false;
-		}
+		if (wasOpen) await goto('/');
 	}
 
 	function onKeydown(ev: KeyboardEvent) {
 		if ((ev.metaKey || ev.ctrlKey) && ev.key === '\\') {
 			ev.preventDefault();
 			setOpen(!open);
-		} else if (
-			ev.key === 'Escape' &&
-			open &&
-			!confirmOpen &&
-			window.matchMedia('(max-width: 899px)').matches
-		) {
+		} else if (ev.key === 'Escape' && open && !confirmOpen && window.matchMedia(NARROW).matches) {
 			setOpen(false);
 		}
 	}
 
 	// On small screens the panel covers the page, so close it once a link is followed.
 	afterNavigate(({ type }) => {
-		if (type !== 'enter' && window.matchMedia('(max-width: 899px)').matches) open = false;
+		if (type !== 'enter' && window.matchMedia(NARROW).matches) setOpen(false);
 	});
 </script>
 
 <svelte:window onkeydown={onKeydown} />
 
-{#snippet deleteButton(e: EntrySummary)}
-	{#if canDeleteEntry(e.id, e.status)}
-		<button
-			class="icon-btn item-delete"
-			type="button"
-			title="Delete"
-			aria-label={`Delete ${e.title || 'Untitled'}`}
-			onclick={() => askDelete(e)}
-		>
-			<Icon name="trash" size={15} />
-		</button>
-	{/if}
+{#snippet row(e: EntrySummary)}
+	<li>
+		<a href={href(e)} class:active={isActive(e)} aria-current={isActive(e) ? 'page' : undefined}>
+			<span class="title" class:untitled={!e.title}>{e.title || 'Untitled'}</span>
+			{#if e.status === 'draft'}
+				<span class="chip chip-draft">Draft</span>
+			{:else if e.status === 'unpublished'}
+				<span class="chip">Unpublished</span>
+			{:else}
+				<time class="when" datetime={e.updated_at}>{relativeTime(e.updated_at, now())}</time>
+			{/if}
+		</a>
+		{#if canDeleteEntry(e.id, e.status)}
+			<button
+				class="icon-btn item-delete"
+				type="button"
+				title="Delete"
+				aria-label={`Delete ${e.title || 'Untitled'}`}
+				onclick={() => askDelete(e)}
+			>
+				<Icon name="trash" size={15} />
+			</button>
+		{/if}
+	</li>
 {/snippet}
 
 {#if open}
@@ -147,7 +126,7 @@
 		<a class="wordmark" href="/">LookupKB</a>
 	</div>
 
-	<div class="new-form">
+	<div class="new-entry">
 		<a class="btn new" href="/entries/new">
 			<Icon name="plus" size={16} />
 			New entry
@@ -157,48 +136,23 @@
 	<nav class="lists">
 		{#if drafts.length > 0}
 			<section>
-				<h2>Drafts</h2>
+				<h2 class="eyebrow">Drafts</h2>
 				<ul>
 					{#each drafts as e (e.id)}
-						<li>
-							<a
-								href={href(e)}
-								class:active={isActive(e)}
-								aria-current={isActive(e) ? 'page' : undefined}
-							>
-								<span class="title" class:untitled={!e.title}>{e.title || 'Untitled'}</span>
-								<span class="chip chip-draft">Draft</span>
-							</a>
-							{@render deleteButton(e)}
-						</li>
+						{@render row(e)}
 					{/each}
 				</ul>
 			</section>
 		{/if}
 
 		<section>
-			<h2>Entries</h2>
+			<h2 class="eyebrow">Entries</h2>
 			{#if others.length === 0}
 				<p class="empty">Published entries you write show up here.</p>
 			{:else}
 				<ul>
 					{#each others as e (e.id)}
-						<li>
-							<a
-								href={href(e)}
-								class:active={isActive(e)}
-								aria-current={isActive(e) ? 'page' : undefined}
-							>
-								<span class="title" class:untitled={!e.title}>{e.title || 'Untitled'}</span>
-								{#if e.status === 'unpublished'}
-									<span class="chip">Unpublished</span>
-								{:else}
-									<time class="when" datetime={e.updated_at}>{relativeTime(e.updated_at, now)}</time
-									>
-								{/if}
-							</a>
-							{@render deleteButton(e)}
-						</li>
+						{@render row(e)}
 					{/each}
 				</ul>
 			{/if}
@@ -239,20 +193,7 @@
 	</div>
 </aside>
 
-<ConfirmDialog
-	bind:open={confirmOpen}
-	title="Delete draft"
-	message={DELETE_CONFIRM_MESSAGE}
-	confirmLabel="Delete"
-	danger
-	busy={deleting}
-	onConfirm={confirmDelete}
-	onCancel={cancelDelete}
->
-	{#if deleteError}
-		<p class="error-text">{deleteError}</p>
-	{/if}
-</ConfirmDialog>
+<DeleteEntryDialog bind:open={confirmOpen} id={pendingDelete?.id} {onDeleted} />
 
 <button
 	class="handle"
@@ -300,7 +241,7 @@
 		text-decoration: none;
 	}
 
-	.new-form {
+	.new-entry {
 		padding: 0.5rem 0.75rem 0.75rem;
 	}
 
@@ -324,11 +265,6 @@
 	h2 {
 		margin: 0 0 0.25rem;
 		padding: 0 0.5rem;
-		color: var(--fg-subtle);
-		font-size: var(--text-xs);
-		font-weight: 600;
-		letter-spacing: 0.06em;
-		text-transform: uppercase;
 	}
 
 	ul {
@@ -377,7 +313,7 @@
 		flex: none;
 	}
 
-	/* Per-item delete: sits right after the row's chip, revealed on hover/focus. */
+	/* Revealed on row hover/focus. */
 	.item-delete {
 		flex: none;
 		width: 1.75rem;
@@ -423,10 +359,7 @@
 	}
 
 	.empty {
-		margin: 0;
 		padding: 0 0.5rem;
-		color: var(--fg-subtle);
-		font-size: var(--text-sm);
 	}
 
 	.admin-link {

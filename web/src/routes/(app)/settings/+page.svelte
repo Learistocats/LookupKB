@@ -1,12 +1,11 @@
 <!--
-  Settings → API tokens (LOO-42). Create a Personal Access Token (name + optional
-  expiry), see its secret exactly once, list tokens by their non-secret prefix,
-  and revoke with an inline two-step confirm. Works without JS (plain form posts);
-  enhance keeps the page in place when JS is available.
+  Settings → API tokens. Create a Personal Access Token (name + optional expiry),
+  see its secret exactly once, list tokens by their non-secret prefix, and revoke
+  with an inline two-step confirm. Works without JS (plain form posts).
 -->
 <script lang="ts">
 	import { enhance } from '$app/forms';
-	import { relativeTime, longDate } from '$lib/time';
+	import { now, relativeTime, longDate } from '$lib/time';
 	import {
 		DEFAULT_EXPIRY,
 		EXPIRY_OPTIONS,
@@ -21,16 +20,10 @@
 	let confirming = $state<string | null>(null);
 	let copied = $state(false);
 	let dismissed = $state(false);
-	let now = $state(Date.now());
 
 	const created = $derived(form?.action === 'create' && !dismissed ? form.created : undefined);
 	const createError = $derived(form?.action === 'create' ? form.error : undefined);
 	const revokeError = $derived(form?.action === 'revoke' ? form.error : undefined);
-
-	$effect(() => {
-		const t = setInterval(() => (now = Date.now()), 60_000);
-		return () => clearInterval(t);
-	});
 
 	async function copy(token: string) {
 		try {
@@ -49,8 +42,8 @@
 	<title>Settings · LookupKB</title>
 </svelte:head>
 
-<div class="settings">
-	<h1>Settings</h1>
+<div class="settings page-column">
+	<h1 class="page-title">Settings</h1>
 
 	<section aria-labelledby="tokens-heading">
 		<h2 id="tokens-heading">API tokens</h2>
@@ -86,13 +79,12 @@
 			class="create"
 			method="POST"
 			action="?/create"
-			use:enhance={() => {
-				return async ({ update }) => {
+			use:enhance={() =>
+				async ({ update }) => {
 					dismissed = false;
 					copied = false;
 					await update({ reset: true });
-				};
-			}}
+				}}
 		>
 			<label class="field name">
 				<span class="field-label">Name</span>
@@ -127,9 +119,9 @@
 			{#if revokeError}
 				<p class="error-text" role="alert">{revokeError}</p>
 			{/if}
-			<ul class="tokens">
+			<ul class="rows tokens">
 				{#each data.tokens as t (t.id)}
-					{@const status = tokenStatus(t, now)}
+					{@const status = tokenStatus(t, now())}
 					<li class:inactive={status !== 'active'}>
 						<div class="meta">
 							<div class="title-row">
@@ -146,7 +138,7 @@
 									<dt>Last used</dt>
 									<dd>
 										{#if t.last_used_at}
-											<time datetime={t.last_used_at}>{relativeTime(t.last_used_at, now)}</time>
+											<time datetime={t.last_used_at}>{relativeTime(t.last_used_at, now())}</time>
 										{:else}
 											Never
 										{/if}
@@ -175,19 +167,18 @@
 								class="revoke"
 								method="POST"
 								action="?/revoke"
-								use:enhance={() => {
-									return async ({ update }) => {
+								use:enhance={() =>
+									async ({ update }) => {
 										confirming = null;
 										await update();
-									};
-								}}
+									}}
 							>
 								<input type="hidden" name="id" value={t.id} />
 								{#if confirming === t.id}
 									<button class="btn btn-ghost" type="button" onclick={() => (confirming = null)}
 										>Cancel</button
 									>
-									<button class="btn btn-danger confirm" type="submit">Confirm revoke</button>
+									<button class="btn btn-danger" type="submit">Confirm revoke</button>
 								{:else}
 									<button
 										class="btn btn-danger"
@@ -207,16 +198,11 @@
 
 <style>
 	.settings {
-		max-width: 46rem;
-		margin: 0 auto;
 		padding: 2.5rem 1.5rem 6rem;
 	}
 
 	h1 {
-		margin: 0 0 2rem;
-		font-size: var(--text-xl);
-		font-weight: 700;
-		letter-spacing: -0.02em;
+		margin-bottom: 2rem;
 	}
 
 	h2 {
@@ -289,31 +275,22 @@
 	}
 
 	.empty {
-		margin: 1.5rem 0 0;
-		color: var(--fg-subtle);
-		font-size: var(--text-sm);
+		margin-top: 1.5rem;
 	}
 
 	.tokens {
-		list-style: none;
-		margin: 1.5rem 0 0;
-		padding: 0;
+		margin-top: 1.5rem;
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
 		background: var(--surface);
 	}
 
 	.tokens li {
-		display: flex;
-		flex-wrap: wrap;
 		align-items: flex-start;
 		justify-content: space-between;
 		gap: 0.75rem;
 		padding: 0.9rem 1rem;
-	}
-
-	.tokens li + li {
-		border-top: 1px solid var(--border);
+		font-size: var(--text-base);
 	}
 
 	.tokens li.inactive .name,
@@ -368,10 +345,5 @@
 	.revoke {
 		display: flex;
 		gap: 0.4rem;
-	}
-
-	.confirm {
-		color: var(--danger);
-		border-color: var(--danger);
 	}
 </style>

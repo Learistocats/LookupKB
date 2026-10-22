@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createAutosave, type AutosaveState } from './autosave';
+import { createAutosave, saveIndicator, type AutosaveState } from './autosave';
 
 type Snap = { v: number };
 
@@ -104,5 +104,28 @@ describe('createAutosave', () => {
 		a.destroy();
 		await vi.advanceTimersByTimeAsync(10_000);
 		expect(saves).toHaveLength(0);
+	});
+});
+
+describe('saveIndicator', () => {
+	const now = Date.parse('2026-01-01T12:00:00Z');
+	const at = (status: AutosaveState['status'], lastSavedAt: number | null = null) =>
+		saveIndicator({ status, lastSavedAt }, true, now);
+
+	it('explains that an unsaved new entry is not persisted yet', () => {
+		expect(saveIndicator({ status: 'idle', lastSavedAt: null }, false, now).cls).toBe('idle');
+		expect(saveIndicator({ status: 'error', lastSavedAt: null }, false, now).cls).toBe('error');
+	});
+
+	it('maps in-flight states', () => {
+		expect(at('saving').text).toBe('Saving…');
+		expect(at('dirty').cls).toBe('dirty');
+		expect(at('error').cls).toBe('error');
+	});
+
+	it('shows how long ago the last save landed', () => {
+		expect(at('saved', now - 5_000).text).toBe('Saved just now');
+		expect(at('idle', now - 5 * 60_000).text).toBe('Saved 5m ago');
+		expect(at('idle').text).toBe('All changes saved');
 	});
 });

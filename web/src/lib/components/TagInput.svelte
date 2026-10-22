@@ -1,39 +1,20 @@
 <!--
-  TagInput — reusable tag entry with debounced autocomplete + inline validation
-  (F6, AC-6.1/6.3). The repo's first shared component. It is intentionally NOT
-  wired into a page yet: the publish confirm flow that hosts it is LOO-14. Bind
-  `tags` to collect the selected slugs.
-
-  All tag logic (normalize/validate/search/debounce) lives in $lib/tags so it is
-  unit-tested independently and this component stays presentational.
-
-  `protectedTags` (bindable, read-only for the parent) reports which selected tags
-  are protected (LOO-33), learned from the suggestions and, for tags added without
-  one (prefilled or typed), resolved through the autocomplete endpoint.
+  TagInput — tag entry with debounced autocomplete and inline validation. Bind
+  `tags` to collect the selected slugs. `protectedTags` (read-only for the parent)
+  reports which selected tags are protected, learned from suggestions and, for
+  prefilled or typed tags, resolved through the autocomplete endpoint.
 -->
 <script lang="ts">
 	import Icon from './Icon.svelte';
-	import {
-		normalizeTag,
-		validateTags,
-		searchTags,
-		resolveProtected,
-		debounce,
-		defaultTagLimits,
-		type TagLimits,
-		type TagSuggestion
-	} from '$lib/tags';
+	import { tagSuggester } from './tagSuggest';
+	import { normalizeTag, validateTags, resolveProtected, type TagSuggestion } from '$lib/tags';
 
 	let {
 		tags = $bindable([]),
-		protectedTags = $bindable([]),
-		limits = defaultTagLimits,
-		label = 'Tags'
+		protectedTags = $bindable([])
 	}: {
 		tags?: string[];
 		protectedTags?: string[];
-		limits?: TagLimits;
-		label?: string;
 	} = $props();
 
 	let draft = $state('');
@@ -63,22 +44,15 @@
 	});
 
 	// Live validation of the current set drives the inline error feedback.
-	let errors = $derived(validateTags(tags, limits).errors);
+	let errors = $derived(validateTags(tags).errors);
 
-	const runSearch = debounce(async (q: string) => {
-		if (!q.trim()) {
-			suggestions = [];
-			return;
+	const runSearch = tagSuggester({
+		exclude: (slug) => tags.includes(slug),
+		onResult: (shown, all) => {
+			known = { ...known, ...Object.fromEntries(all.map((h) => [h.slug, h.protected])) };
+			suggestions = shown;
 		}
-		try {
-			const hits = await searchTags(q);
-			known = { ...known, ...Object.fromEntries(hits.map((h) => [h.slug, h.protected])) };
-			// Hide tags already chosen so the dropdown only offers new ones.
-			suggestions = hits.filter((h) => !tags.includes(h.slug));
-		} catch {
-			suggestions = []; // suggestions are best-effort; typing still works.
-		}
-	}, 200);
+	});
 
 	function onInput(value: string) {
 		draft = value;
@@ -109,7 +83,7 @@
 </script>
 
 <div class="tag-input">
-	<label class="field-label" for="tag-entry">{label}</label>
+	<label class="field-label" for="tag-entry">Tags</label>
 
 	{#if tags.length > 0}
 		<ul class="chips">
