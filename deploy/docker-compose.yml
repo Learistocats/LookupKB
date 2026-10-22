@@ -183,7 +183,7 @@ services:
           memory: 512M
 
   valkey:
-    image: valkey/valkey:8-alpine@sha256:94365b275456ae14621001c03556c732b1d93a0cdeacc317d1bdd52eba680885
+    image: valkey/valkey:9-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
     <<: *hardened
     command: ["valkey-server", "--save", "60", "1", "--appendonly", "no"]
     volumes:
