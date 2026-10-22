@@ -19,6 +19,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/limiter"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/gofiber/fiber/v2/middleware/requestid"
+	"github.com/google/uuid"
 )
 
 // ReadinessCheck reports whether a dependency is ready to serve traffic
@@ -317,19 +318,28 @@ func (s *Server) registerRoutes() {
 	}
 }
 
-// handleMe returns the verified caller's identity. It proves end-to-end token
-// verification (AC-1.2) and that group membership reaches handlers (AC-1.4); it
-// is the canonical protected endpoint later tickets build on.
+// handleMe returns the verified caller's identity and group ids.
 func (s *Server) handleMe(c *fiber.Ctx) error {
 	id, ok := auth.IdentityFromCtx(c)
 	if !ok {
 		// The middleware guarantees this, but never assume auth state.
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
 	}
+	groups := []string{}
+	if s.users != nil {
+		gids, err := s.users.ListUserGroupIDs(c.UserContext(), id.Caller().UserID)
+		if err != nil {
+			s.log.ErrorContext(c.UserContext(), "load caller groups failed", "error", err.Error())
+			return internalError(c)
+		}
+		for _, g := range gids {
+			groups = append(groups, uuid.UUID(g.Bytes).String())
+		}
+	}
 	return c.JSON(fiber.Map{
-		"id":     id.UserID,
+		"id":     id.UserID.String(),
 		"email":  id.Email,
-		"groups": id.Groups,
+		"groups": groups,
 		// Drives the web's "Admin" link only; the API re-checks it per request.
 		"is_super_admin": id.IsSuperAdmin,
 	})

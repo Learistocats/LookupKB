@@ -99,14 +99,12 @@ func documentNotFound(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "document not found"})
 }
 
-// accessCaller projects the verified identity onto an access.Caller (user id +
-// the per-request super-admin flag). It writes the 401/500 response itself and
-// returns it as the error, like callerID.
+// accessCaller projects the verified identity onto an access.Caller. Without an
+// identity it writes the 401 itself and returns it as the error.
 func (s *Server) accessCaller(c *fiber.Ctx) (access.Caller, error) {
-	uid, err := s.callerID(c)
-	if err != nil {
-		return access.Caller{}, err
+	id, ok := auth.IdentityFromCtx(c)
+	if !ok {
+		return access.Caller{}, c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
 	}
-	id, _ := auth.IdentityFromCtx(c) // present: callerID succeeded
-	return access.Caller{UserID: uid, IsSuperAdmin: id.IsSuperAdmin}, nil
+	return id.Caller(), nil
 }

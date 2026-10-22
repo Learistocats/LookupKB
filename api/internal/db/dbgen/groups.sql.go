@@ -73,7 +73,7 @@ VALUES ($1)
 RETURNING id, name, created_at
 `
 
-// ── Admin group management (LOO-56, F10) ─────────────────────────────────────
+// ── Admin group management ─────────────────────────────────────
 // Every mutation below is called by internal/admin inside a transaction that also
 // writes the matching audit_log row.
 // groups.name is UNIQUE (00007): a duplicate surfaces as a 23505 the admin service
@@ -170,7 +170,7 @@ type ListGroupTagGrantsRow struct {
 
 // ── Group tag policy (group_tag_grants) ──────────────────────────────────────
 // A tag with >= 1 grant is a protected tag. These queries maintain the policy;
-// enforcement reads it through access.sql (LOO-33).
+// enforcement reads it through access.sql.
 func (q *Queries) ListGroupTagGrants(ctx context.Context, groupID pgtype.UUID) ([]ListGroupTagGrantsRow, error) {
 	rows, err := q.db.Query(ctx, listGroupTagGrants, groupID)
 	if err != nil {
@@ -249,9 +249,8 @@ WHERE user_id = $1
 `
 
 // Local groups (03-data-model.md §1 `groups`, `group_members`). Membership is
-// authoritative here; it feeds the per-request ACL decision (M3).
-// The caller's group ids, loaded by the auth middleware on every request so an
-// access decision never relies on a stale token claim.
+// authoritative here; access decisions read it in SQL (access.sql).
+// The caller's group ids (for GET /api/v1/me).
 func (q *Queries) ListUserGroupIDs(ctx context.Context, userID pgtype.UUID) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listUserGroupIDs, userID)
 	if err != nil {

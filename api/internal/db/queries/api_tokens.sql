@@ -1,4 +1,4 @@
--- Personal Access Tokens (03-data-model.md §1 `api_tokens`, 10-public-api.md §2).
+-- Personal Access Tokens.
 -- token_hash is the hex SHA-256 of the full token — the ONLY persisted form of the
 -- secret. No query here returns token_hash except the verifier's lookup.
 
@@ -29,9 +29,9 @@ WHERE user_id = $1
 
 -- name: GetActiveAPITokenByPrefix :one
 -- The verifier's lookup: an active token by its non-secret prefix, with the owner's
--- email. Revoked/expired tokens yield no row. The caller still compares token_hash
+-- email and super-admin flag. Revoked/expired tokens yield no row. The caller still compares token_hash
 -- in constant time (the prefix alone proves nothing).
-SELECT t.id, t.user_id, t.token_hash, t.expires_at, t.revoked_at, t.last_used_at, u.email
+SELECT t.id, t.user_id, t.token_hash, t.expires_at, t.revoked_at, t.last_used_at, u.email, u.is_super_admin
 FROM api_tokens t
 JOIN users u ON u.id = t.user_id
 WHERE t.prefix = $1
@@ -64,9 +64,7 @@ WITH r AS (
 SELECT id FROM r;
 
 -- name: TouchAPITokenLastUsed :exec
--- Record usage, throttled: only writes when last_used_at is unset or older than a
--- minute, so a busy token does not cost a row write per request.
+-- Throttled by the caller (auth middleware).
 UPDATE api_tokens
 SET last_used_at = now()
-WHERE id = $1
-  AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute');
+WHERE id = $1;

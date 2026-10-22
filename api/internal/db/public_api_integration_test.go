@@ -50,7 +50,7 @@ func newAPIHarness(t *testing.T, extra ...server.Option) *apiHarness {
 	require.NoError(t, err)
 	log := discardLog()
 	q := dbgen.New(pool)
-	mw := auth.NewMiddleware(tokens, q, log).WithPATs(auth.NewDBPATStore(q))
+	mw := auth.NewMiddleware(tokens, q, log)
 	opts := append([]server.Option{
 		server.WithAuth(mw),
 		server.WithTokens(q),

@@ -25,11 +25,11 @@ UPDATE users
 SET last_seen_at = now()
 WHERE id = $1;
 
--- ── Super-admin role (LOO-56) ────────────────────────────────────────────────
+-- ── Super-admin role ────────────────────────────────────────────────
 
 -- name: GetUserIsSuperAdmin :one
--- Loaded by the auth middleware on every request (never a token claim), so a
--- revoke takes effect on the caller's next request.
+-- Read by the auth middleware on every session request (never a token claim),
+-- so a revoke takes effect on the caller's next request.
 SELECT is_super_admin
 FROM users
 WHERE id = $1;

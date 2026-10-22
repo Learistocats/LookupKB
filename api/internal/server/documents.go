@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/Learistocats/LookupKB/api/internal/access"
-	"github.com/Learistocats/LookupKB/api/internal/auth"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -256,21 +255,11 @@ func (s *Server) handleListDrafts(c *fiber.Ctx) error {
 	return c.JSON(items)
 }
 
-// callerID returns the verified caller's internal user id as a pgtype.UUID for
-// use as author_id. The auth middleware guarantees a valid id on protected
-// routes, so an unauthenticated ctx or an unparseable id is a server-side
-// invariant break (500), not a client error.
+// callerID returns the verified caller's user id (e.g. as author_id). Without an
+// identity it writes the 401 itself and returns it as the error.
 func (s *Server) callerID(c *fiber.Ctx) (pgtype.UUID, error) {
-	id, ok := auth.IdentityFromCtx(c)
-	if !ok {
-		return pgtype.UUID{}, c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "unauthorized"})
-	}
-	uid, err := parseUUID(id.UserID)
-	if err != nil {
-		s.log.ErrorContext(c.UserContext(), "caller has no valid internal id", "error", err.Error())
-		return pgtype.UUID{}, internalError(c)
-	}
-	return uid, nil
+	caller, err := s.accessCaller(c)
+	return caller.UserID, err
 }
 
 // parseDocID reads and validates the :id path parameter as a uuid.

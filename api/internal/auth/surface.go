@@ -5,14 +5,13 @@ import (
 	"strings"
 )
 
-// PAT read surface (LOO-37). A Personal Access Token is a programmatic, read-only
+// PAT read surface. A Personal Access Token is a programmatic, read-only
 // credential: it may reach ONLY the routes allowlisted here. Everything else under
 // the authenticated surface (drafts, document writes, publish, token management,
 // admin) is session-only and answers 403 to a PAT — deny-by-default, so a new
 // route is never PAT-reachable by accident.
 //
-// To open more of the read surface to PATs (LOO-38 public read API, LOO-59 MCP),
-// add a rule to patSurface. Rules match on the lowercased raw request path, which
+// Rules in patSurface match on the lowercased raw request path, which
 // is what Fiber routes on (it is case-insensitive and does not normalise dot
 // segments, so a path containing ".." is refused outright).
 type surfaceRule struct {
@@ -25,11 +24,9 @@ type surfaceRule struct {
 }
 
 var patSurface = []surfaceRule{
-	// Versioned public read API (/api/v1/me, /api/v1/tags; LOO-38 adds
-	// /api/v1/search and /api/v1/documents…). The account routes are never
-	// PAT-reachable.
+	// Versioned public read API. The account routes are never PAT-reachable.
 	{prefix: "/api/v1", methods: []string{http.MethodGet, http.MethodHead}, except: []string{"/api/v1/auth"}},
-	// MCP endpoint (LOO-59). Streamable HTTP carries JSON-RPC over POST and the
+	// MCP endpoint. Streamable HTTP carries JSON-RPC over POST and the
 	// server→client stream over GET; its tools are read-only.
 	{prefix: "/mcp", methods: []string{http.MethodGet, http.MethodPost}},
 }

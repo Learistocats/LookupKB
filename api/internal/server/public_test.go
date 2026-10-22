@@ -215,7 +215,7 @@ func TestV1_ReachableWithPAT(t *testing.T) {
 	}
 	cfg, err := config.Load()
 	require.NoError(t, err)
-	mw := auth.NewMiddleware(testTokens, nil, slogDiscard()).WithPATs(tokens)
+	mw := auth.NewMiddleware(testTokens, tokens, slogDiscard())
 	s := New(cfg, slogDiscard(), "test", WithAuth(mw), WithTokens(tokens), WithDocuments(docs),
 		WithSearch(&fakeSearch{}), WithTags(&fakeTagStore{}))
 	pat := createToken(t, s, `{"name":"agent"}`).Token
