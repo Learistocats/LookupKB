@@ -1,11 +1,6 @@
-// Package logging bootstraps the single, structured slog logger used across the
-// whole API image. There is exactly one logger and one format: no ad-hoc
-// fmt.Println, no per-package loggers.
-//
-// A contextHandler wraps the stdout JSON (or text) handler so every line carries
-// the standard schema: time, level, msg, service, version, plus request_id and
-// actor_id (from the request context). actor_id is the internal user uuid, never
-// the email (redacted PII).
+// Package logging builds the single structured slog logger for the API. A
+// contextHandler adds request_id and actor_id from the request context to every
+// line; actor_id is the internal user uuid, never the email.
 package logging
 
 import (
@@ -23,10 +18,7 @@ const (
 	fieldActorID   = "actor_id"
 )
 
-// ctxKey is the private type for context values this package reads back onto
-// every log line. Values are set once by middleware and picked up by the
-// contextHandler without re-plumbing (the "set once, available everywhere"
-// approach from the ticket).
+// ctxKey is the private type for context values read back onto every log line.
 type ctxKey int
 
 const (
@@ -34,16 +26,13 @@ const (
 	actorIDKey
 )
 
-// WithRequestID returns a context carrying the per-request id so every log line
-// emitted under it gains a request_id field. Set once by the request-id
-// middleware.
+// WithRequestID returns a context whose log lines gain a request_id field.
 func WithRequestID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, requestIDKey, id)
 }
 
-// WithActorID returns a context carrying the verified caller's internal user id
-// so every downstream log line gains an actor_id field. Set once by the auth
-// middleware; the value is the internal uuid, never the email (redacted PII).
+// WithActorID returns a context whose log lines gain an actor_id field (the
+// internal user id, never the email).
 func WithActorID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, actorIDKey, id)
 }
