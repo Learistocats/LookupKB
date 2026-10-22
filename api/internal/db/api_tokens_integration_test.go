@@ -31,7 +31,7 @@ func TestAPITokens(t *testing.T) {
 	pat, err := auth.GeneratePAT()
 	require.NoError(t, err)
 	created, err := q.CreateAPIToken(ctx, dbgen.CreateAPITokenParams{
-		UserID: owner, Name: "ci", TokenHash: pat.Hash, Prefix: pat.Prefix,
+		UserID: owner, Name: "ci", TokenHash: pat.Hash, Prefix: pat.Prefix, MaxActive: 20,
 	})
 	require.NoError(t, err)
 	require.Equal(t, "ci", created.Name)
@@ -56,7 +56,7 @@ func TestAPITokens(t *testing.T) {
 
 	// The prefix is UNIQUE.
 	_, err = q.CreateAPIToken(ctx, dbgen.CreateAPITokenParams{
-		UserID: other.ID, Name: "dup", TokenHash: "other", Prefix: pat.Prefix,
+		UserID: other.ID, Name: "dup", TokenHash: "other", Prefix: pat.Prefix, MaxActive: 20,
 	})
 	var pgErr *pgconn.PgError
 	require.True(t, errors.As(err, &pgErr))
@@ -67,15 +67,20 @@ func TestAPITokens(t *testing.T) {
 	require.NoError(t, err)
 	_, err = q.CreateAPIToken(ctx, dbgen.CreateAPITokenParams{
 		UserID: owner, Name: "old", TokenHash: expired.Hash, Prefix: expired.Prefix,
-		ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(-time.Hour), Valid: true},
+		ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(-time.Hour), Valid: true}, MaxActive: 20,
 	})
 	require.NoError(t, err)
 	_, err = q.GetActiveAPITokenByPrefix(ctx, expired.Prefix)
 	require.ErrorIs(t, err, pgx.ErrNoRows)
 
-	n, err := q.CountActiveAPITokens(ctx, owner)
+	// The cap counts only active tokens (the expired one does not): at one active
+	// token, a cap of 1 refuses and nothing is inserted.
+	capped, err := auth.GeneratePAT()
 	require.NoError(t, err)
-	require.EqualValues(t, 1, n)
+	_, err = q.CreateAPIToken(ctx, dbgen.CreateAPITokenParams{
+		UserID: owner, Name: "capped", TokenHash: capped.Hash, Prefix: capped.Prefix, MaxActive: 1,
+	})
+	require.ErrorIs(t, err, pgx.ErrNoRows)
 
 	// last_used_at is stamped (throttling lives in the auth middleware).
 	require.NoError(t, q.TouchAPITokenLastUsed(ctx, created.ID))

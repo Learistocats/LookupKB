@@ -18,10 +18,9 @@ type PublishService interface {
 	Unpublish(ctx context.Context, docID, authorID pgtype.UUID) (*publish.Result, error)
 }
 
-// publishRequest is the confirm-flow body: the metadata to publish with. There is
-// no access field: who can read the entry follows from its tags and the group tag
-// policy (LOO-33). source_md is never sent — the server publishes its own held
-// working copy.
+// publishRequest is the metadata to publish with. There is no access field (it
+// follows from the tags) and no source_md: the server publishes its own working
+// copy.
 type publishRequest struct {
 	Title       string   `json:"title"`
 	Description string   `json:"description"`
@@ -29,8 +28,6 @@ type publishRequest struct {
 }
 
 // publishedResponse projects a published/unpublished document back to the caller.
-// It extends draftResponse's fields with the publish-time metadata the UI shows
-// (published_at).
 type publishedResponse struct {
 	ID          string  `json:"id"`
 	Slug        string  `json:"slug"`
@@ -53,12 +50,10 @@ func toPublishedResponse(d dbgen.Document) publishedResponse {
 	}
 }
 
-// handlePublish is the metadata-gated publish action (F5, AC-5.1–5.5). It validates
-// server-side regardless of any client checks (06-security.md §6): on a metadata
-// violation it returns 422 with per-field errors and the document stays a draft; on
-// success the document is published (index op enqueued) atomically.
+// handlePublish is the metadata-gated publish action. Validation is server-side:
+// a violation returns 422 with per-field errors and the document is unchanged.
 func (s *Server) handlePublish(c *fiber.Ctx) error {
-	docID, ok := parseDocID(c)
+	docID, ok := parseUUIDParam(c, "id")
 	if !ok {
 		return badRequest(c, "invalid document id")
 	}
@@ -81,26 +76,24 @@ func (s *Server) handlePublish(c *fiber.Ctx) error {
 		Tags:         body.Tags,
 	})
 	if errors.Is(err, publish.ErrNotFound) {
-		return notFound(c)
+		return notFound(c, "document")
 	}
 	if err != nil {
 		s.log.ErrorContext(c.UserContext(), "publish failed", "error", err.Error())
 		return internalError(c)
 	}
 	if len(fieldErrs) > 0 {
-		// 422: the metadata gate blocked publish; the document is unchanged (draft).
-		// Per-field errors (not a single blob) so the UI renders each inline.
+		// Per-field errors so the UI renders each inline.
 		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"errors": fieldErrs})
 	}
 
 	return c.JSON(toPublishedResponse(result.Document))
 }
 
-// handleUnpublish reverts a published document to author-only visibility (AC-5.6).
-// Only the owner of a currently-published doc succeeds; anything else is a 404 with
-// the identical not-found body (no existence leak).
+// handleUnpublish reverts a published document to author-only visibility. Only
+// the owner of a published doc succeeds; anything else gets the same 404.
 func (s *Server) handleUnpublish(c *fiber.Ctx) error {
-	docID, ok := parseDocID(c)
+	docID, ok := parseUUIDParam(c, "id")
 	if !ok {
 		return badRequest(c, "invalid document id")
 	}
@@ -111,7 +104,7 @@ func (s *Server) handleUnpublish(c *fiber.Ctx) error {
 
 	result, err := s.publish.Unpublish(c.UserContext(), docID, authorID)
 	if errors.Is(err, publish.ErrNotFound) {
-		return notFound(c)
+		return notFound(c, "document")
 	}
 	if err != nil {
 		s.log.ErrorContext(c.UserContext(), "unpublish failed", "error", err.Error())

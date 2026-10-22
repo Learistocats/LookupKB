@@ -11,27 +11,18 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const countActiveAPITokens = `-- name: CountActiveAPITokens :one
-SELECT count(*)
-FROM api_tokens
-WHERE user_id = $1
-  AND revoked_at IS NULL
-  AND (expires_at IS NULL OR expires_at > now())
-`
-
-// Active (not revoked, not expired) tokens a user holds — bounds issuance.
-func (q *Queries) CountActiveAPITokens(ctx context.Context, userID pgtype.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, countActiveAPITokens, userID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const createAPIToken = `-- name: CreateAPIToken :one
 
 WITH t AS (
     INSERT INTO api_tokens (user_id, name, token_hash, prefix, expires_at)
-    VALUES ($1, $2, $3, $4, $5)
+    SELECT $1::uuid, $2::text, $3::text, $4::text, $5::timestamptz
+    WHERE (
+        SELECT count(*)
+        FROM api_tokens
+        WHERE user_id = $1::uuid
+          AND revoked_at IS NULL
+          AND (expires_at IS NULL OR expires_at > now())
+    ) < $6::bigint
     RETURNING id, user_id, name, prefix, created_at, last_used_at, expires_at, revoked_at
 ), a AS (
     INSERT INTO audit_log (actor_id, action, target_type, target_id, metadata)
@@ -49,6 +40,7 @@ type CreateAPITokenParams struct {
 	TokenHash string             `json:"token_hash"`
 	Prefix    string             `json:"prefix"`
 	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+	MaxActive int64              `json:"max_active"`
 }
 
 type CreateAPITokenRow struct {
@@ -67,7 +59,8 @@ type CreateAPITokenRow struct {
 // secret. No query here returns token_hash except the verifier's lookup.
 // Issue a token for its owner and record the audit row in the same statement (one
 // implicit transaction). The audit metadata carries the display prefix and name,
-// never the secret or its hash.
+// never the secret or its hash. The per-user cap is enforced in the INSERT itself:
+// at the cap nothing is inserted and the query returns no row (pgx.ErrNoRows).
 func (q *Queries) CreateAPIToken(ctx context.Context, arg CreateAPITokenParams) (CreateAPITokenRow, error) {
 	row := q.db.QueryRow(ctx, createAPIToken,
 		arg.UserID,
@@ -75,6 +68,7 @@ func (q *Queries) CreateAPIToken(ctx context.Context, arg CreateAPITokenParams) 
 		arg.TokenHash,
 		arg.Prefix,
 		arg.ExpiresAt,
+		arg.MaxActive,
 	)
 	var i CreateAPITokenRow
 	err := row.Scan(

@@ -2,7 +2,7 @@ package server
 
 import (
 	"context"
-	"strconv"
+	"math"
 
 	"github.com/Learistocats/LookupKB/api/internal/access"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
@@ -11,17 +11,13 @@ import (
 
 // TagStore is the subset of the tag data access the autocomplete route needs.
 // *tags.Store satisfies it; kept narrow so the handler is testable with a fake.
-// The tag-apply/usage_count methods on *tags.Store are not here — they have no
-// HTTP surface in this ticket (the publish gate calls them directly, LOO-14/17).
 type TagStore interface {
-	// SearchTags hides protected tags the caller is not granted (LOO-33).
+	// SearchTags hides protected tags the caller is not granted.
 	SearchTags(ctx context.Context, query string, limit int32, caller access.Caller) ([]dbgen.SearchTagsRow, error)
 }
 
-// tagResponse is the autocomplete projection: enough for the suggestion dropdown
-// (slug to insert, label to show, usage_count for popularity ordering — AC-6.1).
-// Protected tells the publish dialog that an entry carrying the tag is restricted
-// to the groups granted it (LOO-33).
+// tagResponse is the autocomplete projection. Protected tells the publish dialog
+// that an entry carrying the tag is restricted to the groups granted it.
 type tagResponse struct {
 	Slug       string `json:"slug"`
 	Label      string `json:"label"`
@@ -29,34 +25,26 @@ type tagResponse struct {
 	Protected  bool   `json:"protected"`
 }
 
-// handleListTags serves the tag autocomplete (AC-6.1): GET /api/v1/tags?q=&limit=
-// (?prefix= is accepted as an alias for q).
-// An empty q returns the most-used tags. limit is optional (store clamps it). The
-// route is under the authenticated group. Protected tags the caller lacks are
-// excluded (their very existence is need-to-know); super-admins see every tag.
+// handleListTags serves GET /api/v1/tags?q=&limit= (?prefix= aliases q). An empty
+// q returns the most-used tags; the store clamps limit. Protected tags the caller
+// lacks are excluded (their existence is need-to-know); super-admins see all.
 func (s *Server) handleListTags(c *fiber.Ctx) error {
 	caller, err := s.accessCaller(c)
 	if err != nil {
 		return err
 	}
-	// ?prefix= is the public API's name for the same filter (10-public-api.md §4);
-	// matching is on the normalized slug (substring), most-used first.
 	q := c.Query("q")
 	if q == "" {
 		q = c.Query("prefix")
 	}
 
-	// limit is advisory; a malformed value falls back to the store default rather
-	// than erroring, so a typo in the typeahead URL never breaks suggestions.
-	// ParseInt with bitSize 32 bounds the value to int32 range (no overflow).
-	var limit int32
-	if raw := c.Query("limit"); raw != "" {
-		if n, err := strconv.ParseInt(raw, 10, 32); err == nil && n > 0 {
-			limit = int32(n)
-		}
+	limit, err := queryInt(c, "limit")
+	if err != nil {
+		return badRequest(c, err.Error())
 	}
 
-	rows, err := s.tags.SearchTags(c.UserContext(), q, limit, caller)
+	// The store clamps limit; cap first so the int32 conversion cannot overflow.
+	rows, err := s.tags.SearchTags(c.UserContext(), q, int32(min(limit, math.MaxInt32)), caller) //nolint:gosec // clamped to int32 range
 	if err != nil {
 		s.log.ErrorContext(c.UserContext(), "tag search failed", "error", err.Error())
 		return internalError(c)

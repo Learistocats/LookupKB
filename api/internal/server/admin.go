@@ -10,9 +10,9 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// AdminService is the super-admin management surface (LOO-56). *admin.Service
-// satisfies it; the handlers here only map HTTP in/out and errors — the rules
-// (confirm flows, last-super-admin guard, audit) live in internal/admin.
+// AdminService is the super-admin management surface. *admin.Service satisfies
+// it; the handlers here only map HTTP in/out and errors — the rules (confirm
+// flows, last-super-admin guard, audit) live in internal/admin.
 type AdminService interface {
 	ListGroups(ctx context.Context) ([]dbgen.ListGroupsRow, error)
 	GetGroup(ctx context.Context, id pgtype.UUID) (admin.GroupDetail, error)
@@ -53,6 +53,10 @@ type adminGroupDetailResponse struct {
 	adminGroupResponse
 	Members []adminUserResponse     `json:"members"`
 	Tags    []adminTagGrantResponse `json:"tags"`
+}
+
+func newAdminUser(id pgtype.UUID, email string, displayName *string, isSuperAdmin bool) adminUserResponse {
+	return adminUserResponse{ID: formatUUID(id), Email: email, DisplayName: displayName, IsSuperAdmin: isSuperAdmin}
 }
 
 func toAdminGroup(g dbgen.Group) adminGroupResponse {
@@ -126,7 +130,7 @@ func (s *Server) handleAdminGetGroup(c *fiber.Ctx) error {
 		Tags:               make([]adminTagGrantResponse, len(d.Tags)),
 	}
 	for i, m := range d.Members {
-		out.Members[i] = adminUserResponse{ID: formatUUID(m.ID), Email: m.Email, DisplayName: m.DisplayName, IsSuperAdmin: m.IsSuperAdmin}
+		out.Members[i] = newAdminUser(m.ID, m.Email, m.DisplayName, m.IsSuperAdmin)
 	}
 	for i, t := range d.Tags {
 		out.Tags[i] = adminTagGrantResponse{TagID: formatUUID(t.TagID), Slug: t.Slug, Label: t.Label, CreatedAt: formatTime(t.CreatedAt)}
@@ -190,9 +194,7 @@ func (s *Server) handleAdminAddMember(c *fiber.Ctx) error {
 	if err != nil {
 		return s.adminError(c, err)
 	}
-	return c.Status(fiber.StatusCreated).JSON(adminUserResponse{
-		ID: formatUUID(u.ID), Email: u.Email, DisplayName: u.DisplayName, IsSuperAdmin: u.IsSuperAdmin,
-	})
+	return c.Status(fiber.StatusCreated).JSON(newAdminUser(u.ID, u.Email, u.DisplayName, u.IsSuperAdmin))
 }
 
 func (s *Server) handleAdminRemoveMember(c *fiber.Ctx) error {
@@ -266,7 +268,7 @@ func (s *Server) handleAdminListUsers(c *fiber.Ctx) error {
 	}
 	out := make([]adminUserResponse, len(rows))
 	for i, u := range rows {
-		out[i] = adminUserResponse{ID: formatUUID(u.ID), Email: u.Email, DisplayName: u.DisplayName, IsSuperAdmin: u.IsSuperAdmin}
+		out[i] = newAdminUser(u.ID, u.Email, u.DisplayName, u.IsSuperAdmin)
 	}
 	return c.JSON(out)
 }
@@ -293,7 +295,7 @@ func (s *Server) handleAdminSetSuperAdmin(c *fiber.Ctx) error {
 	if err != nil {
 		return s.adminError(c, err)
 	}
-	return c.JSON(adminUserResponse{ID: formatUUID(u.ID), Email: u.Email, DisplayName: u.DisplayName, IsSuperAdmin: u.IsSuperAdmin})
+	return c.JSON(newAdminUser(u.ID, u.Email, u.DisplayName, u.IsSuperAdmin))
 }
 
 // adminError maps the admin service's errors onto the API's JSON error shape.
@@ -302,15 +304,15 @@ func (s *Server) adminError(c *fiber.Ctx, err error) error {
 	var cerr *admin.NeedsConfirmationError
 	switch {
 	case errors.As(err, &verr):
-		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": verr.Message})
+		return errJSON(c, fiber.StatusUnprocessableEntity, verr.Message)
 	case errors.As(err, &cerr):
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "needs_confirmation", "tag": cerr.Tag})
 	case errors.Is(err, admin.ErrNotFound):
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not found"})
+		return errJSON(c, fiber.StatusNotFound, "not found")
 	case errors.Is(err, admin.ErrGroupNameTaken):
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": admin.ErrGroupNameTaken.Error()})
+		return errJSON(c, fiber.StatusConflict, admin.ErrGroupNameTaken.Error())
 	case errors.Is(err, admin.ErrLastSuperAdmin):
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": admin.ErrLastSuperAdmin.Error()})
+		return errJSON(c, fiber.StatusConflict, admin.ErrLastSuperAdmin.Error())
 	default:
 		s.log.ErrorContext(c.UserContext(), "admin operation failed", "error", err.Error())
 		return internalError(c)

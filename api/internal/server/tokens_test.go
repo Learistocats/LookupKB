@@ -21,7 +21,6 @@ import (
 // fakeTokenStore is an in-memory TokenStore that also serves as the auth store, so a token minted through POST /api/tokens authenticates for real.
 type fakeTokenStore struct {
 	rows      map[uuid.UUID]*storedToken
-	activeCap int64
 	revokeArg dbgen.RevokeMyAPITokenParams
 }
 
@@ -31,10 +30,19 @@ type storedToken struct {
 }
 
 func newFakeTokenStore() *fakeTokenStore {
-	return &fakeTokenStore{rows: map[uuid.UUID]*storedToken{}, activeCap: -1}
+	return &fakeTokenStore{rows: map[uuid.UUID]*storedToken{}}
 }
 
 func (f *fakeTokenStore) CreateAPIToken(_ context.Context, arg dbgen.CreateAPITokenParams) (dbgen.CreateAPITokenRow, error) {
+	var active int64
+	for _, r := range f.rows {
+		if r.row.UserID == arg.UserID && !r.row.RevokedAt.Valid {
+			active++
+		}
+	}
+	if active >= arg.MaxActive {
+		return dbgen.CreateAPITokenRow{}, pgx.ErrNoRows
+	}
 	id := uuid.New()
 	row := dbgen.CreateAPITokenRow{
 		ID:        pgUUID(id),
@@ -46,19 +54,6 @@ func (f *fakeTokenStore) CreateAPIToken(_ context.Context, arg dbgen.CreateAPITo
 	}
 	f.rows[id] = &storedToken{row: row, hash: arg.TokenHash}
 	return row, nil
-}
-
-func (f *fakeTokenStore) CountActiveAPITokens(_ context.Context, userID pgtype.UUID) (int64, error) {
-	if f.activeCap >= 0 {
-		return f.activeCap, nil
-	}
-	var n int64
-	for _, r := range f.rows {
-		if r.row.UserID == userID && !r.row.RevokedAt.Valid {
-			n++
-		}
-	}
-	return n, nil
 }
 
 func (f *fakeTokenStore) ListMyAPITokens(_ context.Context, userID pgtype.UUID) ([]dbgen.ListMyAPITokensRow, error) {
@@ -187,12 +182,17 @@ func TestCreateToken_Validation(t *testing.T) {
 
 func TestCreateToken_CapsActiveTokens(t *testing.T) {
 	store := newFakeTokenStore()
-	store.activeCap = maxActiveTokens
+	for range maxActiveTokens {
+		_, err := store.CreateAPIToken(context.Background(), dbgen.CreateAPITokenParams{
+			UserID: pgUUID(callerUUID), Name: "t", MaxActive: maxActiveTokens,
+		})
+		require.NoError(t, err)
+	}
 	s := newTokenServer(t, store)
 	resp := doReq(t, s, http.MethodPost, "/api/tokens", `{"name":"one too many"}`)
 	_ = resp.Body.Close()
 	require.Equal(t, http.StatusConflict, resp.StatusCode)
-	require.Empty(t, store.rows)
+	require.Len(t, store.rows, maxActiveTokens)
 }
 
 func TestRevokeToken_OwnAndForeignAndMissing(t *testing.T) {
@@ -201,7 +201,7 @@ func TestRevokeToken_OwnAndForeignAndMissing(t *testing.T) {
 
 	// A token owned by someone else.
 	foreign, err := store.CreateAPIToken(context.Background(), dbgen.CreateAPITokenParams{
-		UserID: pgUUID(uuid.New()), Name: "theirs", Prefix: "zzzzzzzz", TokenHash: "h",
+		UserID: pgUUID(uuid.New()), Name: "theirs", Prefix: "zzzzzzzz", TokenHash: "h", MaxActive: maxActiveTokens,
 	})
 	require.NoError(t, err)
 
@@ -218,7 +218,7 @@ func TestRevokeToken_OwnAndForeignAndMissing(t *testing.T) {
 	require.Equal(t, mb, fb, "not-yours and missing must be indistinguishable")
 	require.False(t, store.rows[uuid.UUID(foreign.ID.Bytes)].row.RevokedAt.Valid)
 	bc, _ := revoke("not-a-uuid")
-	require.Equal(t, http.StatusNotFound, bc)
+	require.Equal(t, http.StatusBadRequest, bc)
 
 	mine := createToken(t, s, `{"name":"mine"}`)
 	resp := doReq(t, s, http.MethodDelete, "/api/tokens/"+mine.ID, "")

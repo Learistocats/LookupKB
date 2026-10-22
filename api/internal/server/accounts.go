@@ -61,15 +61,15 @@ func (s *Server) handleSignup(c *fiber.Ctx) error {
 	}
 	email, ok := normalizeEmail(body.Email)
 	if !ok {
-		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": "invalid email address"})
+		return errJSON(c, fiber.StatusUnprocessableEntity, "invalid email address")
 	}
 	if utf8.RuneCountInString(body.Password) < minPasswordRunes || len(body.Password) > maxPasswordBytes {
-		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": "password must be at least 12 characters"})
+		return errJSON(c, fiber.StatusUnprocessableEntity, "password must be at least 12 characters")
 	}
 	var displayName *string
 	if dn := strings.TrimSpace(body.DisplayName); dn != "" {
 		if utf8.RuneCountInString(dn) > maxDisplayNameRune {
-			return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": "display name is too long"})
+			return errJSON(c, fiber.StatusUnprocessableEntity, "display name is too long")
 		}
 		displayName = &dn
 	}
@@ -86,7 +86,7 @@ func (s *Server) handleSignup(c *fiber.Ctx) error {
 		DisplayName:  displayName,
 	})
 	if db.IsUniqueViolation(err) {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "an account with this email already exists"})
+		return errJSON(c, fiber.StatusConflict, "an account with this email already exists")
 	}
 	if err != nil {
 		s.log.ErrorContext(c.UserContext(), "create user failed", "error", err.Error())
@@ -144,7 +144,7 @@ func (s *Server) issueSession(c *fiber.Ctx, status int, user dbgen.User) error {
 }
 
 func invalidCredentials(c *fiber.Ctx) error {
-	return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid email or password"})
+	return errJSON(c, fiber.StatusUnauthorized, "invalid email or password")
 }
 
 // normalizeEmail trims and validates a bare address ("Name <a@b>" forms are

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/Learistocats/LookupKB/api/internal/access"
@@ -59,12 +58,13 @@ func TestSearch_ForwardsQueryAndVerifiedCaller(t *testing.T) {
 	require.Len(t, got.Hits, 1)
 }
 
-func TestSearch_TruncatesLongQueries(t *testing.T) {
-	svc := &fakeSearch{}
-	s := newSearchServer(t, svc)
-	resp := doReq(t, s, http.MethodGet, "/api/search?q="+strings.Repeat("a", 500), "")
-	_ = resp.Body.Close()
-	require.Len(t, svc.q, maxQueryRunes)
+func TestSearch_BadLimitOrOffsetIs400(t *testing.T) {
+	s := newSearchServer(t, &fakeSearch{})
+	for _, q := range []string{"limit=abc", "limit=-1", "offset=x", "offset=-5"} {
+		resp := doReq(t, s, http.MethodGet, "/api/search?q=x&"+q, "")
+		_ = resp.Body.Close()
+		require.Equal(t, http.StatusBadRequest, resp.StatusCode, q)
+	}
 }
 
 func TestSearch_EngineDownIs503(t *testing.T) {
