@@ -127,6 +127,7 @@ func TestReadDocument_ProtectedTagNotGrantedIs404(t *testing.T) {
 	var deniedBody, missingBody map[string]any
 	require.NoError(t, json.NewDecoder(respDenied.Body).Decode(&deniedBody))
 	require.NoError(t, json.NewDecoder(respMissing.Body).Decode(&missingBody))
+	require.Equal(t, map[string]any{"error": "document not found"}, missingBody)
 	require.Equal(t, missingBody, deniedBody)
 }
 

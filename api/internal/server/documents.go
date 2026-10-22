@@ -224,8 +224,7 @@ func (s *Server) handleListDrafts(c *fiber.Ctx) error {
 	return c.JSON(items)
 }
 
-// callerID returns the verified caller's user id (e.g. as author_id). Without an
-// identity it writes the 401 itself and returns it as the error.
+// callerID returns the verified caller's user id (e.g. as author_id).
 func (s *Server) callerID(c *fiber.Ctx) (pgtype.UUID, error) {
 	caller, err := s.accessCaller(c)
 	return caller.UserID, err

@@ -3,6 +3,7 @@
 package server
 
 import (
+	"errors"
 	"log/slog"
 	"time"
 
@@ -114,6 +115,7 @@ func New(cfg config.Config, log *slog.Logger, version string, opts ...Option) *S
 		// The request head must fit the read buffer (default 4 KiB, else 431); the
 		// BFF's chunked session cookie needs more.
 		ReadBufferSize: 32 * 1024,
+		ErrorHandler:   jsonErrorHandler(log),
 	})
 
 	s := &Server{
@@ -325,4 +327,17 @@ func (s *Server) registerMCP(limiter fiber.Handler) {
 		return
 	}
 	s.app.All("/mcp", s.auth.Handle, limiter, h.Handle)
+}
+
+// jsonErrorHandler renders a returned *fiber.Error as {"error": msg}; any other
+// error is logged and answered with a generic 500 so internals never leak.
+func jsonErrorHandler(log *slog.Logger) fiber.ErrorHandler {
+	return func(c *fiber.Ctx, err error) error {
+		var fe *fiber.Error
+		if errors.As(err, &fe) {
+			return errJSON(c, fe.Code, fe.Message)
+		}
+		log.ErrorContext(c.UserContext(), "unhandled request error", "error", err.Error())
+		return internalError(c)
+	}
 }

@@ -64,31 +64,29 @@ func (s *Server) handleReadDocument(c *fiber.Ctx) error {
 	return c.JSON(resp)
 }
 
-// readPublished resolves a readable published document through the catalog. A
-// non-nil error means the response is already written: the identical 404 for
-// missing/denied, 500 otherwise.
+// readPublished resolves a readable published document through the catalog:
+// the identical 404 for missing and denied, 500 otherwise.
 func (s *Server) readPublished(c *fiber.Ctx, caller access.Caller, slug string) (catalog.Document, error) {
 	doc, err := s.catalog.Get(c.UserContext(), caller, slug)
 	switch {
 	case err == nil:
 		return doc, nil
 	case errors.Is(err, catalog.ErrNotFound):
-		return catalog.Document{}, notFound(c, "document")
+		return catalog.Document{}, fiber.NewError(fiber.StatusNotFound, "document not found")
 	case errors.Is(err, catalog.ErrIntegrity):
 		// A data bug to alert on, never a render-on-read fallback.
 		s.log.ErrorContext(c.UserContext(), "published document missing publish-time content", "slug", slug)
 	default:
 		s.log.ErrorContext(c.UserContext(), "read document failed", "error", err.Error())
 	}
-	return catalog.Document{}, internalError(c)
+	return catalog.Document{}, fiber.NewError(fiber.StatusInternalServerError, "internal error")
 }
 
-// accessCaller projects the verified identity onto an access.Caller. Without an
-// identity it writes the 401 itself and returns it as the error.
+// accessCaller projects the verified identity onto an access.Caller.
 func (s *Server) accessCaller(c *fiber.Ctx) (access.Caller, error) {
 	id, ok := auth.IdentityFromCtx(c)
 	if !ok {
-		return access.Caller{}, errJSON(c, fiber.StatusUnauthorized, "unauthorized")
+		return access.Caller{}, fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
 	}
 	return id.Caller(), nil
 }
