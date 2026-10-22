@@ -2,7 +2,7 @@
 // every page. Only non-sensitive fields cross to the client — never a token.
 import type { LayoutServerLoad } from './$types';
 import { apiFetch } from '$lib/server/api';
-import { THEME_COOKIE, parseTheme } from '$lib/theme';
+import { PANEL_COOKIE, THEME_COOKIE, parseTheme } from '$lib/theme';
 
 // Only decides whether the Admin link is shown; the API re-checks the role on every
 // /api/admin request, so a stale or forged value grants nothing. Its own dependency
@@ -24,6 +24,6 @@ export const load: LayoutServerLoad = async ({ locals, cookies, depends }) => {
 		user: locals.user ?? null,
 		isSuperAdmin: await loadIsSuperAdmin(locals.accessToken),
 		theme: parseTheme(cookies.get(THEME_COOKIE)),
-		panelOpen: cookies.get('lkb_panel') === '1'
+		panelOpen: cookies.get(PANEL_COOKIE) === '1'
 	};
 };
