@@ -8,7 +8,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	const params = new URLSearchParams();
 	params.set('q', url.searchParams.get('q') ?? '');
 	params.set('limit', url.searchParams.get('limit') ?? '20');
-	// LOO-34 facets + client filters: forwarded as-is; the API allowlists and
+	// facets + client filters: forwarded as-is; the API allowlists and
 	// validates them and ANDs them to its own access filter (they only narrow).
 	for (const key of ['facets', 'tags', 'author_id', 'published_from', 'published_to']) {
 		for (const v of url.searchParams.getAll(key)) params.append(key, v);

@@ -1,8 +1,8 @@
-// Server-side helpers for the super-admin pages (LOO-56). Every call goes to the
-// Go API's /api/admin/* with the caller's bearer; the API is the only authority on
-// who is a super-admin (re-checked per request), these helpers just map statuses.
+// Super-admin helpers. The API re-checks the role on every /api/admin call; these
+// just map statuses.
 import { error, fail, json } from '@sveltejs/kit';
-import { apiFetch } from './api';
+import { apiFetch, apiMessage } from './api';
+import type { TagGrant } from '$lib/admin';
 
 /** Shapes returned by /api/admin/*. */
 export interface AdminGroup {
@@ -20,16 +20,9 @@ export interface AdminUser {
 	is_super_admin: boolean;
 }
 
-export interface AdminTagGrant {
-	tag_id: string;
-	slug: string;
-	label: string;
-	created_at?: string;
-}
-
 export interface AdminGroupDetail extends AdminGroup {
 	members: AdminUser[];
-	tags: AdminTagGrant[];
+	tags: TagGrant[];
 }
 
 const FORBIDDEN = 'You do not have access to this page.';
@@ -101,17 +94,6 @@ function adminRequest(
 		headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
 		body: body === undefined ? undefined : JSON.stringify(body)
 	});
-}
-
-/** apiMessage extracts the API's `error` text, falling back to the status. */
-export async function apiMessage(res: Response): Promise<string> {
-	try {
-		const b = (await res.json()) as { error?: string };
-		if (b.error) return b.error;
-	} catch {
-		// ignore
-	}
-	return `Request failed (${res.status})`;
 }
 
 /** formString reads a trimmed string form field ('' when missing). */

@@ -1,4 +1,4 @@
-// Draft-delete client logic (LOO-58). The editor topbar and the history panel both
+// Draft-delete client logic. The editor topbar and the history panel both
 // offer "Delete"; this module holds the rule for when it is offered and the call to
 // the same-origin proxy (which attaches the bearer server-side). Kept out of the
 // components so it is unit-testable. The SERVER is authoritative: it only deletes
@@ -20,8 +20,8 @@ export function canDeleteEntry(id: string | null | undefined, status: string): b
 }
 
 /**
- * deleteEntry sends DELETE to /entries/{id}/delete (NOT /api/*, to avoid the
- * dev-time Vite /api proxy). Resolves on success; throws on any non-OK status,
+ * deleteEntry sends DELETE to /entries/{id}/delete (see
+ * lib/server/api.ts for why not /api/*). Resolves on success; throws on any non-OK status,
  * including 404 (gone, not yours, or published — the API never says which).
  */
 export async function deleteEntry(id: string, fetchFn: typeof fetch = fetch): Promise<void> {

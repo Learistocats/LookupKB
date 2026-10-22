@@ -1,4 +1,4 @@
-// Personal Access Token pass-through (LOO-37). The API port is loopback-only in
+// Personal Access Token pass-through. The API port is loopback-only in
 // compose, so programmatic clients reach the PAT read surface through the web
 // origin: /api/v1/* and /mcp are forwarded verbatim to the API. These helpers
 // are pure so the forwarding rules are unit-tested.
@@ -36,7 +36,7 @@ const FORWARD_REQUEST = [
 	'content-type',
 	'if-none-match',
 	'if-modified-since',
-	// MCP streamable-HTTP transport (LOO-59). Origin lets the API refuse browser
+	// MCP streamable-HTTP transport. Origin lets the API refuse browser
 	// origins on /mcp (DNS-rebinding guidance); native clients send none.
 	'origin',
 	'mcp-session-id',
@@ -57,7 +57,7 @@ const FORWARD_RESPONSE = [
 	'x-request-id',
 	'www-authenticate',
 	'mcp-session-id',
-	// Public read API (LOO-38): content negotiation + the boxing headers on
+	// Public read API: content negotiation + the boxing headers on
 	// ?format=html, so the web origin never serves author HTML without them.
 	'vary',
 	'content-security-policy',

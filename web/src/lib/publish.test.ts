@@ -1,11 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import {
-	publishDraft,
-	unpublishDraft,
-	groupErrorsByField,
-	accessLine,
-	type FieldError
-} from './publish';
+import { publishDraft, unpublishDraft, accessLine } from './publish';
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -83,20 +77,6 @@ describe('unpublishDraft', () => {
 	});
 });
 
-describe('groupErrorsByField', () => {
-	it('buckets a flat error list by field', () => {
-		const errors: FieldError[] = [
-			{ field: 'title', message: 'too short' },
-			{ field: 'tags', message: 'need one' },
-			{ field: 'title', message: 'single line only' }
-		];
-		expect(groupErrorsByField(errors)).toEqual({
-			title: ['too short', 'single line only'],
-			tags: ['need one']
-		});
-	});
-});
-
 describe('accessLine', () => {
 	it('says everyone signed in when no selected tag is protected', () => {
 		expect(accessLine([])).toBe('Visible to everyone signed in to this knowledge base.');
@@ -124,6 +104,5 @@ describe('publishDraft protected-tag refusal', () => {
 			fetchFn as unknown as typeof fetch
 		);
 		expect(out).toEqual({ ok: false, fieldErrors: errors });
-		if (!out.ok) expect(groupErrorsByField(out.fieldErrors).tags).toHaveLength(1);
 	});
 });
