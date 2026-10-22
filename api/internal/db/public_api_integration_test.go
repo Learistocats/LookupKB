@@ -186,16 +186,27 @@ func listSlugs(t *testing.T, h *apiHarness, authz, query string) ([]string, stri
 	return out, page.Next
 }
 
-func v1SearchSlugs(t *testing.T, h *apiHarness, authz, q string) []string {
+// tryV1SearchSlugs reports ok=false on a non-200 instead of failing, for polling:
+// the worker creates the Meili index asynchronously, so early searches can 503.
+func tryV1SearchSlugs(t *testing.T, h *apiHarness, authz, q string) ([]string, bool) {
 	t.Helper()
 	code, b := h.call(authz, http.MethodGet, "/api/v1/search?q="+q, "", nil)
-	require.Equal(t, http.StatusOK, code, string(b))
+	if code != http.StatusOK {
+		return nil, false
+	}
 	var res search.Result
 	require.NoError(t, json.Unmarshal(b, &res))
 	out := []string{}
 	for _, hit := range res.Hits {
 		out = append(out, hit.Slug)
 	}
+	return out, true
+}
+
+func v1SearchSlugs(t *testing.T, h *apiHarness, authz, q string) []string {
+	t.Helper()
+	out, ok := tryV1SearchSlugs(t, h, authz, q)
+	require.True(t, ok, "search should answer 200")
 	return out
 }
 
@@ -239,7 +250,8 @@ func TestPublicReadAPI(t *testing.T) {
 		require.Equal(t, []string{openSlug}, got)
 	}
 	require.Eventually(t, func() bool {
-		return len(v1SearchSlugs(t, h, alicePAT, "zircon")) == 2
+		slugs, ok := tryV1SearchSlugs(t, h, alicePAT, "zircon")
+		return ok && len(slugs) == 2
 	}, 20*time.Second, 200*time.Millisecond, "both published entries indexed")
 	require.Equal(t, []string{openSlug}, v1SearchSlugs(t, h, bobPAT, "zircon"))
 

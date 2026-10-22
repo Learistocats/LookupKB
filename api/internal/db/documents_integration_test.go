@@ -15,7 +15,7 @@ import (
 	appdb "github.com/Learistocats/LookupKB/api/internal/db"
 )
 
-// TestDraftRoundTrip proves the walking-skeleton persistence path:
+// TestDraftRoundTrip proves the draft persistence path:
 // CreateDraft → SaveDraft → GetOwnedDocument round-trips through Postgres, the save is
 // scoped to the owner, and a different author cannot read the draft.
 func TestDraftRoundTrip(t *testing.T) {
