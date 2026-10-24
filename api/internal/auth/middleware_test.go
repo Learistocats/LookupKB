@@ -3,7 +3,6 @@ package auth
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,26 +10,46 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/require"
 )
 
 const testSecret = "0123456789abcdef0123456789abcdef"
 
-// fakeGroups records the lookup and returns canned group ids/error.
-type fakeGroups struct {
-	called bool
-	gotID  pgtype.UUID
-	ids    []pgtype.UUID
-	err    error
+// fakeStore is an in-memory auth.Store.
+type fakeStore struct {
+	super     bool
+	superErr  error
+	superHits int
+
+	rows      map[string]dbgen.GetActiveAPITokenByPrefixRow // by prefix
+	lookupErr error
+	touched   []pgtype.UUID
 }
 
-func (f *fakeGroups) ListUserGroupIDs(_ context.Context, userID pgtype.UUID) ([]pgtype.UUID, error) {
-	f.called = true
-	f.gotID = userID
-	return f.ids, f.err
+func (f *fakeStore) GetUserIsSuperAdmin(context.Context, pgtype.UUID) (bool, error) {
+	f.superHits++
+	return f.super, f.superErr
+}
+
+func (f *fakeStore) GetActiveAPITokenByPrefix(_ context.Context, prefix string) (dbgen.GetActiveAPITokenByPrefixRow, error) {
+	if f.lookupErr != nil {
+		return dbgen.GetActiveAPITokenByPrefixRow{}, f.lookupErr
+	}
+	r, ok := f.rows[prefix]
+	if !ok {
+		return dbgen.GetActiveAPITokenByPrefixRow{}, pgx.ErrNoRows
+	}
+	return r, nil
+}
+
+func (f *fakeStore) TouchAPITokenLastUsed(_ context.Context, id pgtype.UUID) error {
+	f.touched = append(f.touched, id)
+	return nil
 }
 
 func newTestTokens(t *testing.T) *Tokens {
@@ -68,17 +87,17 @@ func doGet(t *testing.T, app *fiber.App, authHeader string) *http.Response {
 }
 
 func TestMiddleware_MissingHeaderIs401(t *testing.T) {
-	g := &fakeGroups{}
-	app := newTestApp(NewMiddleware(newTestTokens(t), g, discardLogger()))
+	st := &fakeStore{}
+	app := newTestApp(NewMiddleware(newTestTokens(t), st, discardLogger()))
 
 	resp := doGet(t, app, "")
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-	require.False(t, g.called, "no token must not touch the database")
+	require.Zero(t, st.superHits, "no token must not touch the database")
 }
 
 func TestMiddleware_MalformedHeaderIs401(t *testing.T) {
-	app := newTestApp(NewMiddleware(newTestTokens(t), &fakeGroups{}, discardLogger()))
+	app := newTestApp(NewMiddleware(newTestTokens(t), &fakeStore{}, discardLogger()))
 
 	for _, h := range []string{"Basic abc", "Bearer", "Bearer ", "token xyz", "Bearer not.a.jwt"} {
 		resp := doGet(t, app, h)
@@ -87,12 +106,11 @@ func TestMiddleware_MalformedHeaderIs401(t *testing.T) {
 	}
 }
 
-func TestMiddleware_ValidTokenPopulatesIdentityAndGroups(t *testing.T) {
+func TestMiddleware_ValidTokenPopulatesIdentity(t *testing.T) {
 	tk := newTestTokens(t)
 	uid := uuid.New()
-	gid := uuid.New()
-	g := &fakeGroups{ids: []pgtype.UUID{{Bytes: gid, Valid: true}}}
-	app := newTestApp(NewMiddleware(tk, g, discardLogger()))
+	st := &fakeStore{}
+	app := newTestApp(NewMiddleware(tk, st, discardLogger()))
 
 	raw, _, err := tk.Issue(uid.String(), "user@example.com")
 	require.NoError(t, err)
@@ -100,18 +118,17 @@ func TestMiddleware_ValidTokenPopulatesIdentityAndGroups(t *testing.T) {
 	defer resp.Body.Close()
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	require.Equal(t, pgtype.UUID{Bytes: uid, Valid: true}, g.gotID)
-
 	var got Identity
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
-	require.Equal(t, uid.String(), got.UserID)
+	require.Equal(t, uid, got.UserID)
 	require.Equal(t, "user@example.com", got.Email)
-	require.Equal(t, []string{gid.String()}, got.Groups)
+	require.Equal(t, MethodSession, got.Method)
+	require.Equal(t, 1, st.superHits, "a session request is exactly one DB read")
 }
 
 func TestMiddleware_ForeignSecretIs401(t *testing.T) {
-	g := &fakeGroups{}
-	app := newTestApp(NewMiddleware(newTestTokens(t), g, discardLogger()))
+	st := &fakeStore{}
+	app := newTestApp(NewMiddleware(newTestTokens(t), st, discardLogger()))
 
 	other, err := NewTokens(strings.Repeat("x", MinSecretBytes), time.Hour)
 	require.NoError(t, err)
@@ -121,31 +138,5 @@ func TestMiddleware_ForeignSecretIs401(t *testing.T) {
 	resp := doGet(t, app, "Bearer "+raw)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-	require.False(t, g.called, "an unverified token must never reach the DB")
-}
-
-func TestMiddleware_GroupLookupFailureIs500(t *testing.T) {
-	tk := newTestTokens(t)
-	app := newTestApp(NewMiddleware(tk, &fakeGroups{err: errors.New("db down")}, discardLogger()))
-
-	raw, _, err := tk.Issue(uuid.NewString(), "user@example.com")
-	require.NoError(t, err)
-	resp := doGet(t, app, "Bearer "+raw)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
-}
-
-func TestMiddleware_NilGroupsYieldsEmptyGroups(t *testing.T) {
-	tk := newTestTokens(t)
-	app := newTestApp(NewMiddleware(tk, nil, discardLogger()))
-
-	raw, _, err := tk.Issue(uuid.NewString(), "user@example.com")
-	require.NoError(t, err)
-	resp := doGet(t, app, "Bearer "+raw)
-	defer resp.Body.Close()
-
-	require.Equal(t, http.StatusOK, resp.StatusCode)
-	var got Identity
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
-	require.Empty(t, got.Groups)
+	require.Zero(t, st.superHits, "an unverified token must never reach the DB")
 }

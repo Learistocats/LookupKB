@@ -15,7 +15,6 @@
 	let failed = $state('');
 	let active = $state(-1);
 	let input = $state<HTMLInputElement>();
-	// Shortcut hint for the search box (⌘K on Apple devices, Ctrl K elsewhere).
 	let shortcut = $state('Ctrl K');
 
 	const hasQuery = $derived(query.trim().length > 0);
@@ -140,7 +139,7 @@
 				</p>
 			{:else if list.length > 0}
 				{#if !hasQuery}
-					<h2 class="section">Recently published</h2>
+					<h2 class="eyebrow section">Recently published</h2>
 				{/if}
 				<ul id="results" role="listbox" aria-label="Search results">
 					{#each list as hit, i (hit.slug)}
@@ -315,11 +314,6 @@
 	.section {
 		margin: 0 0 0.5rem;
 		padding: 0 0.75rem;
-		color: var(--fg-subtle);
-		font-size: var(--text-xs);
-		font-weight: 600;
-		letter-spacing: 0.06em;
-		text-transform: uppercase;
 	}
 
 	ul {

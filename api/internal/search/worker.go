@@ -2,19 +2,17 @@ package search
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/Learistocats/LookupKB/api/internal/db"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// Worker tuning. Polling every second keeps index freshness under the 2 s
-// budget (05-search-and-indexing.md §5) without LISTEN/NOTIFY plumbing.
+// Polling every second keeps index freshness within budget without LISTEN/NOTIFY.
 const (
 	pollInterval = time.Second
 	maxBackoff   = 30 * time.Second
@@ -28,9 +26,8 @@ type Store interface {
 	CompleteIndexOp(ctx context.Context, id int64) error
 	FailIndexOp(ctx context.Context, arg dbgen.FailIndexOpParams) error
 	RequeueStaleIndexOps(ctx context.Context) error
-	GetIndexProjection(ctx context.Context, id pgtype.UUID) (dbgen.GetIndexProjectionRow, error)
-	ListPublishedDocumentIDs(ctx context.Context) ([]pgtype.UUID, error)
-	EnqueueIndexOp(ctx context.Context, arg dbgen.EnqueueIndexOpParams) error
+	GetIndexProjections(ctx context.Context, ids []pgtype.UUID) ([]dbgen.GetIndexProjectionsRow, error)
+	EnqueueAllPublishedUpserts(ctx context.Context) (int64, error)
 }
 
 // Worker drains index_outbox into Meilisearch.
@@ -100,33 +97,34 @@ func (w *Worker) prepare(ctx context.Context) error {
 	if count > 0 {
 		return nil
 	}
-	ids, err := w.store.ListPublishedDocumentIDs(ctx)
+	queued, err := w.store.EnqueueAllPublishedUpserts(ctx)
 	if err != nil {
-		return fmt.Errorf("list published: %w", err)
+		return fmt.Errorf("enqueue bootstrap ops: %w", err)
 	}
-	for _, id := range ids {
-		if err := w.store.EnqueueIndexOp(ctx, dbgen.EnqueueIndexOpParams{DocumentID: id, Op: "upsert"}); err != nil {
-			return fmt.Errorf("enqueue bootstrap op: %w", err)
-		}
-	}
-	if len(ids) > 0 {
-		w.log.InfoContext(ctx, "search index empty, queued published documents", "count", len(ids))
+	if queued > 0 {
+		w.log.InfoContext(ctx, "search index empty, queued published documents", "count", queued)
 	}
 	return nil
 }
 
 // processBatch claims and applies one batch, returning how many ops it claimed.
-// A failing op is recorded on its own row; the batch error is only returned when
-// every op failed (Meilisearch is likely down), which slows the poll loop.
+// Upserts share one projection query and one Meilisearch call. A failing op is
+// recorded on its own row; the batch error is only returned when every op failed
+// (Meilisearch is likely down), which slows the poll loop.
 func (w *Worker) processBatch(ctx context.Context) (int, error) {
 	ops, err := w.store.ClaimIndexOps(ctx, batchSize)
 	if err != nil {
 		return 0, fmt.Errorf("claim ops: %w", err)
 	}
+	if len(ops) == 0 {
+		return 0, nil
+	}
+	results := w.apply(ctx, ops)
+
 	failed := 0
 	var lastErr error
-	for _, op := range ops {
-		if err := w.apply(ctx, op); err != nil {
+	for i, op := range ops {
+		if err := results[i]; err != nil {
 			failed++
 			lastErr = err
 			msg := err.Error()
@@ -140,60 +138,83 @@ func (w *Worker) processBatch(ctx context.Context) (int, error) {
 			return len(ops), fmt.Errorf("complete op: %w", err)
 		}
 	}
-	if len(ops) > 0 && failed == len(ops) {
+	if failed == len(ops) {
 		return len(ops), lastErr
 	}
 	return len(ops), nil
 }
 
-func (w *Worker) apply(ctx context.Context, op dbgen.ClaimIndexOpsRow) error {
-	id := uuid.UUID(op.DocumentID.Bytes).String()
-	if op.Op == "delete" {
-		return w.client.Delete(ctx, id)
+// apply pushes the ops to Meilisearch and returns one result per op. An upsert
+// for a document that is no longer published becomes a delete so the index keeps
+// no stale copy.
+func (w *Worker) apply(ctx context.Context, ops []dbgen.ClaimIndexOpsRow) []error {
+	results := make([]error, len(ops))
+
+	var ids []pgtype.UUID
+	for _, op := range ops {
+		if op.Op != "delete" {
+			ids = append(ids, op.DocumentID)
+		}
 	}
-	row, err := w.store.GetIndexProjection(ctx, op.DocumentID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		// No longer published (unpublished/deleted since enqueue): make sure the
-		// index does not keep a stale copy.
-		return w.client.Delete(ctx, id)
+	rows := map[pgtype.UUID]dbgen.GetIndexProjectionsRow{}
+	var loadErr error
+	if len(ids) > 0 {
+		list, err := w.store.GetIndexProjections(ctx, ids)
+		if err != nil {
+			loadErr = fmt.Errorf("load projections: %w", err)
+		}
+		for _, r := range list {
+			rows[r.ID] = r
+		}
 	}
-	if err != nil {
-		return fmt.Errorf("load projection: %w", err)
+
+	var docs []IndexDoc
+	var upserted []int
+	queued := map[pgtype.UUID]bool{}
+	for i, op := range ops {
+		id := uuid.UUID(op.DocumentID.Bytes).String()
+		if op.Op == "delete" {
+			results[i] = w.client.Delete(ctx, id)
+			continue
+		}
+		if loadErr != nil {
+			results[i] = loadErr
+			continue
+		}
+		row, ok := rows[op.DocumentID]
+		if !ok {
+			results[i] = w.client.Delete(ctx, id)
+			continue
+		}
+		upserted = append(upserted, i)
+		if !queued[op.DocumentID] {
+			queued[op.DocumentID] = true
+			docs = append(docs, Projection(row))
+		}
 	}
-	return w.client.Upsert(ctx, Projection(row))
+	if len(docs) > 0 {
+		err := w.client.Upsert(ctx, docs...)
+		for _, i := range upserted {
+			results[i] = err
+		}
+	}
+	return results
 }
 
 // Projection maps a published document row to its index document.
-func Projection(r dbgen.GetIndexProjectionRow) IndexDoc {
-	groups := make([]string, 0, len(r.AclGroupIds))
-	for _, g := range r.AclGroupIds {
-		groups = append(groups, uuid.UUID(g.Bytes).String())
-	}
-	tags := r.Tags
-	if tags == nil {
-		tags = []string{}
-	}
+func Projection(r dbgen.GetIndexProjectionsRow) IndexDoc {
 	return IndexDoc{
 		ID:          uuid.UUID(r.ID.Bytes).String(),
 		Slug:        r.Slug,
-		Title:       deref(r.Title),
-		Description: deref(r.Description),
-		BodyText:    TextFromHTML(deref(r.RenderedHtml)),
-		Tags:        tags,
+		Title:       db.Deref(r.Title),
+		Description: db.Deref(r.Description),
+		BodyText:    TextFromHTML(db.Deref(r.RenderedHtml)),
+		Tags:        db.NonNil(r.Tags),
 		Author:      r.Author,
 		AuthorID:    uuid.UUID(r.AuthorID.Bytes).String(),
 		CreatedAt:   r.CreatedAt.Time.Unix(),
 		PublishedAt: r.PublishedAt.Time.Unix(),
-		Access:      string(r.Access),
-		ACLGroupIDs: groups,
 	}
-}
-
-func deref(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }
 
 func sleep(ctx context.Context, d time.Duration) bool {

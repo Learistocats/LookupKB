@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { publishDraft, unpublishDraft, groupErrorsByField, type FieldError } from './publish';
+import { publishDraft, unpublishDraft, accessLine, type FieldError } from './publish';
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -77,16 +77,32 @@ describe('unpublishDraft', () => {
 	});
 });
 
-describe('groupErrorsByField', () => {
-	it('buckets a flat error list by field', () => {
-		const errors: FieldError[] = [
-			{ field: 'title', message: 'too short' },
-			{ field: 'tags', message: 'need one' },
-			{ field: 'title', message: 'single line only' }
+describe('accessLine', () => {
+	it('says everyone signed in when no selected tag is protected', () => {
+		expect(accessLine([])).toBe('Visible to everyone signed in to this knowledge base.');
+	});
+
+	it('names the protected tags otherwise', () => {
+		expect(accessLine(['reeflect'])).toBe(
+			'Only members of groups with access to reeflect (and you) can see this entry.'
+		);
+		expect(accessLine(['hr', 'reeflect'])).toBe(
+			'Only members of groups with access to hr, reeflect (and you) can see this entry.'
+		);
+	});
+});
+
+describe('publishDraft protected-tag refusal', () => {
+	it('returns the 422 tags error for the dialog to show on the tags field', async () => {
+		const errors = [
+			{ field: 'tags', message: `tag "reeflect" is protected; you don't have access to it` }
 		];
-		expect(groupErrorsByField(errors)).toEqual({
-			title: ['too short', 'single line only'],
-			tags: ['need one']
-		});
+		const fetchFn = vi.fn().mockResolvedValue(jsonResponse({ errors }, 422));
+		const out = await publishDraft(
+			'd1',
+			{ title: 't', description: 'd', tags: ['reeflect'] },
+			fetchFn as unknown as typeof fetch
+		);
+		expect(out).toEqual({ ok: false, fieldErrors: errors });
 	});
 });

@@ -1,49 +1,58 @@
 <!--
-  TagInput — reusable tag entry with debounced autocomplete + inline validation
-  (F6, AC-6.1/6.3). The repo's first shared component. It is intentionally NOT
-  wired into a page yet: the publish confirm flow that hosts it is LOO-14. Bind
-  `tags` to collect the selected slugs.
-
-  All tag logic (normalize/validate/search/debounce) lives in $lib/tags so it is
-  unit-tested independently and this component stays presentational.
+  TagInput — tag entry with debounced autocomplete and inline validation. Bind
+  `tags` to collect the selected slugs. `protectedTags` (read-only for the parent)
+  reports which selected tags are protected, learned from suggestions and, for
+  prefilled or typed tags, resolved through the autocomplete endpoint.
 -->
 <script lang="ts">
 	import Icon from './Icon.svelte';
-	import {
-		normalizeTag,
-		validateTags,
-		searchTags,
-		debounce,
-		defaultTagLimits,
-		type TagLimits,
-		type TagSuggestion
-	} from '$lib/tags';
+	import { tagSuggester } from './tagSuggest';
+	import { normalizeTag, validateTags, resolveProtected, type TagSuggestion } from '$lib/tags';
 
 	let {
 		tags = $bindable([]),
-		limits = defaultTagLimits,
-		label = 'Tags'
-	}: { tags?: string[]; limits?: TagLimits; label?: string } = $props();
+		protectedTags = $bindable([])
+	}: {
+		tags?: string[];
+		protectedTags?: string[];
+	} = $props();
 
 	let draft = $state('');
 	let suggestions = $state<TagSuggestion[]>([]);
 
-	// Live validation of the current set drives the inline error feedback.
-	let errors = $derived(validateTags(tags, limits).errors);
+	// slug → protected, learned from suggestions and resolved for other tags.
+	let known = $state<Record<string, boolean>>({});
 
-	const runSearch = debounce(async (q: string) => {
-		if (!q.trim()) {
-			suggestions = [];
-			return;
+	$effect(() => {
+		const missing = tags.filter((t) => !(t in known));
+		if (missing.length === 0) return;
+		let cancelled = false;
+		resolveProtected(missing)
+			.then((found) => {
+				if (!cancelled) known = { ...known, ...found };
+			})
+			.catch(() => {
+				// Best-effort hint only; the publish gate is authoritative.
+			});
+		return () => {
+			cancelled = true;
+		};
+	});
+
+	$effect(() => {
+		protectedTags = tags.filter((t) => known[t]);
+	});
+
+	// Live validation of the current set drives the inline error feedback.
+	let errors = $derived(validateTags(tags).errors);
+
+	const runSearch = tagSuggester({
+		exclude: (slug) => tags.includes(slug),
+		onResult: (shown, all) => {
+			known = { ...known, ...Object.fromEntries(all.map((h) => [h.slug, h.protected])) };
+			suggestions = shown;
 		}
-		try {
-			const hits = await searchTags(q);
-			// Hide tags already chosen so the dropdown only offers new ones.
-			suggestions = hits.filter((h) => !tags.includes(h.slug));
-		} catch {
-			suggestions = []; // suggestions are best-effort; typing still works.
-		}
-	}, 200);
+	});
 
 	function onInput(value: string) {
 		draft = value;
@@ -74,13 +83,14 @@
 </script>
 
 <div class="tag-input">
-	<label class="field-label" for="tag-entry">{label}</label>
+	<label class="field-label" for="tag-entry">Tags</label>
 
 	{#if tags.length > 0}
 		<ul class="chips">
 			{#each tags as tag (tag)}
-				<li class="chip tag">
+				<li class="chip tag" class:chip-protected={known[tag]}>
 					<span>{tag}</span>
+					{#if known[tag]}<span class="visually-hidden">(protected)</span>{/if}
 					<button type="button" aria-label={`Remove ${tag}`} onclick={() => removeTag(tag)}>
 						<Icon name="x" size={12} />
 					</button>
@@ -105,7 +115,10 @@
 			{#each suggestions as s (s.slug)}
 				<li>
 					<button type="button" onclick={() => addTag(s.slug)}>
-						<span class="slug">{s.slug}</span>
+						<span class="slug">
+							{s.slug}
+							{#if s.protected}<span class="chip chip-protected">Protected</span>{/if}
+						</span>
 						<span class="count">{s.usage_count}</span>
 					</button>
 				</li>
@@ -157,6 +170,17 @@
 
 	.tag button:hover {
 		background: var(--surface);
+	}
+
+	.tag.chip-protected {
+		background: var(--protected-soft);
+		color: var(--protected);
+	}
+
+	.slug {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
 	}
 
 	.suggestions {

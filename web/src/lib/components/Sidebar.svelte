@@ -1,28 +1,34 @@
 <!--
-  Sidebar — the history panel: the caller's own entries, drafts pinned on top and
-  marked as such, then everything else by last edit. Collapsed by default and
-  toggled by the handle centered on the left edge (or ⌘/Ctrl + \). On narrow
-  screens it overlays the page with a scrim and closes after navigating.
+  Sidebar — the history panel: the caller's own entries, drafts pinned on top, then
+  everything else by last edit. Collapsed by default and toggled by the handle on the
+  left edge (or ⌘/Ctrl + \). On narrow screens it overlays the page with a scrim and
+  closes after navigating. Draft and unpublished items can be deleted behind a confirm.
 -->
 <script lang="ts">
 	import { page } from '$app/state';
-	import { afterNavigate } from '$app/navigation';
+	import { afterNavigate, goto } from '$app/navigation';
 	import Icon from './Icon.svelte';
-	import { relativeTime } from '$lib/time';
-	import { applyTheme, nextTheme, type ThemePref } from '$lib/theme';
+	import DeleteEntryDialog from './DeleteEntryDialog.svelte';
+	import { canDeleteEntry } from '$lib/drafts';
+	import { now, relativeTime } from '$lib/time';
+	import { PANEL_COOKIE, applyTheme, nextTheme, setPrefCookie, type ThemePref } from '$lib/theme';
 	import type { EntrySummary } from '$lib/entries';
 
 	let {
 		entries,
 		email,
+		isSuperAdmin = false,
 		theme = $bindable<ThemePref>('system'),
 		open = $bindable(false)
 	}: {
 		entries: EntrySummary[];
 		email: string | null;
+		isSuperAdmin?: boolean;
 		theme?: ThemePref;
 		open?: boolean;
 	} = $props();
+
+	const NARROW = '(max-width: 899px)';
 
 	const drafts = $derived(entries.filter((e) => e.status === 'draft'));
 	const others = $derived(entries.filter((e) => e.status !== 'draft'));
@@ -34,15 +40,9 @@
 	};
 	const themeIcon = { system: 'monitor', light: 'sun', dark: 'moon' } as const;
 
-	let now = $state(Date.now());
-	$effect(() => {
-		const t = setInterval(() => (now = Date.now()), 60_000);
-		return () => clearInterval(t);
-	});
-
 	function setOpen(v: boolean) {
 		open = v;
-		document.cookie = `lkb_panel=${v ? 1 : 0}; path=/; max-age=31536000; samesite=lax`;
+		setPrefCookie(PANEL_COOKIE, v ? 1 : 0);
 	}
 
 	function cycleTheme() {
@@ -59,22 +59,62 @@
 		return p === `/entries/${e.id}` || p === `/docs/${e.slug}`;
 	}
 
+	let pendingDelete = $state<EntrySummary | null>(null);
+	let confirmOpen = $state(false);
+
+	function askDelete(e: EntrySummary) {
+		pendingDelete = e;
+		confirmOpen = true;
+	}
+
+	async function onDeleted() {
+		const wasOpen = pendingDelete && isActive(pendingDelete);
+		pendingDelete = null;
+		if (wasOpen) await goto('/');
+	}
+
 	function onKeydown(ev: KeyboardEvent) {
 		if ((ev.metaKey || ev.ctrlKey) && ev.key === '\\') {
 			ev.preventDefault();
 			setOpen(!open);
-		} else if (ev.key === 'Escape' && open && window.matchMedia('(max-width: 899px)').matches) {
+		} else if (ev.key === 'Escape' && open && !confirmOpen && window.matchMedia(NARROW).matches) {
 			setOpen(false);
 		}
 	}
 
 	// On small screens the panel covers the page, so close it once a link is followed.
 	afterNavigate(({ type }) => {
-		if (type !== 'enter' && window.matchMedia('(max-width: 899px)').matches) open = false;
+		if (type !== 'enter' && window.matchMedia(NARROW).matches) setOpen(false);
 	});
 </script>
 
 <svelte:window onkeydown={onKeydown} />
+
+{#snippet row(e: EntrySummary)}
+	<li>
+		<a href={href(e)} class:active={isActive(e)} aria-current={isActive(e) ? 'page' : undefined}>
+			<span class="title" class:untitled={!e.title}>{e.title || 'Untitled'}</span>
+			{#if e.status === 'draft'}
+				<span class="chip chip-draft">Draft</span>
+			{:else if e.status === 'unpublished'}
+				<span class="chip">Unpublished</span>
+			{:else}
+				<time class="when" datetime={e.updated_at}>{relativeTime(e.updated_at, now())}</time>
+			{/if}
+		</a>
+		{#if canDeleteEntry(e.id, e.status)}
+			<button
+				class="icon-btn item-delete"
+				type="button"
+				title="Delete"
+				aria-label={`Delete ${e.title || 'Untitled'}`}
+				onclick={() => askDelete(e)}
+			>
+				<Icon name="trash" size={15} />
+			</button>
+		{/if}
+	</li>
+{/snippet}
 
 {#if open}
 	<button class="scrim" type="button" aria-label="Close panel" onclick={() => setOpen(false)}
@@ -86,7 +126,7 @@
 		<a class="wordmark" href="/">LookupKB</a>
 	</div>
 
-	<div class="new-form">
+	<div class="new-entry">
 		<a class="btn new" href="/entries/new">
 			<Icon name="plus" size={16} />
 			New entry
@@ -96,54 +136,46 @@
 	<nav class="lists">
 		{#if drafts.length > 0}
 			<section>
-				<h2>Drafts</h2>
+				<h2 class="eyebrow">Drafts</h2>
 				<ul>
 					{#each drafts as e (e.id)}
-						<li>
-							<a
-								href={href(e)}
-								class:active={isActive(e)}
-								aria-current={isActive(e) ? 'page' : undefined}
-							>
-								<span class="title" class:untitled={!e.title}>{e.title || 'Untitled'}</span>
-								<span class="chip chip-draft">Draft</span>
-							</a>
-						</li>
+						{@render row(e)}
 					{/each}
 				</ul>
 			</section>
 		{/if}
 
 		<section>
-			<h2>Entries</h2>
+			<h2 class="eyebrow">Entries</h2>
 			{#if others.length === 0}
 				<p class="empty">Published entries you write show up here.</p>
 			{:else}
 				<ul>
 					{#each others as e (e.id)}
-						<li>
-							<a
-								href={href(e)}
-								class:active={isActive(e)}
-								aria-current={isActive(e) ? 'page' : undefined}
-							>
-								<span class="title" class:untitled={!e.title}>{e.title || 'Untitled'}</span>
-								{#if e.status === 'unpublished'}
-									<span class="chip">Unpublished</span>
-								{:else}
-									<time class="when" datetime={e.updated_at}>{relativeTime(e.updated_at, now)}</time
-									>
-								{/if}
-							</a>
-						</li>
+						{@render row(e)}
 					{/each}
 				</ul>
 			{/if}
 		</section>
 	</nav>
 
+	{#if isSuperAdmin}
+		<div class="admin-link">
+			<a href="/admin" class:active={page.url.pathname.startsWith('/admin')}>Admin</a>
+		</div>
+	{/if}
+
 	<div class="panel-foot">
 		<span class="email" title={email ?? ''}>{email ?? 'Not signed in'}</span>
+		<a
+			class="icon-btn"
+			href="/settings"
+			title="Settings"
+			aria-label="Settings"
+			aria-current={page.url.pathname === '/settings' ? 'page' : undefined}
+		>
+			<Icon name="settings" size={17} />
+		</a>
 		<button
 			class="icon-btn"
 			type="button"
@@ -160,6 +192,8 @@
 		</form>
 	</div>
 </aside>
+
+<DeleteEntryDialog bind:open={confirmOpen} id={pendingDelete?.id} {onDeleted} />
 
 <button
 	class="handle"
@@ -207,7 +241,7 @@
 		text-decoration: none;
 	}
 
-	.new-form {
+	.new-entry {
 		padding: 0.5rem 0.75rem 0.75rem;
 	}
 
@@ -221,6 +255,9 @@
 		overflow-y: auto;
 		padding: 0 0.5rem 1rem;
 		display: grid;
+		/* minmax(0, 1fr): without it the auto track grows to the rows' unwrapped
+		   title width and pushes the row's chip/delete button past the panel edge. */
+		grid-template-columns: minmax(0, 1fr);
 		align-content: start;
 		gap: 1.25rem;
 	}
@@ -228,11 +265,6 @@
 	h2 {
 		margin: 0 0 0.25rem;
 		padding: 0 0.5rem;
-		color: var(--fg-subtle);
-		font-size: var(--text-xs);
-		font-weight: 600;
-		letter-spacing: 0.06em;
-		text-transform: uppercase;
 	}
 
 	ul {
@@ -240,10 +272,29 @@
 		margin: 0;
 		padding: 0;
 		display: grid;
+		grid-template-columns: minmax(0, 1fr);
 		gap: 1px;
 	}
 
+	li {
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
+		min-width: 0;
+		border-radius: var(--radius-sm);
+	}
+
+	li:hover {
+		background: var(--surface-hover);
+	}
+
+	li:has(a.active) {
+		background: var(--accent-soft);
+	}
+
 	li a {
+		flex: 1;
+		min-width: 0;
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
@@ -255,12 +306,37 @@
 	}
 
 	li a:hover {
-		background: var(--surface-hover);
 		text-decoration: none;
 	}
 
-	li a.active {
-		background: var(--accent-soft);
+	li .chip {
+		flex: none;
+	}
+
+	/* Revealed on row hover/focus. */
+	.item-delete {
+		flex: none;
+		width: 1.75rem;
+		height: 1.75rem;
+		margin-right: 0.25rem;
+		opacity: 0;
+		transition: opacity 120ms var(--ease);
+	}
+
+	li:hover .item-delete,
+	li:focus-within .item-delete {
+		opacity: 1;
+	}
+
+	.item-delete:hover {
+		color: var(--danger);
+		background: var(--danger-soft);
+	}
+
+	@media (hover: none) {
+		.item-delete {
+			opacity: 1;
+		}
 	}
 
 	.title {
@@ -283,10 +359,32 @@
 	}
 
 	.empty {
-		margin: 0;
 		padding: 0 0.5rem;
-		color: var(--fg-subtle);
+	}
+
+	.admin-link {
+		padding: 0 0.5rem 0.5rem;
+	}
+
+	.admin-link a {
+		display: flex;
+		align-items: center;
+		min-height: 2.125rem;
+		padding: 0.3rem 0.5rem;
+		border-radius: var(--radius-sm);
+		color: var(--fg-muted);
 		font-size: var(--text-sm);
+	}
+
+	.admin-link a:hover {
+		background: var(--surface-hover);
+		color: var(--fg);
+		text-decoration: none;
+	}
+
+	.admin-link a.active {
+		background: var(--accent-soft);
+		color: var(--fg);
 	}
 
 	.panel-foot {

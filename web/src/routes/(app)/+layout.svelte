@@ -36,7 +36,13 @@
 </script>
 
 <div class="shell" class:panel-open={open}>
-	<Sidebar entries={data.entries} email={data.user?.email ?? null} bind:open bind:theme />
+	<Sidebar
+		entries={data.entries}
+		email={data.user?.email ?? null}
+		isSuperAdmin={data.isSuperAdmin}
+		bind:open
+		bind:theme
+	/>
 	<div class="main">
 		<!-- Remount per entry: the editor seeds its state once, so moving from one
 		     entry (or /entries/new) to another must start fresh. Keyed on the route

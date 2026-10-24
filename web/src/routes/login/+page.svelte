@@ -10,21 +10,34 @@
 </svelte:head>
 
 <AuthShell tagline="Sign in">
-	<form method="POST">
+	<form class="stack" method="POST">
 		<input type="hidden" name="returnTo" value={data.returnTo} />
-		<label>
-			<span>Email</span>
-			<input name="email" type="email" autocomplete="email" required value={form?.email ?? ''} />
+		<label class="field">
+			<span class="field-label">Email</span>
+			<input
+				class="input input-lg"
+				name="email"
+				type="email"
+				autocomplete="email"
+				required
+				value={form?.email ?? ''}
+			/>
 		</label>
-		<label>
-			<span>Password</span>
-			<input name="password" type="password" autocomplete="current-password" required />
+		<label class="field">
+			<span class="field-label">Password</span>
+			<input
+				class="input input-lg"
+				name="password"
+				type="password"
+				autocomplete="current-password"
+				required
+			/>
 		</label>
 		{#if form?.error}
-			<p class="error" role="alert">{form.error}</p>
+			<p class="alert" role="alert">{form.error}</p>
 		{/if}
-		<button type="submit">Sign in</button>
+		<button class="btn btn-primary btn-lg" type="submit">Sign in</button>
 	</form>
 
-	<p class="alt">No account yet? <a href="/signup">Create one</a></p>
+	{#snippet footer()}No account yet? <a href="/signup">Create one</a>{/snippet}
 </AuthShell>

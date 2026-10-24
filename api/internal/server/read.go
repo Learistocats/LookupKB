@@ -3,36 +3,15 @@ package server
 import (
 	"errors"
 
+	"github.com/Learistocats/LookupKB/api/internal/access"
 	"github.com/Learistocats/LookupKB/api/internal/auth"
-	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
+	"github.com/Learistocats/LookupKB/api/internal/catalog"
+	"github.com/Learistocats/LookupKB/api/internal/db"
 	"github.com/gofiber/fiber/v2"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// CanRead decides read access to a PUBLISHED document — the single access-check
-// seam for the read path (F8, 03-data-model.md §2). M1 scope is public-or-author:
-//   - public docs are readable by any authenticated caller;
-//   - an author always reads their own doc, whatever its access.
-//
-// This is deliberately the ONE function M3 (F10/AC-10.2) extends with the group
-// intersection for restricted docs — add a branch here, don't rewrite call sites.
-// callerGroups is already threaded through for that M3 branch.
-func CanRead(callerID pgtype.UUID, callerGroups []string, access dbgen.DocumentAccess, authorID pgtype.UUID) bool {
-	if access == dbgen.DocumentAccessPublic {
-		return true
-	}
-	if callerID.Valid && callerID == authorID {
-		return true
-	}
-	// TODO(M3, F10/AC-10.2): restricted && intersect(callerGroups, doc.acl_group_ids).
-	return false
-}
-
-// readResponse is the published-safe projection returned by the read endpoint. It
-// carries the pre-rendered sanitized HTML plus the display metadata the view shows
-// (AC-8.5). It never exposes source_md, author_id, or the raw status — only the
-// published projection a reader is allowed to see.
+// readResponse is the published-safe projection for the reader: the pre-rendered
+// sanitized HTML plus display metadata, never source_md, author_id or status.
 type readResponse struct {
 	// ID is set only when the caller is the author, so the UI can link to the
 	// editor; other readers never learn the internal id.
@@ -46,77 +25,68 @@ type readResponse struct {
 	RenderedHTML      string   `json:"rendered_html"`
 }
 
-func toReadResponse(row dbgen.GetPublishedBySlugRow) readResponse {
-	tags := row.Tags
-	if tags == nil {
-		tags = []string{}
-	}
+func toReadResponse(d catalog.Document) readResponse {
+	title, desc, name := d.Title, d.Description, d.AuthorDisplayName
 	return readResponse{
-		Slug:              row.Slug,
-		Title:             row.Title,
-		Description:       row.Description,
-		AuthorDisplayName: &row.AuthorDisplayName,
-		PublishedAt:       formatTime(row.PublishedAt),
-		Tags:              tags,
-		RenderedHTML:      *row.RenderedHtml,
+		Slug:              d.Slug,
+		Title:             &title,
+		Description:       &desc,
+		AuthorDisplayName: &name,
+		PublishedAt:       d.PublishedAt,
+		Tags:              d.Tags,
+		RenderedHTML:      d.HTML,
 	}
 }
 
-// handleReadDocument serves a published document's cached, sanitized HTML by slug
-// (F8, AC-8.1). It is intentionally thin: a straight column read — NO Markdown
-// parsing or diagram rendering on this path (that happened once at publish).
+// handleReadDocument serves a published document's cached, sanitized HTML by slug:
+// a straight column read, no Markdown parsing on this path. Access (super-admin,
+// author, or granted every protected tag) is decided in internal/catalog.
 //
-// Not-found, not-published, soft-deleted, and access-denied all return the SAME 404
-// so a probing caller can never distinguish "doesn't exist" from "exists but denied"
-// (AC-8.4, no content/existence/timing leak).
+// Missing, unpublished, soft-deleted and denied all return the SAME 404 so a
+// probe cannot tell them apart.
 func (s *Server) handleReadDocument(c *fiber.Ctx) error {
-	ctx := c.UserContext()
-
 	slug := c.Params("slug")
 	if slug == "" {
 		return badRequest(c, "invalid slug")
 	}
-
-	callerID, err := s.callerID(c)
+	caller, err := s.accessCaller(c)
 	if err != nil {
 		return err
 	}
-	// Groups are needed for the M3 restricted-doc branch of CanRead; the caller's
-	// identity is guaranteed present here because callerID succeeded.
-	identity, _ := auth.IdentityFromCtx(c)
-
-	row, err := s.documents.GetPublishedBySlug(ctx, slug)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return documentNotFound(c)
-	}
+	doc, err := s.readPublished(c, caller, slug)
 	if err != nil {
-		s.log.ErrorContext(ctx, "read document failed", "error", err.Error())
-		return internalError(c)
+		return err
 	}
-
-	if !CanRead(callerID, identity.Groups, row.Access, row.AuthorID) {
-		// Identical body/status to the not-found case above — never leak existence.
-		return documentNotFound(c)
-	}
-
-	if row.RenderedHtml == nil {
-		// A published document must always have cached rendered_html (publish renders
-		// it). A missing value is a data-integrity bug to surface/alert on — NOT a
-		// "render just this once" fallback bolted onto the hot read path.
-		s.log.ErrorContext(ctx, "published document missing rendered_html", "slug", slug)
-		return internalError(c)
-	}
-
-	resp := toReadResponse(row)
-	if callerID.Valid && callerID == row.AuthorID {
-		resp.ID = formatUUID(row.ID)
+	resp := toReadResponse(doc)
+	if caller.UserID == doc.AuthorID {
+		resp.ID = db.FormatUUID(doc.ID)
 	}
 	return c.JSON(resp)
 }
 
-// documentNotFound is the read path's 404. Its body is identical whether the doc is
-// missing, unpublished, soft-deleted, or access-denied, so the two cases are
-// indistinguishable to a probing caller (AC-8.4).
-func documentNotFound(c *fiber.Ctx) error {
-	return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "document not found"})
+// readPublished resolves a readable published document through the catalog:
+// the identical 404 for missing and denied, 500 otherwise.
+func (s *Server) readPublished(c *fiber.Ctx, caller access.Caller, slug string) (catalog.Document, error) {
+	doc, err := s.catalog.Get(c.UserContext(), caller, slug)
+	switch {
+	case err == nil:
+		return doc, nil
+	case errors.Is(err, catalog.ErrNotFound):
+		return catalog.Document{}, fiber.NewError(fiber.StatusNotFound, "document not found")
+	case errors.Is(err, catalog.ErrIntegrity):
+		// A data bug to alert on, never a render-on-read fallback.
+		s.log.ErrorContext(c.UserContext(), "published document missing publish-time content", "slug", slug)
+	default:
+		s.log.ErrorContext(c.UserContext(), "read document failed", "error", err.Error())
+	}
+	return catalog.Document{}, fiber.NewError(fiber.StatusInternalServerError, "internal error")
+}
+
+// accessCaller projects the verified identity onto an access.Caller.
+func (s *Server) accessCaller(c *fiber.Ctx) (access.Caller, error) {
+	id, ok := auth.IdentityFromCtx(c)
+	if !ok {
+		return access.Caller{}, fiber.NewError(fiber.StatusUnauthorized, "unauthorized")
+	}
+	return id.Caller(), nil
 }

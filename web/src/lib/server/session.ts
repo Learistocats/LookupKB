@@ -1,6 +1,6 @@
 // Server-only session handling. The session (the API access token plus the
 // signed-in user's identity) is sealed into an encrypted JWE and stored in an
-// HttpOnly cookie, so the browser never sees a token in JS (06-security.md §5).
+// HttpOnly cookie, so the browser never sees a token in JS.
 // AES-GCM (dir/A256GCM) gives confidentiality + integrity in one primitive.
 //
 // This module is pure (crypto + encoding) so it is unit-testable without a

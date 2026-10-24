@@ -5,6 +5,12 @@ SHELL := /bin/bash
 COMPOSE := docker compose -f deploy/docker-compose.yml --env-file .env
 API_DIR := api
 WEB_DIR := web
+WEB_DEPS := $(WEB_DIR)/node_modules/.stamp
+
+# Reinstall only when the lockfile or manifest changes.
+$(WEB_DEPS): $(WEB_DIR)/pnpm-lock.yaml $(WEB_DIR)/package.json
+	cd $(WEB_DIR) && pnpm install --frozen-lockfile
+	@touch $@
 
 .DEFAULT_GOAL := help
 
@@ -45,6 +51,19 @@ logs: ## Tail stack logs
 garage-init: ## Assign the initial Garage cluster layout (run once after `make up`)
 	@COMPOSE="$(COMPOSE)" deploy/garage-init.sh
 
+define admin
+@test -n "$(EMAIL)" || (echo "usage: make admin-$(1) EMAIL=you@example.com" && exit 2)
+$(COMPOSE) exec api /api admin $(1) "$(EMAIL)"
+endef
+
+.PHONY: admin-grant
+admin-grant: ## Make an account super-admin: make admin-grant EMAIL=you@example.com
+	$(call admin,grant)
+
+.PHONY: admin-revoke
+admin-revoke: ## Remove super-admin: make admin-revoke EMAIL=you@example.com
+	$(call admin,revoke)
+
 .PHONY: config
 config: env ## Validate the Compose config
 	$(COMPOSE) config -q && echo "compose config OK"
@@ -59,26 +78,27 @@ build-api: ## Build the API binary into api/bin/
 	cd $(API_DIR) && go build -o bin/api ./cmd/api
 
 .PHONY: build-web
-build-web: ## Build the web static assets
-	cd $(WEB_DIR) && pnpm install --frozen-lockfile && pnpm run build
+build-web: $(WEB_DEPS) ## Build the web app (adapter-node server)
+	cd $(WEB_DIR) && pnpm run build
 
 ## ── Database ─────────────────────────────────────────────────────────────────
 
 # Migrations connect as the DDL-owning migration role. Override to target a
 # specific database; the default matches a locally-exposed dev Postgres.
 MIGRATE_DATABASE_URL ?= postgres://lookupkb_migrator:change-me-lookupkb-migrator@localhost:5432/$(or $(POSTGRES_DB),lookupkb)?sslmode=disable
+MIGRATE = cd $(API_DIR) && LOOKUPKB_MIGRATE_DATABASE_URL="$(MIGRATE_DATABASE_URL)" go run ./cmd/api migrate
 
 .PHONY: migrate
 migrate: ## Apply DB migrations (override MIGRATE_DATABASE_URL to target a DB)
-	cd $(API_DIR) && LOOKUPKB_MIGRATE_DATABASE_URL="$(MIGRATE_DATABASE_URL)" go run ./cmd/api migrate up
+	$(MIGRATE) up
 
 .PHONY: migrate-down
 migrate-down: ## Reverse the most recent migration
-	cd $(API_DIR) && LOOKUPKB_MIGRATE_DATABASE_URL="$(MIGRATE_DATABASE_URL)" go run ./cmd/api migrate down
+	$(MIGRATE) down
 
 .PHONY: migrate-status
 migrate-status: ## Show migration status
-	cd $(API_DIR) && LOOKUPKB_MIGRATE_DATABASE_URL="$(MIGRATE_DATABASE_URL)" go run ./cmd/api migrate status
+	$(MIGRATE) status
 
 .PHONY: sqlc
 sqlc: ## Regenerate type-safe SQL bindings (needs sqlc on PATH)
@@ -98,8 +118,8 @@ test-api: ## Run Go tests
 	cd $(API_DIR) && go test ./...
 
 .PHONY: test-web
-test-web: ## Run web unit tests
-	cd $(WEB_DIR) && pnpm install --frozen-lockfile && pnpm run test
+test-web: $(WEB_DEPS) ## Run web unit tests
+	cd $(WEB_DIR) && pnpm run test
 
 ## ── Lint / format ────────────────────────────────────────────────────────────
 
@@ -111,8 +131,8 @@ lint-api: ## Lint Go (golangci-lint) + go vet
 	cd $(API_DIR) && go vet ./... && golangci-lint run
 
 .PHONY: lint-web
-lint-web: ## Lint + type-check the web app
-	cd $(WEB_DIR) && pnpm install --frozen-lockfile && pnpm run lint && pnpm run check
+lint-web: $(WEB_DEPS) ## Lint + type-check the web app
+	cd $(WEB_DIR) && pnpm run lint && pnpm run check
 
 .PHONY: fmt
 fmt: ## Format Go and web sources

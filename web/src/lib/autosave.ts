@@ -1,16 +1,13 @@
-// Autosave scheduler for the draft editor (F2, AC-2.6). Kept as a pure, framework-
-// agnostic module (like $lib/editor/* and $lib/tags.ts) so the save cadence and the
-// dirty/saved state machine are unit-testable headlessly with fake timers; the Svelte
-// component is thin glue that feeds it snapshots and renders the emitted state.
+// Autosave scheduler for the draft editor: framework-agnostic so the cadence and the
+// dirty/saved state machine are testable with fake timers.
 //
-// Cadence: a save fires either after the author pauses (idle debounce) OR every
-// `intervalMs` while still dirty (periodic fallback) — whichever comes first — so a
-// user who keeps typing (resetting the debounce) still gets periodic persistence.
+// A save fires after the author pauses (idle debounce) or every `intervalMs` while
+// still dirty, whichever comes first, so continuous typing still persists.
 //
-// Data-safety contract: state is driven by the save request lifecycle, never a timer.
-// A rejected save transitions to `error` and stays dirty (it never shows a false
-// `saved`), and re-arms so the periodic fallback retries; `flush()` also retries. A
-// false-positive "saved" would be a silent data-loss trap, so it must never happen.
+// State follows the save request lifecycle, never a timer: a rejected save becomes
+// `error`, stays dirty and re-arms for a retry. A false "saved" would hide data loss.
+
+import { relativeTime } from './time';
 
 export type SaveStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
 
@@ -136,4 +133,34 @@ export function createAutosave<S>(opts: AutosaveOptions<S>): Autosave<S> {
 	}
 
 	return { update, flush, destroy };
+}
+
+export interface SaveIndicator {
+	text: string;
+	cls: 'idle' | 'saving' | 'dirty' | 'error' | 'ok';
+}
+
+/** saveIndicator maps the autosave state to the editor's status text. */
+export function saveIndicator(
+	state: AutosaveState,
+	persisted: boolean,
+	now: number
+): SaveIndicator {
+	const { status, lastSavedAt } = state;
+	if (!persisted && status !== 'saving' && status !== 'error') {
+		return { text: 'Not saved until you write something', cls: 'idle' };
+	}
+	switch (status) {
+		case 'saving':
+			return { text: 'Saving…', cls: 'saving' };
+		case 'dirty':
+			return { text: 'Unsaved changes', cls: 'dirty' };
+		case 'error':
+			return { text: 'Couldn’t save — retrying', cls: 'error' };
+		default: {
+			if (!lastSavedAt) return { text: 'All changes saved', cls: 'idle' };
+			const ago = relativeTime(lastSavedAt, now);
+			return { text: `Saved ${ago === 'now' ? 'just now' : `${ago} ago`}`, cls: 'ok' };
+		}
+	}
 }

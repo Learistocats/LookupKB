@@ -9,10 +9,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/Learistocats/LookupKB/api/internal/auth"
+	"github.com/Learistocats/LookupKB/api/internal/db"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/gofiber/fiber/v2"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -25,12 +25,13 @@ const (
 	maxDisplayNameRune = 100
 )
 
-// UserStore is the subset of the generated queries the signup/login handlers
+// UserStore is the subset of the generated queries the signup/login and /me handlers
 // need. *dbgen.Queries satisfies it; tests use a fake.
 type UserStore interface {
 	CreateUser(ctx context.Context, arg dbgen.CreateUserParams) (dbgen.User, error)
 	GetUserByEmail(ctx context.Context, email string) (dbgen.User, error)
 	TouchUserLastSeen(ctx context.Context, id pgtype.UUID) error
+	ListUserGroupIDs(ctx context.Context, userID pgtype.UUID) ([]pgtype.UUID, error)
 }
 
 type credentialsRequest struct {
@@ -60,15 +61,15 @@ func (s *Server) handleSignup(c *fiber.Ctx) error {
 	}
 	email, ok := normalizeEmail(body.Email)
 	if !ok {
-		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": "invalid email address"})
+		return errJSON(c, fiber.StatusUnprocessableEntity, "invalid email address")
 	}
 	if utf8.RuneCountInString(body.Password) < minPasswordRunes || len(body.Password) > maxPasswordBytes {
-		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": "password must be at least 12 characters"})
+		return errJSON(c, fiber.StatusUnprocessableEntity, "password must be at least 12 characters")
 	}
 	var displayName *string
 	if dn := strings.TrimSpace(body.DisplayName); dn != "" {
 		if utf8.RuneCountInString(dn) > maxDisplayNameRune {
-			return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{"error": "display name is too long"})
+			return errJSON(c, fiber.StatusUnprocessableEntity, "display name is too long")
 		}
 		displayName = &dn
 	}
@@ -84,9 +85,8 @@ func (s *Server) handleSignup(c *fiber.Ctx) error {
 		PasswordHash: hash,
 		DisplayName:  displayName,
 	})
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "an account with this email already exists"})
+	if db.IsUniqueViolation(err) {
+		return errJSON(c, fiber.StatusConflict, "an account with this email already exists")
 	}
 	if err != nil {
 		s.log.ErrorContext(c.UserContext(), "create user failed", "error", err.Error())
@@ -130,7 +130,7 @@ func (s *Server) handleLogin(c *fiber.Ctx) error {
 }
 
 func (s *Server) issueSession(c *fiber.Ctx, status int, user dbgen.User) error {
-	id := formatUUID(user.ID)
+	id := db.FormatUUID(user.ID)
 	token, exp, err := s.tokens.Issue(id, user.Email)
 	if err != nil {
 		s.log.ErrorContext(c.UserContext(), "issue token failed", "error", err.Error())
@@ -144,7 +144,7 @@ func (s *Server) issueSession(c *fiber.Ctx, status int, user dbgen.User) error {
 }
 
 func invalidCredentials(c *fiber.Ctx) error {
-	return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid email or password"})
+	return errJSON(c, fiber.StatusUnauthorized, "invalid email or password")
 }
 
 // normalizeEmail trims and validates a bare address ("Name <a@b>" forms are

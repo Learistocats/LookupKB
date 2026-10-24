@@ -3,6 +3,7 @@
 export type ThemePref = 'system' | 'light' | 'dark';
 
 export const THEME_COOKIE = 'lkb_theme';
+export const PANEL_COOKIE = 'lkb_panel';
 
 export function parseTheme(raw: string | undefined | null): ThemePref {
 	return raw === 'light' || raw === 'dark' ? raw : 'system';
@@ -13,10 +14,14 @@ export function nextTheme(t: ThemePref): ThemePref {
 	return t === 'system' ? 'light' : t === 'light' ? 'dark' : 'system';
 }
 
-/** applyTheme updates the document and persists the choice for a year. */
+/** setPrefCookie persists a UI preference for a year. */
+export function setPrefCookie(name: string, value: string | number): void {
+	document.cookie = `${name}=${value}; path=/; max-age=31536000; samesite=lax`;
+}
+
 export function applyTheme(t: ThemePref): void {
 	const root = document.documentElement;
 	if (t === 'system') delete root.dataset.theme;
 	else root.dataset.theme = t;
-	document.cookie = `${THEME_COOKIE}=${t}; path=/; max-age=31536000; samesite=lax`;
+	setPrefCookie(THEME_COOKIE, t);
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { normalizeTag, validateTags, searchTags, debounce } from './tags';
+import { normalizeTag, validateTags, searchTags, debounce, resolveProtected } from './tags';
 
 describe('normalizeTag', () => {
 	it('lowercases and kebab-cases mixed input', () => {
@@ -85,5 +85,23 @@ describe('debounce', () => {
 		vi.advanceTimersByTime(200);
 		expect(fn).toHaveBeenCalledTimes(1);
 		expect(fn).toHaveBeenCalledWith('c');
+	});
+});
+
+describe('resolveProtected', () => {
+	function jsonFetch(bySlug: Record<string, unknown[]>) {
+		return vi.fn(async (input: string | URL | Request) => {
+			const q = new URL(String(input), 'http://x').searchParams.get('q') ?? '';
+			return new Response(JSON.stringify(bySlug[q] ?? []), { status: 200 });
+		}) as unknown as typeof fetch;
+	}
+
+	it('flags exact slug matches that are protected and defaults the rest to false', async () => {
+		const fetchFn = jsonFetch({
+			reeflect: [{ slug: 'reeflect', label: 'reeflect', usage_count: 1, protected: true }],
+			go: [{ slug: 'golang', label: 'golang', usage_count: 3, protected: true }]
+		});
+		const out = await resolveProtected(['reeflect', 'go', 'brand-new'], fetchFn);
+		expect(out).toEqual({ reeflect: true, go: false, 'brand-new': false });
 	});
 });

@@ -33,8 +33,7 @@ type ClaimIndexOpsRow struct {
 	Attempts   int32       `json:"attempts"`
 }
 
-// Atomically claim the oldest pending ops for this worker. SKIP LOCKED lets
-// several workers run without double-processing a row.
+// SKIP LOCKED lets several workers run without double-processing a row.
 func (q *Queries) ClaimIndexOps(ctx context.Context, limit int32) ([]ClaimIndexOpsRow, error) {
 	rows, err := q.db.Query(ctx, claimIndexOps, limit)
 	if err != nil {
@@ -74,8 +73,24 @@ func (q *Queries) CompleteIndexOp(ctx context.Context, id int64) error {
 	return err
 }
 
-const enqueueIndexOp = `-- name: EnqueueIndexOp :exec
+const enqueueAllPublishedUpserts = `-- name: EnqueueAllPublishedUpserts :execrows
+INSERT INTO index_outbox (document_id, op)
+SELECT id, 'upsert'
+FROM documents
+WHERE status = 'published'
+  AND deleted_at IS NULL
+`
 
+// Index bootstrap: queue an upsert for every published document.
+func (q *Queries) EnqueueAllPublishedUpserts(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, enqueueAllPublishedUpserts)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const enqueueIndexOp = `-- name: EnqueueIndexOp :exec
 INSERT INTO index_outbox (document_id, op)
 VALUES ($1, $2)
 `
@@ -85,14 +100,7 @@ type EnqueueIndexOpParams struct {
 	Op         string      `json:"op"`
 }
 
-// Transactional outbox for Meilisearch index ops (03-data-model.md §4,
-// 00004_index_outbox.sql). The publish gate (LOO-14) enqueues a row in the SAME
-// transaction as the status flip, so a failed Meili write can be retried without
-// losing the DB commit and a rolled-back publish never leaves a stray index op.
-// The search worker (internal/search) claims, applies and completes them.
-// Enqueue an index operation for a document: 'upsert' on publish/re-publish,
-// 'delete' on unpublish. status defaults to 'pending' and attempts to 0 — the M2
-// worker scans (status,created_at) oldest-first.
+// 'upsert' on publish/re-publish, 'delete' on unpublish.
 func (q *Queries) EnqueueIndexOp(ctx context.Context, arg EnqueueIndexOpParams) error {
 	_, err := q.db.Exec(ctx, enqueueIndexOp, arg.DocumentID, arg.Op)
 	return err
@@ -126,7 +134,7 @@ SET status = 'pending',
 WHERE status = 'processing'
 `
 
-// Ops left 'processing' by a crashed worker go back to pending at startup.
+// Ops left 'processing' by a crashed worker.
 func (q *Queries) RequeueStaleIndexOps(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, requeueStaleIndexOps)
 	return err

@@ -3,7 +3,6 @@ package search
 import (
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
 
@@ -11,6 +10,17 @@ func TestTextFromHTML(t *testing.T) {
 	src := `<h1>Deploy</h1><p>Run <code>make&nbsp;up</code> &amp; wait.</p><ul><li>one</li><li>two</li></ul>` +
 		`<script>alert(1)</script><svg><text>diagram</text></svg><p>end</p>`
 	require.Equal(t, "Deploy Run make up & wait. one two end", TextFromHTML(src))
+}
+
+func TestReadableTextFromHTML(t *testing.T) {
+	src := `<h1>Deploy</h1><p>Run <code>make&nbsp;up</code> &amp; wait.</p><ul><li>one</li><li>two <em>three</em></li></ul>` +
+		"<pre><code>line 1\n  indented\n</code></pre>" +
+		`<script>alert(1)</script><svg><text>diagram</text></svg><table><tr><td>a</td><td>b</td></tr></table><p>end<br>next</p>`
+	want := "Deploy\n\nRun make up & wait.\n\n- one\n- two three\n\nline 1\n  indented\n\na b\n\nend\nnext"
+	require.Equal(t, want, ReadableTextFromHTML(src))
+	require.Equal(t, "", ReadableTextFromHTML(""))
+	require.Equal(t, "&lt;b&gt; is text", ReadableTextFromHTML(`<p>&amp;lt;b&amp;gt; is text</p>`),
+		"entities decode once: the output is plain text, not HTML")
 }
 
 func TestMarkHTML_EscapesEverythingButMarks(t *testing.T) {
@@ -24,26 +34,6 @@ func TestMarkHTML_ClosesUnbalanced(t *testing.T) {
 	require.Equal(t, "stray", markHTML("stray"+markPost))
 }
 
-func TestAccessFilter(t *testing.T) {
-	me, g1, g2 := uuid.NewString(), uuid.NewString(), uuid.NewString()
-
-	f, err := AccessFilter(Caller{UserID: me})
-	require.NoError(t, err)
-	require.Equal(t, `access = "public" OR author_id = "`+me+`"`, f)
-
-	f, err = AccessFilter(Caller{UserID: me, Groups: []string{g1, g2}})
-	require.NoError(t, err)
-	require.Equal(t, `access = "public" OR author_id = "`+me+`" OR acl_group_ids IN ["`+g1+`", "`+g2+`"]`, f)
-}
-
-// Nothing that isn't a UUID can reach the filter expression.
-func TestAccessFilter_RejectsInjection(t *testing.T) {
-	_, err := AccessFilter(Caller{UserID: `x" OR access = "restricted`})
-	require.Error(t, err)
-	_, err = AccessFilter(Caller{UserID: uuid.NewString(), Groups: []string{`"] OR access EXISTS`}})
-	require.Error(t, err)
-}
-
 func TestPickSnippet(t *testing.T) {
 	var h rawHit
 	h.Formatted.BodyText = "plain body"
@@ -53,4 +43,9 @@ func TestPickSnippet(t *testing.T) {
 	h.Formatted.BodyText = "has " + markPre + "match" + markPost
 	require.Equal(t, h.Formatted.BodyText, pickSnippet(h, true))
 	require.Equal(t, "the description", pickSnippet(h, false), "empty query → description")
+}
+
+func TestTruncateRunes(t *testing.T) {
+	require.Equal(t, "héé", truncateRunes("hééllo", 3))
+	require.Equal(t, "ab", truncateRunes("ab", 3))
 }

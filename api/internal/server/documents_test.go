@@ -35,7 +35,7 @@ func mustTokens() *auth.Tokens {
 type fakeDocStore struct {
 	createArg dbgen.CreateDraftParams
 	saveArg   dbgen.SaveDraftParams
-	getArg    dbgen.GetDraftParams
+	getArg    dbgen.GetOwnedDocumentParams
 	listArg   pgtype.UUID
 
 	createDoc dbgen.Document
@@ -48,15 +48,30 @@ type fakeDocStore struct {
 	getErr    error
 	listErr   error
 
-	setRenderedArg dbgen.SetRenderedHTMLParams
-	setRenderedErr error
-
 	mineRows  []dbgen.ListMyDocumentsRow
 	tagLabels []string
 
 	getBySlugArg string
 	getBySlugRow dbgen.GetPublishedBySlugRow
 	getBySlugErr error
+
+	// deniedSlugs are the protected tags the caller lacks (access policy).
+	deniedSlugs []string
+	deniedCalls int
+
+	listPublishedArg  dbgen.ListPublishedDocumentsParams
+	listPublishedRows []dbgen.ListPublishedDocumentsRow
+	listPublishedErr  error
+}
+
+// ListPublishedDocuments satisfies DocumentStore for the public catalogue tests.
+func (f *fakeDocStore) ListPublishedDocuments(_ context.Context, arg dbgen.ListPublishedDocumentsParams) ([]dbgen.ListPublishedDocumentsRow, error) {
+	f.listPublishedArg = arg
+	rows := f.listPublishedRows
+	if int(arg.MaxRows) < len(rows) {
+		rows = rows[:arg.MaxRows]
+	}
+	return rows, f.listPublishedErr
 }
 
 func (f *fakeDocStore) CreateDraft(_ context.Context, arg dbgen.CreateDraftParams) (dbgen.Document, error) {
@@ -69,7 +84,7 @@ func (f *fakeDocStore) SaveDraft(_ context.Context, arg dbgen.SaveDraftParams) (
 	return f.saveDoc, f.saveErr
 }
 
-func (f *fakeDocStore) GetDraft(_ context.Context, arg dbgen.GetDraftParams) (dbgen.Document, error) {
+func (f *fakeDocStore) GetOwnedDocument(_ context.Context, arg dbgen.GetOwnedDocumentParams) (dbgen.Document, error) {
 	f.getArg = arg
 	return f.getDoc, f.getErr
 }
@@ -77,13 +92,6 @@ func (f *fakeDocStore) GetDraft(_ context.Context, arg dbgen.GetDraftParams) (db
 func (f *fakeDocStore) ListDrafts(_ context.Context, authorID pgtype.UUID) ([]dbgen.ListDraftsRow, error) {
 	f.listArg = authorID
 	return f.listRows, f.listErr
-}
-
-// SetRenderedHTML satisfies DocumentStore. No handler calls it yet (the publish
-// gate, LOO-14, wires it), so the fake only records the last args for future use.
-func (f *fakeDocStore) SetRenderedHTML(_ context.Context, arg dbgen.SetRenderedHTMLParams) error {
-	f.setRenderedArg = arg
-	return f.setRenderedErr
 }
 
 func (f *fakeDocStore) ListMyDocuments(_ context.Context, authorID pgtype.UUID) ([]dbgen.ListMyDocumentsRow, error) {
@@ -100,6 +108,16 @@ func (f *fakeDocStore) ListDocumentTagLabels(_ context.Context, _ pgtype.UUID) (
 func (f *fakeDocStore) GetPublishedBySlug(_ context.Context, slug string) (dbgen.GetPublishedBySlugRow, error) {
 	f.getBySlugArg = slug
 	return f.getBySlugRow, f.getBySlugErr
+}
+
+// ListDeniedProtectedTags satisfies access.Querier for the read check.
+func (f *fakeDocStore) ListDeniedProtectedTags(_ context.Context, _ pgtype.UUID) ([]dbgen.ListDeniedProtectedTagsRow, error) {
+	f.deniedCalls++
+	rows := make([]dbgen.ListDeniedProtectedTagsRow, 0, len(f.deniedSlugs))
+	for _, s := range f.deniedSlugs {
+		rows = append(rows, dbgen.ListDeniedProtectedTagsRow{ID: pgUUID(uuid.New()), Slug: s, Label: s})
+	}
+	return rows, nil
 }
 
 // callerUUID is the internal user id carried by the test token's sub; handlers
@@ -195,7 +213,7 @@ func TestSaveDraft_PersistsBodyScopedToCaller(t *testing.T) {
 	require.Equal(t, "# hello", *store.saveArg.SourceMd)
 }
 
-// AC-2.2: an empty/partial metadata save must succeed with no validation error.
+// an empty/partial metadata save must succeed with no validation error.
 func TestSaveDraft_EmptyBodySucceeds(t *testing.T) {
 	id := uuid.New()
 	store := &fakeDocStore{saveDoc: draftDoc(id, "")}
@@ -226,7 +244,7 @@ func TestGetDraft_ReturnsOwnDraft(t *testing.T) {
 	require.Equal(t, "# persisted", *got.SourceMd)
 }
 
-// AC-2.5: the workspace list is owner-scoped — the handler must pass the caller's
+// the workspace list is owner-scoped — the handler must pass the caller's
 // internal id as the author filter, and it returns the store's rows projected to
 // the light list shape (title-or-null + updated time; never source_md).
 func TestListDrafts_ScopedToCaller(t *testing.T) {
@@ -256,7 +274,7 @@ func TestListDrafts_ScopedToCaller(t *testing.T) {
 }
 
 // An empty workspace returns a JSON array ([]), never null, so the client renders
-// uniformly (AC-2.5).
+// uniformly.
 func TestListDrafts_EmptyReturnsArray(t *testing.T) {
 	store := &fakeDocStore{listRows: nil}
 	s := newDraftServer(t, store)

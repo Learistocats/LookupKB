@@ -1,18 +1,16 @@
 <!--
-  PublishDialog — the F5 publish confirm step (AC-5.1/5.2). The repo's first modal.
-  It is the SECOND click of a genuinely two-step flow: the editor's "Publish" button
-  opens this dialog showing the metadata about to be published (title, description,
-  tags, access scope); the author reviews/edits it and must click "Confirm publish"
-  — a distinct action — before the document changes state.
+  PublishDialog — the deliberate second click of publishing: the editor's "Publish"
+  button opens it showing the metadata about to go live (title, description, tags,
+  who can see it); the author edits it and confirms.
 
-  Presentational: it binds the metadata and renders any server per-field errors
-  inline; the page owns the publish request (see $lib/publish). On a 422 the page
-  feeds `fieldErrors` back in and keeps the dialog open, so the document stays a
-  draft and the editor content is preserved.
+  Presentational: it binds the metadata and renders server per-field errors inline;
+  the page owns the publish request (see $lib/publish). On a 422 the page feeds
+  `fieldErrors` back in and keeps the dialog open. Modal chrome is ConfirmDialog.
 -->
 <script lang="ts">
+	import ConfirmDialog from './ConfirmDialog.svelte';
 	import TagInput from './TagInput.svelte';
-	import type { FieldError } from '$lib/publish';
+	import { accessLine, type FieldError } from '$lib/publish';
 
 	let {
 		open = $bindable(false),
@@ -36,36 +34,30 @@
 		onCancel: () => void;
 	} = $props();
 
-	let dialogEl = $state<HTMLDialogElement>();
+	let protectedTags = $state<string[]>([]);
 
-	// Drive the native <dialog> from the `open` prop so the parent controls it.
-	$effect(() => {
-		if (!dialogEl) return;
-		if (open && !dialogEl.open) dialogEl.showModal();
-		else if (!open && dialogEl.open) dialogEl.close();
-	});
-
-	// Per-field lookup for inline errors beside the offending input.
 	function errorsFor(field: string): string[] {
 		return fieldErrors.filter((e) => e.field === field).map((e) => e.message);
 	}
 
-	// Errors not tied to an editable field (e.g. the document being too large).
+	// Errors not tied to an editable field (e.g. document too large).
 	let otherErrors = $derived(
 		fieldErrors.filter((e) => !['title', 'description', 'tags'].includes(e.field))
 	);
 </script>
 
-<dialog bind:this={dialogEl} onclose={onCancel} aria-label="Publish document">
-	<header>
-		<h2>{confirmLabel === 'Update' ? 'Update published entry' : 'Publish entry'}</h2>
-		<p class="hint">
-			{confirmLabel === 'Update'
-				? 'Readers will see your latest changes once you confirm.'
-				: 'Check the details readers and search will see, then confirm.'}
-		</p>
-	</header>
-
+<ConfirmDialog
+	bind:open
+	ariaLabel="Publish document"
+	title={confirmLabel === 'Update' ? 'Update published entry' : 'Publish entry'}
+	message={confirmLabel === 'Update'
+		? 'Readers will see your latest changes once you confirm.'
+		: 'Check the details readers and search will see, then confirm.'}
+	confirmLabel={`Confirm ${confirmLabel.toLowerCase()}`}
+	{busy}
+	{onConfirm}
+	{onCancel}
+>
 	{#each otherErrors as err (err.message)}
 		<p class="error-text">{err.message}</p>
 	{/each}
@@ -97,63 +89,16 @@
 	</div>
 
 	<div class="field">
-		<TagInput bind:tags />
+		<TagInput bind:tags bind:protectedTags />
 		{#each errorsFor('tags') as err (err)}
 			<p class="error-text">{err}</p>
 		{/each}
 	</div>
 
-	<p class="access">Visible to everyone signed in to this knowledge base.</p>
-
-	<div class="actions">
-		<button type="button" class="btn btn-ghost" onclick={onCancel} disabled={busy}>Cancel</button>
-		<button type="button" class="btn btn-primary" onclick={onConfirm} disabled={busy}>
-			{busy ? 'Working…' : `Confirm ${confirmLabel.toLowerCase()}`}
-		</button>
-	</div>
-</dialog>
+	<p class="access" class:restricted={protectedTags.length > 0}>{accessLine(protectedTags)}</p>
+</ConfirmDialog>
 
 <style>
-	dialog {
-		width: min(34rem, calc(100vw - 2rem));
-		max-height: calc(100dvh - 2rem);
-		margin: auto;
-		padding: 1.5rem;
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		background: var(--surface);
-		color: var(--fg);
-		box-shadow: var(--shadow-md);
-	}
-
-	dialog[open] {
-		display: grid;
-		gap: 1rem;
-	}
-
-	dialog::backdrop {
-		background: var(--scrim);
-		backdrop-filter: blur(2px);
-	}
-
-	header {
-		display: grid;
-		gap: 0.25rem;
-	}
-
-	h2 {
-		margin: 0;
-		font-size: var(--text-lg);
-		font-weight: 650;
-		letter-spacing: -0.01em;
-	}
-
-	.hint {
-		margin: 0;
-		color: var(--fg-muted);
-		font-size: var(--text-sm);
-	}
-
 	textarea {
 		resize: vertical;
 	}
@@ -164,10 +109,7 @@
 		font-size: var(--text-sm);
 	}
 
-	.actions {
-		display: flex;
-		justify-content: flex-end;
-		gap: 0.5rem;
-		margin-top: 0.25rem;
+	.access.restricted {
+		color: var(--protected);
 	}
 </style>

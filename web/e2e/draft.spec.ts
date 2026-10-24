@@ -2,7 +2,7 @@
 // AUTOSAVES with no button press → reload → content persists → the history panel
 // pins it as a draft → publish → read → find it through search, through the REAL stack (web BFF → API → Postgres,
 // email/password session). Plus an ownership spot-check: a second user cannot read the
-// first user's draft (AC-2.3).
+// first user's draft.
 //
 // Runs only when E2E_BASE_URL + credentials are set (see playwright.config.ts);
 // otherwise the whole suite is skipped so CI without a stack stays green.
@@ -35,7 +35,7 @@ test.describe('draft round-trip', () => {
 		await editor.click();
 		await editor.pressSequentially(bodyMarker);
 
-		// AC-2.6: autosave persists with NO explicit Save click, creating the entry
+		// autosave persists with NO explicit Save click, creating the entry
 		// on its first save and moving to its real URL.
 		await expect(page.getByText(/^saved/i)).toBeVisible();
 		await expect(page).toHaveURL(/\/entries\/[0-9a-f-]{36}$/);
@@ -46,14 +46,14 @@ test.describe('draft round-trip', () => {
 		await expect(page.locator('textarea[name="source_md"]')).toHaveValue(bodyMarker);
 		await expect(page.locator('input[name="title"]')).toHaveValue(titleMarker);
 
-		// AC-2.5: the history panel lists the draft under Drafts, marked as such.
+		// the history panel lists the draft under Drafts, marked as such.
 		await page.getByRole('button', { name: /show your entries/i }).click();
 		const panel = page.getByRole('complementary', { name: /your entries/i });
 		const entry = panel.getByRole('link', { name: new RegExp(titleMarker) });
 		await expect(entry).toBeVisible();
 		await expect(entry.getByText('Draft', { exact: true })).toBeVisible();
 
-		// Live preview (AC-3.1): a heading on a non-active line renders formatted.
+		// Live preview: a heading on a non-active line renders formatted.
 		await editor.click();
 		await page.keyboard.press('ControlOrMeta+a');
 		await page.keyboard.press('Delete');
@@ -67,7 +67,7 @@ test.describe('draft round-trip', () => {
 		await expect(page).toHaveURL(/\/$/);
 		await expect(page.locator('#q')).toBeFocused();
 
-		// Ownership (AC-2.3): another user can neither open the draft nor see it.
+		// Ownership: another user can neither open the draft nor see it.
 		if (USER2 && PASS2) {
 			const ctx = await page.context().browser()!.newContext({ ignoreHTTPSErrors: true });
 			const other = await ctx.newPage();
@@ -81,7 +81,7 @@ test.describe('draft round-trip', () => {
 		}
 	});
 
-	// AC-2.1: opening a new entry and leaving it untouched persists nothing.
+	// opening a new entry and leaving it untouched persists nothing.
 	test('an untouched new entry is never saved', async ({ page }) => {
 		await login(page, USER!, PASS!);
 		await page.goto('/');
@@ -110,14 +110,14 @@ test.describe('draft round-trip', () => {
 		await editor.pressSequentially('Some publishable body content.');
 		await expect(page.getByText(/^saved/i)).toBeVisible();
 
-		// T-5.1: Publish opens a confirm step showing the metadata; nothing is
+		// Publish opens a confirm step showing the metadata; nothing is
 		// published yet.
 		await page.getByRole('button', { name: /^publish…$/i }).click();
 		const dialog = page.getByRole('dialog', { name: /publish document/i });
 		await expect(dialog).toBeVisible();
 		await expect(dialog.getByText(/visible to everyone/i)).toBeVisible();
 
-		// T-5.2: no tags → per-field error, the dialog stays open, still a draft.
+		// no tags → per-field error, the dialog stays open, still a draft.
 		await dialog.getByRole('button', { name: /confirm publish/i }).click();
 		await expect(dialog.locator('.error-text').filter({ hasText: /tag/i })).toBeVisible();
 		await expect(dialog).toBeVisible();
@@ -159,7 +159,7 @@ test.describe('draft round-trip', () => {
 		await page.getByRole('link', { name: /view/i }).click();
 		await expect(page).toHaveURL(/\/docs\/e2e-read-/);
 
-		// AC-8.1: the Markdown heading is a real heading; AC-8.5: the tag is shown.
+		// the Markdown heading is a real heading; the tag is shown.
 		await expect(page.getByRole('heading', { name: headingMarker })).toBeVisible();
 		await expect(page.getByText('Readable body paragraph about zeppelins.')).toBeVisible();
 		await expect(page.getByText('read-e2e')).toBeVisible();

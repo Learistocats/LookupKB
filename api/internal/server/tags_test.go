@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/Learistocats/LookupKB/api/internal/access"
 	"github.com/Learistocats/LookupKB/api/internal/auth"
 	"github.com/Learistocats/LookupKB/api/internal/config"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
@@ -15,15 +16,17 @@ import (
 // fakeTagStore records the last search args and returns canned rows/errors, so the
 // autocomplete handler is tested without a database.
 type fakeTagStore struct {
-	gotQuery string
-	gotLimit int32
-	rows     []dbgen.Tag
-	err      error
+	gotQuery  string
+	gotLimit  int32
+	gotCaller access.Caller
+	rows      []dbgen.SearchTagsRow
+	err       error
 }
 
-func (f *fakeTagStore) SearchTags(_ context.Context, query string, limit int32) ([]dbgen.Tag, error) {
+func (f *fakeTagStore) SearchTags(_ context.Context, query string, limit int32, caller access.Caller) ([]dbgen.SearchTagsRow, error) {
 	f.gotQuery = query
 	f.gotLimit = limit
+	f.gotCaller = caller
 	return f.rows, f.err
 }
 
@@ -40,7 +43,7 @@ func newTagServer(t *testing.T, store TagStore) *Server {
 }
 
 func TestListTags_ReturnsSuggestionsWithCounts(t *testing.T) {
-	store := &fakeTagStore{rows: []dbgen.Tag{
+	store := &fakeTagStore{rows: []dbgen.SearchTagsRow{
 		{Slug: "api", Label: "api", UsageCount: 9},
 		{Slug: "api-gateway", Label: "api-gateway", UsageCount: 2},
 	}}
@@ -59,7 +62,7 @@ func TestListTags_ReturnsSuggestionsWithCounts(t *testing.T) {
 }
 
 func TestListTags_EmptyQueryAllowed(t *testing.T) {
-	store := &fakeTagStore{rows: []dbgen.Tag{{Slug: "popular", Label: "popular", UsageCount: 5}}}
+	store := &fakeTagStore{rows: []dbgen.SearchTagsRow{{Slug: "popular", Label: "popular", UsageCount: 5}}}
 	s := newTagServer(t, store)
 
 	resp := doReq(t, s, "GET", "/api/v1/tags", "")
@@ -78,15 +81,12 @@ func TestListTags_ForwardsLimit(t *testing.T) {
 	require.Equal(t, int32(7), store.gotLimit)
 }
 
-func TestListTags_BadLimitIgnored(t *testing.T) {
-	store := &fakeTagStore{}
-	s := newTagServer(t, store)
+func TestListTags_BadLimitIs400(t *testing.T) {
+	s := newTagServer(t, &fakeTagStore{})
 
-	// A non-numeric limit falls back to 0 (store applies its default) rather than 400.
 	resp := doReq(t, s, "GET", "/api/v1/tags?q=a&limit=abc", "")
 	defer resp.Body.Close()
-	require.Equal(t, 200, resp.StatusCode)
-	require.Equal(t, int32(0), store.gotLimit)
+	require.Equal(t, 400, resp.StatusCode)
 }
 
 func TestListTags_RequiresAuth(t *testing.T) {
@@ -99,4 +99,37 @@ func TestListTags_RequiresAuth(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, 401, resp.StatusCode)
+}
+
+// the store gets the verified caller (to hide protected tags they lack)
+// and each suggestion carries the protected flag for the publish dialog.
+func TestListTags_ForwardsCallerAndProtectedFlag(t *testing.T) {
+	store := &fakeTagStore{rows: []dbgen.SearchTagsRow{
+		{Slug: "reeflect", Label: "reeflect", UsageCount: 1, IsProtected: true},
+		{Slug: "go", Label: "go", UsageCount: 3},
+	}}
+	s := newTagServer(t, store)
+
+	resp := doReq(t, s, "GET", "/api/v1/tags?q=e", "")
+	defer resp.Body.Close()
+	require.Equal(t, 200, resp.StatusCode)
+	require.Equal(t, pgUUID(callerUUID), store.gotCaller.UserID)
+	require.False(t, store.gotCaller.IsSuperAdmin)
+
+	var got []tagResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	require.True(t, got[0].Protected)
+	require.False(t, got[1].Protected)
+}
+
+func TestListTags_SuperAdminCallerForwarded(t *testing.T) {
+	store := &fakeTagStore{}
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	s := New(cfg, slogDiscard(), "test",
+		WithAuth(auth.NewMiddleware(testTokens, &fakeDirectory{super: true}, slogDiscard())),
+		WithTags(store))
+	resp := doReq(t, s, "GET", "/api/v1/tags?q=e", "")
+	_ = resp.Body.Close()
+	require.True(t, store.gotCaller.IsSuperAdmin)
 }

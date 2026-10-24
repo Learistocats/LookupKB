@@ -1,6 +1,6 @@
-// Tag helpers for the authoring UI (F6). Normalization and validation mirror the
+// Tag helpers for the authoring UI. Normalization and validation mirror the
 // Go server rules (internal/tags) for immediate client feedback, but the server is
-// always authoritative — never trust these counts at publish (06-security.md §6).
+// always authoritative — never trust these counts at publish.
 // Logic lives here (not inline in the component) so it is unit-testable and the
 // component stays thin.
 
@@ -11,14 +11,20 @@ export interface TagLimits {
 	maxLen: number;
 }
 
-/** defaultTagLimits mirror the server DefaultLimits (00-overview.md §6). */
+/** defaultTagLimits mirror the server DefaultLimits. */
 export const defaultTagLimits: TagLimits = { minTags: 1, maxTags: 8, minLen: 2, maxLen: 32 };
 
-/** A tag suggestion from the autocomplete endpoint. */
+/**
+ * A tag suggestion from the autocomplete endpoint. `protected` is true when a
+ * group tag policy grants the tag: an entry carrying it is visible only
+ * to members of those groups (and its author). Protected tags the caller has no
+ * access to are never suggested.
+ */
 export interface TagSuggestion {
 	slug: string;
 	label: string;
 	usage_count: number;
+	protected: boolean;
 }
 
 /**
@@ -76,7 +82,7 @@ export function validateTags(
 /**
  * searchTags calls the server-side autocomplete proxy (which attaches the bearer
  * and forwards to the Go API). fetchFn is injectable for tests. Path is /tags/search
- * (NOT /api/*) to avoid the dev-time Vite /api proxy that forwards straight to Go.
+ * (see lib/server/api.ts for why not /api/*).
  */
 export async function searchTags(
 	q: string,
@@ -85,6 +91,25 @@ export async function searchTags(
 	const res = await fetchFn(`/tags/search?q=${encodeURIComponent(q)}`);
 	if (!res.ok) throw new Error(`tag search failed (${res.status})`);
 	return (await res.json()) as TagSuggestion[];
+}
+
+/**
+ * resolveProtected looks up, for each slug, whether it is a protected tag the
+ * caller can see, using the autocomplete endpoint and an exact slug match. A slug
+ * that is not returned (a brand-new tag, or one hidden from the caller) resolves
+ * to false — the server's publish gate stays authoritative either way.
+ */
+export async function resolveProtected(
+	slugs: string[],
+	fetchFn: typeof fetch = fetch
+): Promise<Record<string, boolean>> {
+	const entries = await Promise.all(
+		slugs.map(async (slug) => {
+			const hits = await searchTags(slug, fetchFn);
+			return [slug, hits.some((h) => h.slug === slug && h.protected)] as const;
+		})
+	);
+	return Object.fromEntries(entries);
 }
 
 /** debounce delays fn until `ms` have elapsed since the last call (typeahead). */

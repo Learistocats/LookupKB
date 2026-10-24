@@ -1,6 +1,5 @@
 #!/bin/sh
-# Provision LookupKB's least-privilege database roles (03-data-model.md,
-# 06-security.md §8). Runs once on first cluster init (docker-entrypoint-initdb.d)
+# Provision LookupKB's least-privilege database roles. Runs once on first cluster init (docker-entrypoint-initdb.d)
 # as the superuser, BEFORE the app ever connects.
 #
 # Two roles, deliberately separated so the runtime cannot alter the schema:

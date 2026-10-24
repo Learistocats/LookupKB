@@ -1,12 +1,5 @@
-// Browser-callable publish proxy (F5, AC-5.1–5.3). The confirm dialog POSTs the
-// metadata here same-origin; this handler attaches the caller's bearer (never
-// exposed to the browser) and forwards to the Go API's POST /api/documents/{id}/publish.
-//
-// Lives at /drafts/{id}/publish (NOT under /api/*) for the same reasons as the
-// autosave proxy: SvelteKit forbids a +server beside the editor +page, and the dev
-// Vite config proxies /api straight to the Go API.
-import { json, error, type RequestHandler } from '@sveltejs/kit';
-import { apiFetch } from '$lib/server/api';
+import { json, type RequestHandler } from '@sveltejs/kit';
+import { apiFetch, apiJson } from '$lib/server/api';
 
 export const POST: RequestHandler = async ({ locals, params, request }) => {
 	const incoming = (await request.json()) as {
@@ -26,12 +19,8 @@ export const POST: RequestHandler = async ({ locals, params, request }) => {
 		body: JSON.stringify(body)
 	});
 
-	// 404 covers "no such draft" and "not yours" identically (AC-2.3) — never leak which.
-	if (res.status === 404) error(404, 'Draft not found');
-	// 422 is the metadata gate: pass the per-field errors through unchanged (with the
-	// 422 status) so the dialog can render them inline; the document stays a draft.
+	// 422 is the metadata gate: pass the per-field errors through for inline display.
 	if (res.status === 422) return json(await res.json(), { status: 422 });
-	if (!res.ok) error(502, `Publish failed (API ${res.status})`);
 
-	return json(await res.json());
+	return json(await apiJson(res, 'Draft'));
 };

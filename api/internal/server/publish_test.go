@@ -53,7 +53,6 @@ func publishedDoc(id uuid.UUID) dbgen.Document {
 		Status:      dbgen.DocumentStatusPublished,
 		Title:       &title,
 		Description: &desc,
-		Access:      dbgen.DocumentAccessPublic,
 		PublishedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
 		UpdatedAt:   pgtype.Timestamptz{Time: time.Now(), Valid: true},
 	}
@@ -71,7 +70,7 @@ func newPublishServer(t *testing.T, svc PublishService) *Server {
 	return New(cfg, slogDiscard(), "test", WithAuth(mw), WithPublish(svc))
 }
 
-// AC-5.3: valid metadata on confirm → 200 published, with the caller's inputs
+// valid metadata on confirm → 200 published, with the caller's inputs
 // forwarded to the service (docID from the path, author from the verified token).
 func TestPublish_ValidReturnsPublished(t *testing.T) {
 	id := uuid.New()
@@ -90,10 +89,9 @@ func TestPublish_ValidReturnsPublished(t *testing.T) {
 	var got publishedResponse
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 	require.Equal(t, "published", got.Status)
-	require.Equal(t, "public", got.Access)
 }
 
-// AC-5.2 / T-5.2: a metadata violation → 422 with per-field errors (not a blob),
+// a metadata violation → 422 with per-field errors (not a blob),
 // and the document is unchanged (the handler returns the errors, no 5xx).
 func TestPublish_InvalidReturns422PerField(t *testing.T) {
 	id := uuid.New()
@@ -140,7 +138,7 @@ func TestPublish_BadIDReturns400(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-// AC-5.6: unpublish → 200 with the caller's inputs forwarded to the service.
+// unpublish → 200 with the caller's inputs forwarded to the service.
 func TestUnpublish_Returns200(t *testing.T) {
 	id := uuid.New()
 	doc := publishedDoc(id)
@@ -169,4 +167,39 @@ func TestUnpublish_NotFoundReturns404(t *testing.T) {
 	defer resp.Body.Close()
 
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// the publish service gets the caller's super-admin flag, and a protected
+// tag refusal surfaces as a per-field 422 on "tags".
+func TestPublish_ProtectedTagIs422OnTags(t *testing.T) {
+	id := uuid.New()
+	svc := &fakePublishService{publishErrs: []publish.FieldError{
+		{Field: publish.FieldTags, Message: `tag "reeflect" is protected; you don't have access to it`},
+	}}
+	s := newPublishServer(t, svc)
+
+	resp := doReq(t, s, http.MethodPost, "/api/documents/"+id.String()+"/publish", `{"title":"t","description":"d","tags":["reeflect"]}`)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusUnprocessableEntity, resp.StatusCode)
+	require.False(t, svc.publishIn.IsSuperAdmin)
+
+	var body struct {
+		Errors []publish.FieldError `json:"errors"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	require.Equal(t, "tags", body.Errors[0].Field)
+}
+
+func TestPublish_ForwardsSuperAdmin(t *testing.T) {
+	id := uuid.New()
+	svc := &fakePublishService{publishRes: &publish.Result{Document: publishedDoc(id)}}
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	s := New(cfg, slogDiscard(), "test",
+		WithAuth(auth.NewMiddleware(testTokens, &fakeDirectory{super: true}, slogDiscard())),
+		WithPublish(svc))
+	resp := doReq(t, s, http.MethodPost, "/api/documents/"+id.String()+"/publish", `{"title":"t","description":"d","tags":["x"]}`)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.True(t, svc.publishIn.IsSuperAdmin)
 }

@@ -1,11 +1,12 @@
 // The auth gate. On every request this resolves the encrypted session cookie and
-// redirects unauthenticated users to /login (AC-1.1). There is no refresh: once
+// redirects unauthenticated users to /login. There is no refresh: once
 // the API token expires the user signs in again. Auth is skipped entirely when no
 // session secret is configured, so `pnpm dev` works without a backend (mirrors
 // the API). Also sets the baseline security headers the edge proxy used to add.
 import { redirect, type Handle } from '@sveltejs/kit';
 import { getAuthConfig } from '$lib/server/auth';
 import { THEME_COOKIE, parseTheme } from '$lib/theme';
+import { isPatProxyPath } from '$lib/server/patProxy';
 import {
 	getSessionCookie,
 	clearSessionCookie,
@@ -64,8 +65,15 @@ export const handle: Handle = async ({ event, resolve }) => {
 		event.locals.accessToken = session.accessToken;
 	}
 
-	// Gate real app routes only (event.route.id is null for asset/404 misses).
-	if (!session && !PUBLIC_PATHS.has(event.url.pathname) && event.route.id !== null) {
+	// Gate real app routes only (event.route.id is null for asset/404 misses). The
+	// PAT pass-through (/api/v1/*, /mcp) is for machine clients: never redirected,
+	// the API answers 401 itself when no Personal Access Token is presented.
+	if (
+		!session &&
+		!PUBLIC_PATHS.has(event.url.pathname) &&
+		!isPatProxyPath(event.url.pathname) &&
+		event.route.id !== null
+	) {
 		const returnTo = event.url.pathname + event.url.search;
 		redirect(302, `/login?returnTo=${encodeURIComponent(returnTo)}`);
 	}

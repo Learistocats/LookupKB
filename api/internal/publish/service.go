@@ -1,19 +1,23 @@
+// Package publish turns a draft into a published entry. The whole transition
+// (status flip, first-publish slug/published_at, tag apply, audit, index enqueue)
+// is one transaction, and metadata is validated server-side regardless of what the
+// client checked. Publish is never a side effect of saving a draft.
 package publish
 
 import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 
+	"github.com/Learistocats/LookupKB/api/internal/access"
+	"github.com/Learistocats/LookupKB/api/internal/db"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
 	"github.com/Learistocats/LookupKB/api/internal/render"
 	"github.com/Learistocats/LookupKB/api/internal/tags"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,12 +26,11 @@ import (
 // ErrNotFound means the document does not exist, is not the caller's, is
 // soft-deleted, or (for unpublish) is not currently published. The handler maps it
 // to a 404 with an identical body for every case, so a probing user can never
-// distinguish "not yours" from "doesn't exist" (03-data-model.md §2).
+// distinguish "not yours" from "doesn't exist".
 var ErrNotFound = errors.New("document not found")
 
-// Service orchestrates the publish/unpublish transitions. It holds the pool so it
-// can run the whole transition in ONE transaction (unlike the per-primitive stores
-// that each own a tx), and a shared Renderer (concurrency-safe) it invokes before
+// Service orchestrates the publish/unpublish transitions. It holds the pool to run
+// each transition in one transaction, and a shared Renderer it invokes before
 // opening that transaction.
 type Service struct {
 	pool     *pgxpool.Pool
@@ -41,15 +44,16 @@ func NewService(pool *pgxpool.Pool, renderer *render.Renderer, log *slog.Logger)
 	return &Service{pool: pool, q: dbgen.New(pool), renderer: renderer, log: log}
 }
 
-// Input is a publish attempt: the target document, the caller (author), and
-// the metadata entered in the confirm flow. source_md is not here — it is the
-// server-held working copy read from the document row, never trusted from the client.
+// Input is a publish attempt. source_md is not here: it is the server-held working
+// copy read from the document row, never trusted from the client.
 type Input struct {
-	DocID       pgtype.UUID
-	AuthorID    pgtype.UUID
-	Title       string
-	Description string
-	Tags        []string
+	DocID    pgtype.UUID
+	AuthorID pgtype.UUID
+	// IsSuperAdmin may tag an entry with any protected tag.
+	IsSuperAdmin bool
+	Title        string
+	Description  string
+	Tags         []string
 }
 
 // Result is the outcome of a successful publish/unpublish: the updated document row.
@@ -58,28 +62,19 @@ type Result struct {
 }
 
 // Publish validates the metadata, renders the working copy, and — only if both
-// succeed — atomically transitions the document to published: tag apply, audit
-// and index-enqueue all commit together or not at all.
+// succeed — atomically transitions the document to published.
 //
-// On a metadata violation it returns the per-field errors with error==nil and NO
-// state change (the document stays a draft, AC-5.2). A render failure is surfaced
-// the same way (a "content" field error) rather than as a 500, and crucially
-// happens BEFORE the transaction opens, so a Kroki/render failure can never leave a
-// half-published document (ticket "things not to miss").
+// On a metadata violation it returns the per-field errors with error==nil and no
+// state change. A too-large source is surfaced the same way (a "content" field
+// error), and rendering happens before the transaction opens so a render failure
+// can never leave a half-published document.
 func (s *Service) Publish(ctx context.Context, in Input) (*Result, []FieldError, error) {
-	// Limits are read fresh per request so an admin change is honored on the next
-	// publish without a redeploy (AC-10.4).
-	ml, err := LoadMetadataLimits(ctx, s.q)
+	ml, tl, err := LoadLimits(ctx, s.q)
 	if err != nil {
-		return nil, nil, fmt.Errorf("load metadata limits: %w", err)
-	}
-	tl, err := tags.LoadLimits(ctx, s.q)
-	if err != nil {
-		return nil, nil, fmt.Errorf("load tag limits: %w", err)
+		return nil, nil, err
 	}
 
-	// The working copy in any status (draft on first publish, published on
-	// re-publish). Owner-scoped: a cross-author or missing id is ErrNotFound.
+	// Owner-scoped: a cross-author or missing id is ErrNotFound.
 	doc, err := s.q.GetOwnedDocument(ctx, dbgen.GetOwnedDocumentParams{ID: in.DocID, AuthorID: in.AuthorID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil, ErrNotFound
@@ -94,9 +89,16 @@ func (s *Service) Publish(ctx context.Context, in Input) (*Result, []FieldError,
 		Tags:        in.Tags,
 	})
 
-	// Render before the transaction: goldmark+bluemonday now, Kroki later (M4). A
-	// too-large source is a per-field error; any other render error is a real fault.
-	source := deref(doc.SourceMd)
+	// The author must be granted every protected tag they put on the entry.
+	caller := access.Caller{UserID: in.AuthorID, IsSuperAdmin: in.IsSuperAdmin}
+	protErrs, err := ProtectedTagErrors(ctx, s.q, caller, normalizedSet(in.Tags))
+	if err != nil {
+		return nil, nil, fmt.Errorf("check protected tags: %w", err)
+	}
+	fieldErrs = append(fieldErrs, protErrs...)
+
+	// A too-large source is a per-field error; any other render error is a real fault.
+	source := db.Deref(doc.SourceMd)
 	html, rerr := s.renderer.RenderAndSanitize(ctx, source)
 	switch {
 	case errors.Is(rerr, render.ErrSourceTooLarge):
@@ -112,8 +114,7 @@ func (s *Service) Publish(ctx context.Context, in Input) (*Result, []FieldError,
 	title := strings.TrimSpace(in.Title)
 	description := strings.TrimSpace(in.Description)
 
-	// Slug is title-derived on FIRST publish only, then stable. The SQL CASE also
-	// guards this, but computing it only when needed avoids burning randomness.
+	// Title-derived on first publish only, then stable (the SQL CASE also guards it).
 	firstPublish := !doc.PublishedAt.Valid
 	slug := doc.Slug
 	if firstPublish {
@@ -134,9 +135,11 @@ func (s *Service) Publish(ctx context.Context, in Input) (*Result, []FieldError,
 		Title:        &title,
 		Description:  &description,
 		RenderedHtml: &html,
-		Slug:         slug,
-		ID:           in.DocID,
-		AuthorID:     in.AuthorID,
+		// The exact source rendered above, decoupled from subsequent working-copy saves.
+		PublishedMd: &source,
+		Slug:        slug,
+		ID:          in.DocID,
+		AuthorID:    in.AuthorID,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil, ErrNotFound
@@ -145,20 +148,27 @@ func (s *Service) Publish(ctx context.Context, in Input) (*Result, []FieldError,
 		return nil, nil, fmt.Errorf("publish document: %w", err)
 	}
 
-	// Live tag membership + usage_count, composed into this same transaction so a
-	// later failure rolls the counts back too.
+	// Re-check inside the transaction: an admin may have protected one of these tags
+	// since the first check. A refusal rolls the whole publish back.
+	protErrs, err = ProtectedTagErrors(ctx, qtx, caller, normTags)
+	if err != nil {
+		return nil, nil, fmt.Errorf("re-check protected tags: %w", err)
+	}
+	if len(protErrs) > 0 {
+		return nil, protErrs, nil
+	}
+
 	if err := tags.ApplyDocumentTags(ctx, qtx, in.DocID, normTags); err != nil {
 		return nil, nil, fmt.Errorf("apply tags: %w", err)
 	}
 
-	if err := s.audit(ctx, qtx, in.AuthorID, "document.publish", in.DocID, map[string]any{
+	if err := db.WriteAudit(ctx, qtx, in.AuthorID, "document.publish", "document", db.FormatUUID(in.DocID), map[string]any{
 		"first_publish": firstPublish,
 	}); err != nil {
 		return nil, nil, err
 	}
 
-	// Enqueue the Meili upsert; the M2 consumer processes it. Enqueued in-tx so a
-	// rolled-back publish leaves no stray index op.
+	// Enqueued in-tx so a rolled-back publish leaves no stray index op.
 	if err := qtx.EnqueueIndexOp(ctx, dbgen.EnqueueIndexOpParams{DocumentID: in.DocID, Op: "upsert"}); err != nil {
 		return nil, nil, fmt.Errorf("enqueue index op: %w", err)
 	}
@@ -171,8 +181,8 @@ func (s *Service) Publish(ctx context.Context, in Input) (*Result, []FieldError,
 }
 
 // Unpublish reverts a published document to author-only 'unpublished' visibility,
-// enqueues its removal from the index, and drops its live tag counts — all in one
-// transaction. published_at and the rendered HTML are retained (AC-5.6).
+// enqueues its removal from the index, and drops its live tag counts, all in one
+// transaction. published_at and the rendered HTML are retained.
 func (s *Service) Unpublish(ctx context.Context, docID, authorID pgtype.UUID) (*Result, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -181,8 +191,7 @@ func (s *Service) Unpublish(ctx context.Context, docID, authorID pgtype.UUID) (*
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op after Commit; safe rollback on any early return
 	qtx := s.q.WithTx(tx)
 
-	// Owner-scoped and status='published'-guarded, so only a currently-published
-	// doc of the caller's transitions; anything else is ErrNotFound.
+	// Owner-scoped and status-guarded: anything else is ErrNotFound.
 	doc, err := qtx.UnpublishDocument(ctx, dbgen.UnpublishDocumentParams{ID: docID, AuthorID: authorID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -191,12 +200,11 @@ func (s *Service) Unpublish(ctx context.Context, docID, authorID pgtype.UUID) (*
 		return nil, fmt.Errorf("unpublish document: %w", err)
 	}
 
-	// Detach live tags so an unpublished doc stops counting toward tag popularity.
 	if err := tags.ApplyDocumentTags(ctx, qtx, docID, nil); err != nil {
 		return nil, fmt.Errorf("clear tags: %w", err)
 	}
 
-	if err := s.audit(ctx, qtx, authorID, "document.unpublish", docID, map[string]any{}); err != nil {
+	if err := db.WriteAudit(ctx, qtx, authorID, "document.unpublish", "document", db.FormatUUID(docID), map[string]any{}); err != nil {
 		return nil, err
 	}
 
@@ -211,36 +219,13 @@ func (s *Service) Unpublish(ctx context.Context, docID, authorID pgtype.UUID) (*
 	return &Result{Document: doc}, nil
 }
 
-// audit writes one audit_log row inside the caller's transaction (AC-10.5). It is
-// the sole audit path for publish/unpublish; the metadata jsonb carries per-action
-// context. A marshal failure falls back to an empty object rather than losing the
-// audited fact.
-func (s *Service) audit(ctx context.Context, q *dbgen.Queries, actor pgtype.UUID, action string, target pgtype.UUID, meta map[string]any) error {
-	raw, err := json.Marshal(meta)
-	if err != nil {
-		raw = []byte("{}")
-	}
-	targetID := uuid.UUID(target.Bytes).String()
-	if err := q.InsertAuditLog(ctx, dbgen.InsertAuditLogParams{
-		ActorID:    actor,
-		Action:     action,
-		TargetType: "document",
-		TargetID:   &targetID,
-		Metadata:   raw,
-	}); err != nil {
-		return fmt.Errorf("write audit log: %w", err)
-	}
-	return nil
-}
-
 // maxSlugRunes bounds the human-readable part of a published slug so a very long
 // title doesn't produce an unwieldy URL; the random suffix still guarantees uniqueness.
 const maxSlugRunes = 80
 
-// newPublishedSlug derives a stable, URL-safe slug from the title on first publish:
-// the normalized (lowercase-kebab) title, truncated, plus a short random suffix for
-// uniqueness (03-data-model.md §1 `slug`: "title + short id, stable across edits").
-// A title that normalizes to nothing (all punctuation) falls back to "doc".
+// newPublishedSlug derives a URL-safe slug from the title: the kebab-cased,
+// truncated title plus a short random suffix for uniqueness. A title that
+// normalizes to nothing falls back to "doc".
 func newPublishedSlug(title string) (string, error) {
 	base := truncateRunes(tags.Normalize(title), maxSlugRunes)
 	base = strings.Trim(base, "-")
@@ -262,9 +247,14 @@ func truncateRunes(s string, max int) string {
 	return string(r[:max])
 }
 
-func deref(s *string) string {
-	if s == nil {
-		return ""
+// normalizedSet normalizes raw tags (dropping empties) for the protected-tag check,
+// independent of whether the tag-limit validation passed.
+func normalizedSet(raw []string) []string {
+	out := make([]string, 0, len(raw))
+	for _, r := range raw {
+		if slug := tags.Normalize(r); slug != "" {
+			out = append(out, slug)
+		}
 	}
-	return *s
+	return out
 }

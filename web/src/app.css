@@ -1,45 +1,48 @@
 /*
  * LookupKB design tokens + base styles.
  *
- * Layout concept: one quiet column per screen (search, editor, reader) with a
- * collapsible history panel on the left; chrome stays out of the way of text.
- *
  * Theme has three states: no data-theme (follow the OS), data-theme="light",
- * data-theme="dark". Every token is defined on bare :root (light) and only
- * redefined in the two dark blocks, so components never use literal colors.
+ * data-theme="dark". Color tokens are light-dark(light, dark) pairs resolved by
+ * color-scheme, so components never use literal colors.
  */
 
 :root {
+	color-scheme: light dark;
+
 	/* Neutrals: cool, with a slight blue bias toward the accent. */
-	--bg: #f6f7f9;
-	--surface: #ffffff;
-	--surface-2: #eef1f5;
-	--surface-hover: #e7ebf1;
-	--border: #dfe3ea;
-	--border-strong: #c5ccd7;
-	--fg: #18202b;
-	--fg-muted: #5a6474;
-	--fg-subtle: #8b94a3;
+	--bg: light-dark(#f6f7f9, #0e1116);
+	--surface: light-dark(#ffffff, #151a21);
+	--surface-2: light-dark(#eef1f5, #1b212a);
+	--surface-hover: light-dark(#e7ebf1, #222934);
+	--border: light-dark(#dfe3ea, #262e39);
+	--border-strong: light-dark(#c5ccd7, #354050);
+	--fg: light-dark(#18202b, #e5e9ef);
+	--fg-muted: light-dark(#5a6474, #9aa4b3);
+	--fg-subtle: light-dark(#8b94a3, #6b7585);
 
 	/* One ink-blue accent. */
-	--accent: #2747c7;
-	--accent-hover: #1f3aa8;
-	--accent-fg: #ffffff;
-	--accent-soft: #e7ecfc;
+	--accent: light-dark(#2747c7, #8aa4ff);
+	--accent-hover: light-dark(#1f3aa8, #a3b8ff);
+	--accent-fg: light-dark(#ffffff, #0b1230);
+	--accent-soft: light-dark(#e7ecfc, #1c2546);
 
 	/* Semantic (separate from the accent). */
-	--draft: #8a5a00;
-	--draft-soft: #fbf0d9;
-	--ok: #1d7347;
-	--ok-soft: #e1f2e8;
-	--danger: #b8352b;
-	--danger-soft: #fbe7e5;
-	--mark: #fbe7a1;
-	--mark-fg: #18202b;
+	--draft: light-dark(#8a5a00, #e9b44c);
+	--draft-soft: light-dark(#fbf0d9, #33270f);
+	--protected: var(--draft);
+	--protected-soft: var(--draft-soft);
+	--ok: light-dark(#1d7347, #5cc98e);
+	--ok-soft: light-dark(#e1f2e8, #12291d);
+	--danger: light-dark(#b8352b, #f07a70);
+	--danger-soft: light-dark(#fbe7e5, #3a1714);
+	--mark: light-dark(#fbe7a1, #5c4a12);
+	--mark-fg: light-dark(#18202b, #fff3c4);
 
-	--shadow-sm: 0 1px 2px rgb(16 24 40 / 0.06);
-	--shadow-md: 0 1px 2px rgb(16 24 40 / 0.05), 0 8px 24px -8px rgb(16 24 40 / 0.14);
-	--scrim: rgb(15 20 28 / 0.32);
+	--shadow-sm: 0 1px 2px light-dark(rgb(16 24 40 / 0.06), rgb(0 0 0 / 0.4));
+	--shadow-md:
+		0 1px 2px light-dark(rgb(16 24 40 / 0.05), rgb(0 0 0 / 0.4)),
+		0 8px 24px -8px light-dark(rgb(16 24 40 / 0.14), rgb(0 0 0 / 0.6));
+	--scrim: light-dark(rgb(15 20 28 / 0.32), rgb(0 0 0 / 0.5));
 
 	/* Type */
 	--font-ui:
@@ -61,65 +64,13 @@
 	--radius-lg: 16px;
 	--ease: cubic-bezier(0.2, 0.7, 0.2, 1);
 	--panel-width: 17rem;
+}
 
+:root[data-theme='light'] {
 	color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-	:root:not([data-theme='light']) {
-		--bg: #0e1116;
-		--surface: #151a21;
-		--surface-2: #1b212a;
-		--surface-hover: #222934;
-		--border: #262e39;
-		--border-strong: #354050;
-		--fg: #e5e9ef;
-		--fg-muted: #9aa4b3;
-		--fg-subtle: #6b7585;
-		--accent: #8aa4ff;
-		--accent-hover: #a3b8ff;
-		--accent-fg: #0b1230;
-		--accent-soft: #1c2546;
-		--draft: #e9b44c;
-		--draft-soft: #33270f;
-		--ok: #5cc98e;
-		--ok-soft: #12291d;
-		--danger: #f07a70;
-		--danger-soft: #3a1714;
-		--mark: #5c4a12;
-		--mark-fg: #fff3c4;
-		--shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
-		--shadow-md: 0 1px 2px rgb(0 0 0 / 0.4), 0 10px 28px -10px rgb(0 0 0 / 0.6);
-		--scrim: rgb(0 0 0 / 0.5);
-		color-scheme: dark;
-	}
-}
-
 :root[data-theme='dark'] {
-	--bg: #0e1116;
-	--surface: #151a21;
-	--surface-2: #1b212a;
-	--surface-hover: #222934;
-	--border: #262e39;
-	--border-strong: #354050;
-	--fg: #e5e9ef;
-	--fg-muted: #9aa4b3;
-	--fg-subtle: #6b7585;
-	--accent: #8aa4ff;
-	--accent-hover: #a3b8ff;
-	--accent-fg: #0b1230;
-	--accent-soft: #1c2546;
-	--draft: #e9b44c;
-	--draft-soft: #33270f;
-	--ok: #5cc98e;
-	--ok-soft: #12291d;
-	--danger: #f07a70;
-	--danger-soft: #3a1714;
-	--mark: #5c4a12;
-	--mark-fg: #fff3c4;
-	--shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
-	--shadow-md: 0 1px 2px rgb(0 0 0 / 0.4), 0 10px 28px -10px rgb(0 0 0 / 0.6);
-	--scrim: rgb(0 0 0 / 0.5);
 	color-scheme: dark;
 }
 
@@ -250,10 +201,27 @@ select {
 	color: var(--fg);
 }
 
+/* Destructive. Filled by default; combined with .btn-ghost it fills on hover only. */
+.btn-danger:not(.btn-ghost),
 .btn-danger:hover:not(:disabled) {
 	color: var(--danger);
 	border-color: var(--danger);
 	background: var(--danger-soft);
+}
+
+.btn-lg {
+	height: 2.75rem;
+	font-size: var(--text-base);
+	font-weight: 600;
+}
+
+.stack {
+	display: grid;
+	gap: 1rem;
+}
+
+.stack > .btn {
+	margin-top: 0.25rem;
 }
 
 .icon-btn {
@@ -295,6 +263,17 @@ select {
 	transition: border-color 120ms var(--ease);
 }
 
+.input-lg {
+	height: 2.75rem;
+	padding: 0 0.85rem;
+}
+
+.field-label em {
+	font-style: normal;
+	font-weight: 400;
+	color: var(--fg-subtle);
+}
+
 .input::placeholder {
 	color: var(--fg-subtle);
 }
@@ -328,6 +307,11 @@ select {
 	color: var(--draft);
 }
 
+.chip-protected {
+	background: var(--protected-soft);
+	color: var(--protected);
+}
+
 .chip-ok {
 	background: var(--ok-soft);
 	color: var(--ok);
@@ -335,6 +319,81 @@ select {
 
 .error-text {
 	margin: 0;
+	color: var(--danger);
+	font-size: var(--text-sm);
+}
+
+.muted,
+.empty {
+	color: var(--fg-subtle);
+	font-size: var(--text-sm);
+}
+
+.empty {
+	margin: 0;
+}
+
+.eyebrow {
+	color: var(--fg-subtle);
+	font-size: var(--text-xs);
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+}
+
+.card {
+	display: grid;
+	gap: 0.75rem;
+	padding: 1.25rem;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	background: var(--surface);
+}
+
+.card h2 {
+	margin: 0;
+	font-size: var(--text-md);
+	font-weight: 650;
+}
+
+.rows {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: grid;
+}
+
+.rows > li {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 0.5rem 0;
+	font-size: var(--text-sm);
+}
+
+.rows > li + li {
+	border-top: 1px solid var(--border);
+}
+
+/* Centered content column; width via --column. */
+.page-column {
+	max-width: var(--column, 46rem);
+	margin-inline: auto;
+}
+
+.page-title {
+	margin: 0;
+	font-size: var(--text-xl);
+	font-weight: 700;
+	letter-spacing: -0.02em;
+}
+
+.alert {
+	margin: 0;
+	padding: 0.6rem 0.75rem;
+	border-radius: var(--radius-sm);
+	background: var(--danger-soft);
 	color: var(--danger);
 	font-size: var(--text-sm);
 }

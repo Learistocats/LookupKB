@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/require"
 
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
@@ -69,22 +70,26 @@ func TestListMyDocumentsAndProjection(t *testing.T) {
 	require.Empty(t, fieldErrs)
 	draft := newDoc(t, ctx, pool, author, "a-draft")
 
-	proj, err := q.GetIndexProjection(ctx, published)
+	projs, err := q.GetIndexProjections(ctx, []pgtype.UUID{published, draft})
 	require.NoError(t, err)
+	require.Len(t, projs, 1, "drafts have no index projection")
+	proj := projs[0]
+
+	n, err := q.EnqueueAllPublishedUpserts(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, n, "bootstrap queues published documents only")
 	require.Equal(t, []string{"ops"}, proj.Tags)
 	require.Equal(t, "author", proj.Author, "falls back to the email's local part, never the full email")
 	require.Contains(t, *proj.RenderedHtml, "<strong>kubectl</strong>")
-
-	_, err = q.GetIndexProjection(ctx, draft)
-	require.Error(t, err, "drafts have no index projection")
 
 	// Saving a published entry edits the working copy only.
 	src := "# Edited"
 	_, err = q.SaveDraft(ctx, dbgen.SaveDraftParams{ID: published, AuthorID: author, SourceMd: &src})
 	require.NoError(t, err)
-	proj, err = q.GetIndexProjection(ctx, published)
+	projs, err = q.GetIndexProjections(ctx, []pgtype.UUID{published})
 	require.NoError(t, err)
-	require.Contains(t, *proj.RenderedHtml, "kubectl", "the published HTML is unchanged until re-publish")
+	require.Len(t, projs, 1)
+	require.Contains(t, *projs[0].RenderedHtml, "kubectl", "the published HTML is unchanged until re-publish")
 
 	// The published entry is now the most recently edited, yet the draft stays on top.
 	rows, err := q.ListMyDocuments(ctx, author)

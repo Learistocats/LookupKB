@@ -11,11 +11,24 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countSuperAdmins = `-- name: CountSuperAdmins :one
+SELECT count(*)::bigint
+FROM users
+WHERE is_super_admin
+`
+
+func (q *Queries) CountSuperAdmins(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countSuperAdmins)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const createUser = `-- name: CreateUser :one
 
 INSERT INTO users (email, password_hash, display_name)
 VALUES ($1, $2, $3)
-RETURNING id, email, display_name, created_at, last_seen_at, password_hash
+RETURNING id, email, display_name, created_at, last_seen_at, password_hash, is_super_admin
 `
 
 type CreateUserParams struct {
@@ -24,8 +37,7 @@ type CreateUserParams struct {
 	DisplayName  *string `json:"display_name"`
 }
 
-// Local email/password accounts (03-data-model.md §1 `users`). password_hash is an
-// argon2id PHC string produced by internal/auth — never plaintext.
+// Local accounts. password_hash is an argon2id PHC string from internal/auth.
 // Register a new account. email is citext + UNIQUE, so a duplicate (any casing)
 // fails with a unique violation the signup handler maps to a generic conflict.
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, error) {
@@ -38,12 +50,13 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.CreatedAt,
 		&i.LastSeenAt,
 		&i.PasswordHash,
+		&i.IsSuperAdmin,
 	)
 	return i, err
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, display_name, created_at, last_seen_at, password_hash
+SELECT id, email, display_name, created_at, last_seen_at, password_hash, is_super_admin
 FROM users
 WHERE email = $1
 `
@@ -59,26 +72,163 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.CreatedAt,
 		&i.LastSeenAt,
 		&i.PasswordHash,
+		&i.IsSuperAdmin,
 	)
 	return i, err
 }
 
-const getUserByID = `-- name: GetUserByID :one
-SELECT id, email, display_name, created_at, last_seen_at, password_hash
+const getUserIsSuperAdmin = `-- name: GetUserIsSuperAdmin :one
+
+SELECT is_super_admin
 FROM users
 WHERE id = $1
 `
 
-func (q *Queries) GetUserByID(ctx context.Context, id pgtype.UUID) (User, error) {
-	row := q.db.QueryRow(ctx, getUserByID, id)
-	var i User
+// ── Super-admin role ─────────────────────────────────────────────────────────
+// Read by the auth middleware on every session request (never a token claim),
+// so a revoke takes effect on the caller's next request.
+func (q *Queries) GetUserIsSuperAdmin(ctx context.Context, id pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, getUserIsSuperAdmin, id)
+	var is_super_admin bool
+	err := row.Scan(&is_super_admin)
+	return is_super_admin, err
+}
+
+const listUsers = `-- name: ListUsers :many
+SELECT id, email, display_name, is_super_admin, created_at
+FROM users
+ORDER BY email ASC
+`
+
+type ListUsersRow struct {
+	ID           pgtype.UUID        `json:"id"`
+	Email        string             `json:"email"`
+	DisplayName  *string            `json:"display_name"`
+	IsSuperAdmin bool               `json:"is_super_admin"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
+// The admin user list. Never selects password_hash.
+func (q *Queries) ListUsers(ctx context.Context) ([]ListUsersRow, error) {
+	rows, err := q.db.Query(ctx, listUsers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListUsersRow
+	for rows.Next() {
+		var i ListUsersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.DisplayName,
+			&i.IsSuperAdmin,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockSuperAdmins = `-- name: LockSuperAdmins :many
+SELECT id
+FROM users
+WHERE is_super_admin
+ORDER BY id
+FOR UPDATE
+`
+
+// Row-locks every current super-admin inside the demotion transaction so two
+// concurrent demotions serialize: the second re-evaluates after the first commits
+// and sees one fewer admin, so the last-super-admin guard cannot be raced.
+func (q *Queries) LockSuperAdmins(ctx context.Context) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, lockSuperAdmins)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const setUserSuperAdmin = `-- name: SetUserSuperAdmin :one
+UPDATE users
+SET is_super_admin = $2
+WHERE id = $1
+RETURNING id, email, display_name, is_super_admin, created_at
+`
+
+type SetUserSuperAdminParams struct {
+	ID           pgtype.UUID `json:"id"`
+	IsSuperAdmin bool        `json:"is_super_admin"`
+}
+
+type SetUserSuperAdminRow struct {
+	ID           pgtype.UUID        `json:"id"`
+	Email        string             `json:"email"`
+	DisplayName  *string            `json:"display_name"`
+	IsSuperAdmin bool               `json:"is_super_admin"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) SetUserSuperAdmin(ctx context.Context, arg SetUserSuperAdminParams) (SetUserSuperAdminRow, error) {
+	row := q.db.QueryRow(ctx, setUserSuperAdmin, arg.ID, arg.IsSuperAdmin)
+	var i SetUserSuperAdminRow
 	err := row.Scan(
 		&i.ID,
 		&i.Email,
 		&i.DisplayName,
+		&i.IsSuperAdmin,
 		&i.CreatedAt,
-		&i.LastSeenAt,
-		&i.PasswordHash,
+	)
+	return i, err
+}
+
+const setUserSuperAdminByEmail = `-- name: SetUserSuperAdminByEmail :one
+UPDATE users
+SET is_super_admin = $2
+WHERE email = $1
+RETURNING id, email, display_name, is_super_admin, created_at
+`
+
+type SetUserSuperAdminByEmailParams struct {
+	Email        string `json:"email"`
+	IsSuperAdmin bool   `json:"is_super_admin"`
+}
+
+type SetUserSuperAdminByEmailRow struct {
+	ID           pgtype.UUID        `json:"id"`
+	Email        string             `json:"email"`
+	DisplayName  *string            `json:"display_name"`
+	IsSuperAdmin bool               `json:"is_super_admin"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
+// CLI bootstrap (`api admin grant|revoke <email>`). citext: case-insensitive.
+func (q *Queries) SetUserSuperAdminByEmail(ctx context.Context, arg SetUserSuperAdminByEmailParams) (SetUserSuperAdminByEmailRow, error) {
+	row := q.db.QueryRow(ctx, setUserSuperAdminByEmail, arg.Email, arg.IsSuperAdmin)
+	var i SetUserSuperAdminByEmailRow
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.DisplayName,
+		&i.IsSuperAdmin,
+		&i.CreatedAt,
 	)
 	return i, err
 }

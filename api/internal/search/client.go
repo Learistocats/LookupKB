@@ -11,7 +11,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,8 +19,8 @@ import (
 	"time"
 )
 
-// IndexName is the single Meilisearch index holding published documents.
-const IndexName = "documents"
+// indexName is the single Meilisearch index holding published documents.
+const indexName = "documents"
 
 // Highlight markers. Control characters cannot appear in rendered text, so after
 // HTML-escaping a snippet they are the only thing turned into <mark> tags.
@@ -29,9 +28,6 @@ const (
 	markPre  = "\x01"
 	markPost = "\x02"
 )
-
-// errIndexNotFound is returned by stats when the index does not exist yet.
-var errIndexNotFound = errors.New("meilisearch index not found")
 
 // Client is a minimal Meilisearch HTTP client covering what LookupKB needs.
 type Client struct {
@@ -61,19 +57,24 @@ type IndexDoc struct {
 	AuthorID    string   `json:"author_id"`
 	CreatedAt   int64    `json:"created_at"`
 	PublishedAt int64    `json:"published_at"`
-	Access      string   `json:"access"`
-	ACLGroupIDs []string `json:"acl_group_ids"`
 }
+
+// filterableAttributes are the index's filterable (and facetable) attributes:
+// tags (access filter, client filter, facet), author_id (access + client filter)
+// and the date range fields.
+var filterableAttributes = []string{"tags", "author_id", "created_at", "published_at"}
 
 type taskRef struct {
 	TaskUID int64 `json:"taskUid"`
 }
 
 // EnsureIndex creates the index (if missing) and applies its settings, waiting
-// for the settings task so filters are usable before the first query.
+// for the settings task so filters are usable before the first query. It runs on
+// every boot, so a settings change is re-applied to an existing index. `tags` must
+// stay filterable (access filter + client filter) and is also the facet.
 func (c *Client) EnsureIndex(ctx context.Context) error {
 	var created taskRef
-	if err := c.do(ctx, http.MethodPost, "/indexes", map[string]string{"uid": IndexName, "primaryKey": "id"}, &created); err != nil {
+	if err := c.do(ctx, http.MethodPost, "/indexes", map[string]string{"uid": indexName, "primaryKey": "id"}, &created); err != nil {
 		return fmt.Errorf("create index: %w", err)
 	}
 	// Creation fails asynchronously when the index already exists; that's fine.
@@ -81,7 +82,7 @@ func (c *Client) EnsureIndex(ctx context.Context) error {
 
 	settings := map[string]any{
 		"searchableAttributes": []string{"title", "description", "tags", "body_text"},
-		"filterableAttributes": []string{"tags", "author_id", "access", "acl_group_ids", "created_at", "published_at"},
+		"filterableAttributes": filterableAttributes,
 		"sortableAttributes":   []string{"published_at", "created_at"},
 		"displayedAttributes":  []string{"id", "slug", "title", "description", "tags", "author", "author_id", "published_at", "body_text"},
 		"typoTolerance": map[string]any{
@@ -90,7 +91,7 @@ func (c *Client) EnsureIndex(ctx context.Context) error {
 		},
 	}
 	var t taskRef
-	if err := c.do(ctx, http.MethodPatch, "/indexes/"+IndexName+"/settings", settings, &t); err != nil {
+	if err := c.do(ctx, http.MethodPatch, "/indexes/"+indexName+"/settings", settings, &t); err != nil {
 		return fmt.Errorf("update settings: %w", err)
 	}
 	return c.waitTask(ctx, t.TaskUID)
@@ -98,12 +99,12 @@ func (c *Client) EnsureIndex(ctx context.Context) error {
 
 // Upsert adds or replaces documents in the index.
 func (c *Client) Upsert(ctx context.Context, docs ...IndexDoc) error {
-	return c.do(ctx, http.MethodPost, "/indexes/"+IndexName+"/documents", docs, nil)
+	return c.do(ctx, http.MethodPost, "/indexes/"+indexName+"/documents", docs, nil)
 }
 
 // Delete removes one document from the index (a missing id is not an error).
 func (c *Client) Delete(ctx context.Context, id string) error {
-	return c.do(ctx, http.MethodDelete, "/indexes/"+IndexName+"/documents/"+url.PathEscape(id), nil, nil)
+	return c.do(ctx, http.MethodDelete, "/indexes/"+indexName+"/documents/"+url.PathEscape(id), nil, nil)
 }
 
 // DocumentCount reports how many documents the index holds.
@@ -111,7 +112,7 @@ func (c *Client) DocumentCount(ctx context.Context) (int64, error) {
 	var stats struct {
 		NumberOfDocuments int64 `json:"numberOfDocuments"`
 	}
-	if err := c.do(ctx, http.MethodGet, "/indexes/"+IndexName+"/stats", nil, &stats); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/indexes/"+indexName+"/stats", nil, &stats); err != nil {
 		return 0, err
 	}
 	return stats.NumberOfDocuments, nil
@@ -119,8 +120,10 @@ func (c *Client) DocumentCount(ctx context.Context) (int64, error) {
 
 type searchRequest struct {
 	Q                     string   `json:"q"`
-	Filter                string   `json:"filter,omitempty"`
+	Filter                []string `json:"filter,omitempty"`
+	Facets                []string `json:"facets,omitempty"`
 	Limit                 int      `json:"limit"`
+	Offset                int      `json:"offset,omitempty"`
 	Sort                  []string `json:"sort,omitempty"`
 	AttributesToRetrieve  []string `json:"attributesToRetrieve"`
 	AttributesToHighlight []string `json:"attributesToHighlight"`
@@ -145,13 +148,14 @@ type rawHit struct {
 }
 
 type searchResponse struct {
-	Hits             []rawHit `json:"hits"`
-	ProcessingTimeMs int64    `json:"processingTimeMs"`
+	Hits              []rawHit                    `json:"hits"`
+	ProcessingTimeMs  int64                       `json:"processingTimeMs"`
+	FacetDistribution map[string]map[string]int64 `json:"facetDistribution"`
 }
 
 func (c *Client) search(ctx context.Context, req searchRequest) (searchResponse, error) {
 	var resp searchResponse
-	err := c.do(ctx, http.MethodPost, "/indexes/"+IndexName+"/search", req, &resp)
+	err := c.do(ctx, http.MethodPost, "/indexes/"+indexName+"/search", req, &resp)
 	return resp, err
 }
 
@@ -212,9 +216,6 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == http.StatusNotFound && strings.HasSuffix(path, "/stats") {
-		return errIndexNotFound
-	}
 	if resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return fmt.Errorf("meilisearch %s %s: %d %s", method, path, resp.StatusCode, strings.TrimSpace(string(msg)))
