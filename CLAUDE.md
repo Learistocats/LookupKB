@@ -96,8 +96,9 @@ dependency is present.
   login failures are identical for unknown email vs wrong password (dummy-hash verify).
   It returns an **HS256 JWT** signed with `LOOKUPKB_AUTH_SECRET` (`sub` = users.id).
 - The API stays a **stateless verifier** on protected routes: the middleware verifies
-  the token, loads the caller's groups from `group_members` on every request, and
-  exposes identity via `auth.IdentityFromCtx(c)`. It holds no session.
+  the token (or a `lkb_pat_…` Personal Access Token, confined to the read surface),
+  re-reads `users.is_super_admin` on every request, and exposes identity via
+  `auth.IdentityFromCtx(c)`. It holds no session.
 - **SvelteKit is the BFF**: `/login` and `/signup` form actions call the API and seal the
   token into an encrypted session cookie (`lkb_session.0/.1/…`, chunking kept as a
   safeguard, `web/src/lib/server/session.ts`). `hooks.server.ts` redirects to `/login`
@@ -108,9 +109,9 @@ dependency is present.
 
 ### Database: sqlc + goose, embedded in one binary
 - Schema lives in `api/internal/db/migrations/*.sql` (goose). **Schema v1 already
-  defines every table** (`documents`, `tags`, `document_tags`,
-  `settings`, `document_acl`, `audit_log`, `index_outbox`, …) — feature tickets add
-  *queries + handlers*, rarely migrations.
+  defines the core tables** (`documents`, `tags`, `document_tags`, `settings`,
+  `audit_log`, `index_outbox`, `api_tokens`, …) — feature tickets mostly add
+  *queries + handlers*, and a migration only when the model changes.
 - Queries are hand-written in `api/internal/db/queries/*.sql` and compiled by
   **sqlc** (`api/sqlc.yaml`) into `api/internal/db/dbgen/`. After editing a query,
   run `make sqlc` and commit the generated output — **CI fails if `dbgen` is stale**.
@@ -125,8 +126,10 @@ dependency is present.
 Owner-scoped queries filter by `author_id` in SQL; a cross-author or missing row
 comes back as `pgx.ErrNoRows` → **404 with an identical body** for "not yours" and
 "doesn't exist", so a probing user can't distinguish them. Never rely on the UI
-hiding another user's content. This scaffolding is extended (not rewritten) by the
-M3 group-ACL work — structure new access checks as an author-or-public branch.
+hiding another user's content. Read access to published entries is the
+protected-tag rule in `api/internal/access` (a tag granted to any group in
+`group_tag_grants` is protected; readers need every protected tag on the entry,
+authors and super-admins always read) — reuse it, never re-implement it.
 
 ### Search: outbox worker + server-side filter
 `api/internal/search` holds a small hand-rolled Meilisearch client (no SDK — avoids a
@@ -147,7 +150,8 @@ after anything that changes an entry). Editor is `/entries/{id}`, reader `/docs/
 
 ### Health/readiness distinction
 `/healthz` = liveness (process up, never touches deps). `/readyz` = readiness:
-**Postgres/Valkey/Meilisearch/Kroki/Garage gate** it (503 if any fail). Probe errors are
+**Postgres/Valkey/Meilisearch gate** it (503 if any fail; Kroki/Garage run in compose
+but are not used yet, so they don't gate it). Probe errors are
 logged server-side but the response body only says `ok`/`unavailable` (no internal
 hostnames leaked).
 
