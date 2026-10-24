@@ -23,5 +23,4 @@ node_modules/
 /dist/
 
 # Internal planning material (kept locally, not published)
-/CLAUDE.md
 /docs/planning/
