@@ -22,13 +22,13 @@ func New(pool *pgxpool.Pool) *Store {
 
 // searchLimits bound the autocomplete result set.
 const (
-	defaultSearchLimit int32 = 10
-	maxSearchLimit     int32 = 20
+	defaultSearchLimit = 10
+	MaxSearchLimit     = 20
 )
 
 // SearchTags returns tags whose slug contains the normalized query, most-used
 // first. The query is normalized like tag creation so "My T" matches "my-tag"; an
-// empty query returns the most-used tags. limit is clamped to [1, maxSearchLimit].
+// empty query returns the most-used tags. limit is clamped to [1, MaxSearchLimit].
 //
 // Protected tags the caller is not granted are excluded in SQL before the LIMIT,
 // so hiding them never shortens the list.
@@ -36,8 +36,8 @@ func (s *Store) SearchTags(ctx context.Context, rawQuery string, limit int32, ca
 	if limit <= 0 {
 		limit = defaultSearchLimit
 	}
-	if limit > maxSearchLimit {
-		limit = maxSearchLimit
+	if limit > MaxSearchLimit {
+		limit = MaxSearchLimit
 	}
 	// Normalize strips LIKE metacharacters, so wrapping in % is injection-safe.
 	pattern := "%" + Normalize(rawQuery) + "%"
