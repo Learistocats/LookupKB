@@ -44,8 +44,8 @@ func (s *Server) handleSearch(c *fiber.Ctx) error {
 
 	query := search.Query{
 		Q:      c.Query("q"),
-		Limit:  limit,
-		Offset: offset,
+		Limit:  int(limit),
+		Offset: int(offset),
 		Facets: multiValue(c, "facets"),
 		Filters: search.Filters{
 			Tags:          multiValue(c, "tags"),

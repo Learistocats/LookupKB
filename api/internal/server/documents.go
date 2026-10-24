@@ -267,14 +267,14 @@ func internalError(c *fiber.Ctx) error {
 }
 
 // queryInt reads an optional non-negative integer query parameter (0 when absent).
-func queryInt(c *fiber.Ctx, name string) (int, error) {
+func queryInt(c *fiber.Ctx, name string) (int32, error) {
 	raw := c.Query(name)
 	if raw == "" {
 		return 0, nil
 	}
-	n, err := strconv.Atoi(raw)
+	n, err := strconv.ParseInt(raw, 10, 32)
 	if err != nil || n < 0 {
 		return 0, fmt.Errorf("invalid %s", name)
 	}
-	return n, nil
+	return int32(n), nil
 }

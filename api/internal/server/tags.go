@@ -5,7 +5,6 @@ import (
 
 	"github.com/Learistocats/LookupKB/api/internal/access"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
-	"github.com/Learistocats/LookupKB/api/internal/tags"
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -43,10 +42,7 @@ func (s *Server) handleListTags(c *fiber.Ctx) error {
 		return badRequest(c, err.Error())
 	}
 
-	if limit > tags.MaxSearchLimit {
-		limit = tags.MaxSearchLimit
-	}
-	rows, err := s.tags.SearchTags(c.UserContext(), q, int32(limit), caller)
+	rows, err := s.tags.SearchTags(c.UserContext(), q, limit, caller)
 	if err != nil {
 		s.log.ErrorContext(c.UserContext(), "tag search failed", "error", err.Error())
 		return internalError(c)
