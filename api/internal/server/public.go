@@ -42,7 +42,7 @@ func (s *Server) handleV1ListDocuments(c *fiber.Ctx) error {
 	if err != nil {
 		return badRequest(c, err.Error())
 	}
-	page, err := s.catalog.List(c.UserContext(), caller, limit, c.Query("cursor"))
+	page, err := s.catalog.List(c.UserContext(), caller, int(limit), c.Query("cursor"))
 	if errors.Is(err, catalog.ErrInvalidCursor) {
 		return badRequest(c, "invalid cursor")
 	}
