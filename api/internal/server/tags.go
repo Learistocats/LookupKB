@@ -2,10 +2,10 @@ package server
 
 import (
 	"context"
-	"math"
 
 	"github.com/Learistocats/LookupKB/api/internal/access"
 	"github.com/Learistocats/LookupKB/api/internal/db/dbgen"
+	"github.com/Learistocats/LookupKB/api/internal/tags"
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -43,8 +43,10 @@ func (s *Server) handleListTags(c *fiber.Ctx) error {
 		return badRequest(c, err.Error())
 	}
 
-	// The store clamps limit; cap first so the int32 conversion cannot overflow.
-	rows, err := s.tags.SearchTags(c.UserContext(), q, int32(min(limit, math.MaxInt32)), caller) //nolint:gosec // clamped to int32 range
+	if limit > tags.MaxSearchLimit {
+		limit = tags.MaxSearchLimit
+	}
+	rows, err := s.tags.SearchTags(c.UserContext(), q, int32(limit), caller)
 	if err != nil {
 		s.log.ErrorContext(c.UserContext(), "tag search failed", "error", err.Error())
 		return internalError(c)
