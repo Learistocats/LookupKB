@@ -227,7 +227,7 @@ services:
           memory: 1024M
 
   kroki:
-    image: yuzutech/kroki:0.28.0@sha256:710a5e8d57344769846695431ceefc02aaf908e9958c9d459171d2255ee2f7f5
+    image: yuzutech/kroki:0.33.0@sha256:a4341ac44cd2590124da7142d13fdf5d83eadc2b94c023d018a2227695a30da1
     <<: *hardened
     environment:
       KROKI_MERMAID_HOST: kroki-mermaid
