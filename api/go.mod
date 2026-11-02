@@ -6,7 +6,7 @@ toolchain go1.26.10
 
 require (
 	github.com/caarlos0/env/v11 v11.2.2
-	github.com/go-jose/go-jose/v4 v4.1.4
+	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/gofiber/fiber/v2 v2.52.15
 	github.com/google/jsonschema-go v0.4.3
 	github.com/google/uuid v1.6.0
